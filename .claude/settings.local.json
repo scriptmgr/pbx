@@ -27,7 +27,8 @@
       "Bash(for i in {1..20})",
       "WebFetch(domain:sourceforge.net)",
       "Bash(curl:*)",
-      "Bash(for i in {1..60})"
+      "Bash(for i in {1..60})",
+      "WebFetch(domain:raw.githubusercontent.com)"
     ],
     "deny": [],
     "ask": []
