@@ -1046,13 +1046,19 @@ password=${MYSQL_ROOT_PASSWORD}
 EOF
     chmod 600 /root/.my.cnf
 
-    # Create FreePBX databases
+    # Create FreePBX databases and user
     mysql << EOF 2>/dev/null || true
 CREATE DATABASE IF NOT EXISTS asterisk;
 CREATE DATABASE IF NOT EXISTS asteriskcdrdb;
 CREATE USER IF NOT EXISTS 'freepbxuser'@'localhost' IDENTIFIED BY '${FREEPBX_DB_PASSWORD}';
 GRANT ALL PRIVILEGES ON asterisk.* TO 'freepbxuser'@'localhost';
 GRANT ALL PRIVILEGES ON asteriskcdrdb.* TO 'freepbxuser'@'localhost';
+FLUSH PRIVILEGES;
+EOF
+
+    # CRITICAL: Update password on re-runs (CREATE USER IF NOT EXISTS doesn't update password)
+    mysql << EOF 2>/dev/null || true
+ALTER USER 'freepbxuser'@'localhost' IDENTIFIED BY '${FREEPBX_DB_PASSWORD}';
 FLUSH PRIVILEGES;
 EOF
 
@@ -1599,13 +1605,25 @@ install_asterisk() {
 
     # Configure Asterisk control socket for FreePBX
     info "Configuring Asterisk control socket..."
-    # First uncomment the [files] section header
-    sed -i 's/^;\[files\]/[files]/' /etc/asterisk/asterisk.conf
-    # Then uncomment the astctl settings
-    sed -i 's/^;astctlpermissions = 0660/astctlpermissions = 0660/' /etc/asterisk/asterisk.conf
-    sed -i 's/^;astctlowner = root/astctlowner = asterisk/' /etc/asterisk/asterisk.conf
-    sed -i 's/^;astctlgroup = apache/astctlgroup = apache/' /etc/asterisk/asterisk.conf
-    sed -i 's/^;astctl = asterisk.ctl/astctl = asterisk.ctl/' /etc/asterisk/asterisk.conf
+
+    # Ensure [files] section exists
+    if ! grep -q '^\[files\]' /etc/asterisk/asterisk.conf; then
+        echo -e '\n[files]' >> /etc/asterisk/asterisk.conf
+    fi
+
+    # Add or update astctl settings (don't rely on commented samples)
+    if ! grep -q '^astctlpermissions' /etc/asterisk/asterisk.conf; then
+        sed -i '/^\[files\]/a astctlpermissions = 0660' /etc/asterisk/asterisk.conf
+    fi
+    if ! grep -q '^astctlowner' /etc/asterisk/asterisk.conf; then
+        sed -i '/^\[files\]/a astctlowner = asterisk' /etc/asterisk/asterisk.conf
+    fi
+    if ! grep -q '^astctlgroup' /etc/asterisk/asterisk.conf; then
+        sed -i '/^\[files\]/a astctlgroup = apache' /etc/asterisk/asterisk.conf
+    fi
+    if ! grep -q '^astctl ' /etc/asterisk/asterisk.conf; then
+        sed -i '/^\[files\]/a astctl = asterisk.ctl' /etc/asterisk/asterisk.conf
+    fi
 
     # Add apache user to asterisk group for socket access
     usermod -a -G asterisk apache 2>/dev/null || true
