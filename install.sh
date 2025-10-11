@@ -276,6 +276,55 @@ error() {
 # UTILITY FUNCTIONS
 # =============================================================================
 
+# Safe Asterisk restart function (handles dual processes cleanly)
+safe_restart_asterisk() {
+    local max_wait=30
+    local waited=0
+
+    # Try graceful stop via systemctl first
+    if systemctl is-active asterisk >/dev/null 2>&1; then
+        systemctl stop asterisk 2>/dev/null &
+        local stop_pid=$!
+
+        # Wait for graceful stop
+        while [ $waited -lt $max_wait ]; do
+            if ! systemctl is-active asterisk >/dev/null 2>&1; then
+                break
+            fi
+            sleep 1
+            waited=$((waited + 1))
+        done
+
+        # Force kill stop command if still running
+        kill $stop_pid 2>/dev/null || true
+    fi
+
+    # Ensure all asterisk processes are terminated
+    pkill -9 asterisk 2>/dev/null || true
+    sleep 2
+
+    # Clean up PID files
+    rm -f /var/run/asterisk/asterisk.pid 2>/dev/null || true
+
+    # Start asterisk
+    systemctl start asterisk 2>/dev/null || {
+        # If systemctl fails, try direct start
+        /usr/sbin/asterisk 2>/dev/null || true
+    }
+
+    # Wait for startup
+    waited=0
+    while [ $waited -lt $max_wait ]; do
+        if systemctl is-active asterisk >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    return 1
+}
+
 # Colors for output (POSIX compatible)
 if [ -t 1 ]; then
     RED="$(printf '\033[0;31m')"
@@ -677,7 +726,9 @@ try_install_package() {
 
     # All variants failed
     if [ "${optional}" = "yes" ]; then
-        warn "Could not install optional ${description} (tried: ${package_variants})"
+        # Optional packages - just log to file, not console
+        echo "$(date '+%Y-%m-%d %H:%M:%S'): INFO: Optional package ${description} not available (tried: ${package_variants})" >> "${LOG_FILE}"
+        return 1
     else
         warn "FAILED to install ${description} (tried: ${package_variants})"
     fi
@@ -840,16 +891,20 @@ install_core_dependencies() {
             ;;
 
         yum|dnf)
-            # Enable PowerTools/CRB repository for devel packages
-            info "Enabling PowerTools/CRB repository..."
-            if [ "${DETECTED_VERSION%%.*}" = "8" ]; then
-                ${PACKAGE_MANAGER} config-manager --set-enabled powertools >> "${LOG_FILE}" 2>&1 || \
-                ${PACKAGE_MANAGER} config-manager --set-enabled PowerTools >> "${LOG_FILE}" 2>&1 || \
-                warn "PowerTools repository not available"
-            elif [ "${DETECTED_VERSION%%.*}" = "9" ]; then
-                ${PACKAGE_MANAGER} config-manager --set-enabled crb >> "${LOG_FILE}" 2>&1 || \
-                ${PACKAGE_MANAGER} config-manager --set-enabled CRB >> "${LOG_FILE}" 2>&1 || \
-                warn "CRB repository not available"
+            # Enable PowerTools/CRB repository for devel packages (if not using casjay repo)
+            if ! repo_exists "casjay-os-crb" && ! repo_exists "casjay-os-base"; then
+                info "Enabling PowerTools/CRB repository..."
+                if [ "${DETECTED_VERSION%%.*}" = "8" ]; then
+                    ${PACKAGE_MANAGER} config-manager --set-enabled powertools >> "${LOG_FILE}" 2>&1 || \
+                    ${PACKAGE_MANAGER} config-manager --set-enabled PowerTools >> "${LOG_FILE}" 2>&1 || \
+                    info "PowerTools repository not available (may not be needed)"
+                elif [ "${DETECTED_VERSION%%.*}" = "9" ]; then
+                    ${PACKAGE_MANAGER} config-manager --set-enabled crb >> "${LOG_FILE}" 2>&1 || \
+                    ${PACKAGE_MANAGER} config-manager --set-enabled CRB >> "${LOG_FILE}" 2>&1 || \
+                    info "CRB repository not available (may not be needed)"
+                fi
+            else
+                info "Using CasJay repository (includes CRB packages)"
             fi
 
             # Core build tools - install one-by-one with dependencies
@@ -1436,8 +1491,32 @@ install_asterisk() {
     if command_exists asterisk && [ -f /etc/asterisk/asterisk.conf ]; then
         INSTALLED_VERSION=$(asterisk -V 2>/dev/null | grep -oP 'Asterisk \K[0-9]+' | head -1)
         if [ "$INSTALLED_VERSION" = "${ASTERISK_VERSION}" ]; then
-            success "Asterisk ${ASTERISK_VERSION} is already installed, skipping..."
+            success "Asterisk ${ASTERISK_VERSION} is already installed, skipping compilation..."
             track_install "asterisk"
+
+            # CRITICAL: Ensure Asterisk is running before returning
+            # FreePBX installation REQUIRES Asterisk to be active
+            if ! systemctl is-active asterisk >/dev/null 2>&1; then
+                info "Asterisk is not running, starting it now..."
+                systemctl enable asterisk 2>/dev/null || true
+                safe_restart_asterisk || warn "Failed to start Asterisk"
+
+                # Wait up to 30 seconds for Asterisk to be fully ready
+                info "Waiting for Asterisk to initialize..."
+                local waited=0
+                while [ $waited -lt 30 ]; do
+                    if systemctl is-active asterisk >/dev/null 2>&1 && \
+                       asterisk -rx "core show version" >/dev/null 2>&1; then
+                        success "Asterisk is running and responsive"
+                        return 0
+                    fi
+                    sleep 2
+                    waited=$((waited + 2))
+                done
+                warn "Asterisk started but may still be initializing"
+            else
+                success "Asterisk is already running"
+            fi
             return 0
         else
             info "Asterisk ${INSTALLED_VERSION} found, will upgrade to ${ASTERISK_VERSION}..."
@@ -1646,8 +1725,9 @@ install_freepbx() {
     info "Reloading FreePBX configuration..."
     fwconsole reload >> "${LOG_FILE}" 2>&1 || warn "Failed to reload FreePBX"
 
-    # Restart Asterisk
-    fwconsole restart >> "${LOG_FILE}" 2>&1 || systemctl restart asterisk
+    # Restart Asterisk (using safe restart to avoid dual process issues)
+    info "Restarting Asterisk..."
+    safe_restart_asterisk >> "${LOG_FILE}" 2>&1 || warn "Asterisk restart had issues"
 
     # Set permissions
     fwconsole chown >> "${LOG_FILE}" 2>&1 || warn "Failed to set FreePBX permissions"
@@ -3057,7 +3137,15 @@ EOF
 echo "🔄 Restarting PBX services..."
 systemctl restart mariadb 2>/dev/null && echo "✅ MariaDB restarted"
 systemctl restart apache2 2>/dev/null || systemctl restart httpd 2>/dev/null && echo "✅ Apache restarted"
-systemctl restart asterisk 2>/dev/null && echo "✅ Asterisk restarted"
+
+# Safe Asterisk restart (handles dual processes)
+systemctl stop asterisk 2>/dev/null
+sleep 2
+pkill -9 asterisk 2>/dev/null || true
+rm -f /var/run/asterisk/asterisk.pid 2>/dev/null || true
+sleep 1
+systemctl start asterisk 2>/dev/null && echo "✅ Asterisk restarted"
+
 systemctl restart fail2ban 2>/dev/null && echo "✅ Fail2ban restarted"
 echo "✨ All services restarted"
 EOF
@@ -3130,7 +3218,14 @@ echo ""
 echo "🔄 Restarting services..."
 systemctl restart mariadb 2>/dev/null
 systemctl restart apache2 2>/dev/null || systemctl restart httpd 2>/dev/null
-systemctl restart asterisk 2>/dev/null
+
+# Safe Asterisk restart
+systemctl stop asterisk 2>/dev/null
+sleep 2
+pkill -9 asterisk 2>/dev/null || true
+rm -f /var/run/asterisk/asterisk.pid 2>/dev/null || true
+sleep 1
+systemctl start asterisk 2>/dev/null
 
 echo ""
 echo "✅ System repair completed"
@@ -3981,7 +4076,7 @@ EOF
 
     # Restart services
     systemctl restart "${APACHE_SERVICE}" 2>/dev/null
-    systemctl restart asterisk 2>/dev/null
+    safe_restart_asterisk >/dev/null 2>&1
 
     # Save configuration to persistent .env file
     save_pbx_env

@@ -28,7 +28,10 @@
       "WebFetch(domain:sourceforge.net)",
       "Bash(curl:*)",
       "Bash(for i in {1..60})",
-      "WebFetch(domain:raw.githubusercontent.com)"
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(ssh:*)",
+      "Bash(scp:*)",
+      "Bash(for i in {1..10})"
     ],
     "deny": [],
     "ask": []
