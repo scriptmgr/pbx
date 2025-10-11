@@ -66,6 +66,75 @@ INSTALLED_COMPONENTS=""
 BACKUP_TIMESTAMP=$(date +%s)
 CONFIG_BACKUP_DIR="/mnt/backups/pbx-config-backups/${BACKUP_TIMESTAMP}"
 
+# PBX Environment Configuration
+PBX_ENV_FILE="/etc/pbx/.env"
+PBX_ENV_DIR="/etc/pbx"
+
+# Email-to-Fax configuration (will be generated once)
+EMAIL_TO_FAX_ALIAS=""
+FAX_TO_EMAIL_ADDRESS=""
+
+# =============================================================================
+# ENVIRONMENT CONFIGURATION MANAGEMENT
+# =============================================================================
+
+# Load existing .env configuration
+load_pbx_env() {
+    if [ -f "${PBX_ENV_FILE}" ]; then
+        info "Loading existing PBX configuration from ${PBX_ENV_FILE}..."
+        # Source the env file safely
+        set -a
+        source "${PBX_ENV_FILE}"
+        set +a
+        success "Configuration loaded"
+    fi
+}
+
+# Save configuration to .env file
+save_pbx_env() {
+    info "Saving PBX configuration to ${PBX_ENV_FILE}..."
+
+    mkdir -p "${PBX_ENV_DIR}"
+
+    cat > "${PBX_ENV_FILE}" << EOF
+# PBX System Configuration
+# Generated on: $(date)
+# This file stores persistent configuration that survives script re-runs
+
+# System Information
+SYSTEM_FQDN="${SYSTEM_FQDN}"
+SYSTEM_DOMAIN="${SYSTEM_DOMAIN}"
+PRIVATE_IP="${PRIVATE_IP}"
+PUBLIC_IP="${PUBLIC_IP}"
+
+# Installation Information
+INSTALL_DATE="${INSTALL_DATE}"
+SCRIPT_VERSION="${SCRIPT_VERSION}"
+
+# Email-to-Fax Configuration
+EMAIL_TO_FAX_ALIAS="${EMAIL_TO_FAX_ALIAS}"
+FAX_TO_EMAIL_ADDRESS="${FAX_TO_EMAIL_ADDRESS}"
+
+# Passwords (for reference, also stored in ${AUTO_PASSWORDS_FILE})
+MYSQL_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD}"
+FREEPBX_ADMIN_PASSWORD="${FREEPBX_ADMIN_PASSWORD}"
+FREEPBX_DB_PASSWORD="${FREEPBX_DB_PASSWORD}"
+AVANTFAX_DB_PASSWORD="${AVANTFAX_DB_PASSWORD}"
+EOF
+
+    chmod 600 "${PBX_ENV_FILE}"
+    success "Configuration saved to ${PBX_ENV_FILE}"
+}
+
+# Generate random email-to-fax alias (only once)
+generate_fax_alias() {
+    if [ -z "${EMAIL_TO_FAX_ALIAS}" ]; then
+        # Generate a secure random 16-character alphanumeric string
+        EMAIL_TO_FAX_ALIAS="fax$(openssl rand -hex 8)"
+        info "Generated email-to-fax alias: ${EMAIL_TO_FAX_ALIAS}@${SYSTEM_DOMAIN}"
+    fi
+}
+
 # =============================================================================
 # INSTALLATION INVENTORY & ROLLBACK
 # =============================================================================
@@ -424,11 +493,17 @@ prepare_system() {
         fi
     fi
 
-    # Generate passwords
+    # Generate passwords (use existing from .env if available, otherwise generate new)
     MYSQL_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD:-$(generate_password)}"
     FREEPBX_ADMIN_PASSWORD="${FREEPBX_ADMIN_PASSWORD:-$(generate_password)}"
-    FREEPBX_DB_PASSWORD="$(generate_password)"
-    AVANTFAX_DB_PASSWORD="$(generate_password)"
+    FREEPBX_DB_PASSWORD="${FREEPBX_DB_PASSWORD:-$(generate_password)}"
+    AVANTFAX_DB_PASSWORD="${AVANTFAX_DB_PASSWORD:-$(generate_password)}"
+
+    # Generate fax alias if not already set
+    generate_fax_alias
+
+    # Set fax-to-email address if not already set
+    FAX_TO_EMAIL_ADDRESS="${FAX_TO_EMAIL_ADDRESS:-${ADMIN_EMAIL}}"
 
     # Create password storage file
     cat > "${AUTO_PASSWORDS_FILE}" << EOF
@@ -451,6 +526,10 @@ avantfax_db_password='${AVANTFAX_DB_PASSWORD}'
 # Application Passwords
 freepbx_admin_user='admin'
 freepbx_admin_password='${FREEPBX_ADMIN_PASSWORD}'
+
+# Fax Configuration
+email_to_fax_alias='${EMAIL_TO_FAX_ALIAS}@${SYSTEM_DOMAIN}'
+fax_to_email_address='${FAX_TO_EMAIL_ADDRESS:-${ADMIN_EMAIL}}'
 
 EOF
     chmod 600 "${AUTO_PASSWORDS_FILE}"
@@ -1268,7 +1347,7 @@ Wants=network-online.target
 After=network-online.target mariadb.service
 
 [Service]
-Type=forking
+Type=simple
 User=asterisk
 Group=asterisk
 ExecStart=/usr/sbin/asterisk -f -C /etc/asterisk/asterisk.conf
@@ -1276,6 +1355,7 @@ ExecStop=/usr/sbin/asterisk -rx 'core stop now'
 ExecReload=/usr/sbin/asterisk -rx 'core reload'
 Restart=on-failure
 RestartSec=5
+TimeoutStartSec=300
 LimitNOFILE=65536
 PrivateTmp=true
 ProtectSystem=full
@@ -1410,11 +1490,13 @@ install_asterisk() {
     # Enable required modules
     menuselect/menuselect \
         --enable chan_pjsip \
+        --enable chan_local \
         --enable res_pjsip \
         --enable res_pjsip_session \
         --enable app_voicemail \
         --enable cdr_mysql \
         --enable res_config_mysql \
+        --enable format_mp3 \
         menuselect.makeopts >> "${LOG_FILE}" 2>&1 || warn "Some modules may not be available"
 
     # Compile
@@ -1462,6 +1544,16 @@ EOF
     # Start Asterisk
     systemctl start asterisk || warn "Failed to start Asterisk (will retry later)"
 
+    # Wait for Asterisk to fully start and create control socket
+    info "Waiting for Asterisk to initialize..."
+    for i in {1..30}; do
+        if [ -S /var/run/asterisk/asterisk.ctl ]; then
+            success "Asterisk control socket created"
+            break
+        fi
+        sleep 2
+    done
+
     track_install "asterisk"
     success "Asterisk ${ASTERISK_VERSION} installed successfully"
 }
@@ -1484,7 +1576,16 @@ install_freepbx() {
 
     # Ensure Asterisk is running
     systemctl start asterisk || warn "Asterisk not running yet"
-    sleep 3
+
+    # Wait for Asterisk control socket to be ready
+    info "Waiting for Asterisk to be ready..."
+    for i in {1..30}; do
+        if [ -S /var/run/asterisk/asterisk.ctl ] && asterisk -rx "core show version" &>/dev/null; then
+            success "Asterisk is ready"
+            break
+        fi
+        sleep 2
+    done
 
     # Download FreePBX
     info "Downloading FreePBX ${FREEPBX_VERSION}..."
@@ -1502,6 +1603,8 @@ install_freepbx() {
     ./start_asterisk start >> "${LOG_FILE}" 2>&1 || warn "Failed to start Asterisk via start_asterisk"
 
     # Run FreePBX install
+    # Note: FreePBX install script may return non-zero even on success
+    # We check for actual installation success below
     ./install \
         -n \
         --dbuser=freepbxuser \
@@ -1521,8 +1624,12 @@ install_freepbx() {
         --ampcgibin=/var/www/cgi-bin \
         --ampplayback=/var/lib/asterisk/playback \
         --user="${APACHE_USER}" \
-        --group="${APACHE_GROUP}" >> "${LOG_FILE}" 2>&1 || \
-        error "FreePBX installation failed"
+        --group="${APACHE_GROUP}" >> "${LOG_FILE}" 2>&1 || true
+
+    # Verify FreePBX actually installed successfully
+    if ! command_exists fwconsole || [ ! -d "${WEB_ROOT}/admin" ]; then
+        error "FreePBX installation failed - fwconsole or admin directory not found"
+    fi
 
     # Set admin password
     info "Setting FreePBX admin password..."
@@ -1859,6 +1966,146 @@ EOFMODULES
 }
 
 # =============================================================================
+# POSTFIX MAIL SERVER INSTALLATION
+# =============================================================================
+
+install_postfix() {
+    step "📧 Installing Postfix mail server..."
+
+    # Install Postfix
+    case "${PACKAGE_MANAGER}" in
+        apt-get)
+            DEBIAN_FRONTEND=noninteractive apt-get install -y postfix >> "${LOG_FILE}" 2>&1 || \
+                error "Failed to install Postfix"
+            ;;
+        yum|dnf)
+            ${PACKAGE_MANAGER} install -y postfix >> "${LOG_FILE}" 2>&1 || \
+                error "Failed to install Postfix"
+            ;;
+    esac
+
+    # Enable and start Postfix
+    systemctl enable postfix >> "${LOG_FILE}" 2>&1
+    systemctl start postfix >> "${LOG_FILE}" 2>&1 || \
+        warn "Failed to start Postfix"
+
+    # Set Postfix as default MTA
+    if command -v alternatives >/dev/null 2>&1; then
+        alternatives --set mta /usr/sbin/sendmail.postfix >> "${LOG_FILE}" 2>&1 || true
+    fi
+
+    track_install "postfix"
+    success "Postfix mail server installed"
+}
+
+# =============================================================================
+# EMAIL-TO-FAX CONFIGURATION
+# =============================================================================
+
+configure_email_to_fax() {
+    step "📧→📠 Configuring email-to-fax with secure alias..."
+
+    # Add alias to /etc/aliases
+    if ! grep -q "^${EMAIL_TO_FAX_ALIAS}:" /etc/aliases 2>/dev/null; then
+        echo "${EMAIL_TO_FAX_ALIAS}: \"|/usr/local/bin/mail2fax\"" >> /etc/aliases
+        info "Added email-to-fax alias: ${EMAIL_TO_FAX_ALIAS}@${SYSTEM_DOMAIN}"
+    else
+        info "Email-to-fax alias already exists"
+    fi
+
+    # Rebuild aliases database
+    newaliases >> "${LOG_FILE}" 2>&1 || warn "Failed to rebuild aliases"
+
+    # Create mail2fax script
+    cat > /usr/local/bin/mail2fax << 'MAIL2FAX_EOF'
+#!/bin/bash
+# Email-to-Fax Gateway Script
+# Receives emails and sends them as faxes via HylaFAX
+
+# Read email from stdin
+EMAIL_FILE=$(mktemp)
+cat > "${EMAIL_FILE}"
+
+# Extract recipient fax number from subject (format: "Fax to: 15551234567")
+FAX_NUMBER=$(grep -i "^Subject:.*Fax to:" "${EMAIL_FILE}" | sed -n 's/.*Fax to:[[:space:]]*\([0-9+]*\).*/\1/p')
+
+if [ -z "${FAX_NUMBER}" ]; then
+    echo "ERROR: No fax number found in subject line" | logger -t mail2fax
+    rm -f "${EMAIL_FILE}"
+    exit 1
+fi
+
+# Extract and convert email body/attachments to fax format
+# This is a basic implementation - production systems may need more sophisticated parsing
+BODY_FILE=$(mktemp)
+grep -A 999999 "^$" "${EMAIL_FILE}" | tail -n +2 > "${BODY_FILE}"
+
+# Send via HylaFAX sendfax command
+/usr/bin/sendfax -n -d "${FAX_NUMBER}" "${BODY_FILE}" >> /var/log/mail2fax.log 2>&1
+
+# Cleanup
+rm -f "${EMAIL_FILE}" "${BODY_FILE}"
+
+exit 0
+MAIL2FAX_EOF
+
+    chmod +x /usr/local/bin/mail2fax
+
+    # Create log file
+    touch /var/log/mail2fax.log
+    chown root:root /var/log/mail2fax.log
+    chmod 644 /var/log/mail2fax.log
+
+    # Restart Postfix to apply changes
+    systemctl restart postfix >> "${LOG_FILE}" 2>&1 || warn "Failed to restart Postfix"
+
+    track_install "email_to_fax"
+    success "Email-to-fax configured: ${EMAIL_TO_FAX_ALIAS}@${SYSTEM_DOMAIN}"
+}
+
+# =============================================================================
+# FAX-TO-EMAIL CONFIGURATION
+# =============================================================================
+
+configure_fax_to_email() {
+    step "📠→📧 Configuring fax-to-email delivery..."
+
+    # Configure HylaFAX to email received faxes
+    # This is done in /var/spool/hylafax/etc/FaxDispatch
+
+    if [ ! -f /var/spool/hylafax/etc/FaxDispatch ]; then
+        cat > /var/spool/hylafax/etc/FaxDispatch << FAXDISPATCH_EOF
+# HylaFAX Fax Dispatch Configuration
+# Send all received faxes to admin email
+
+SENDTO="${FAX_TO_EMAIL_ADDRESS}"
+FILETYPE=pdf
+
+# Email subject and body
+TEMPLATE=en
+FAXMASTER="${FAX_TO_EMAIL_ADDRESS}"
+FAXADMIN="${FAX_TO_EMAIL_ADDRESS}"
+FAXDISPATCH_EOF
+
+        chown uucp:uucp /var/spool/hylafax/etc/FaxDispatch
+        chmod 644 /var/spool/hylafax/etc/FaxDispatch
+
+        info "Created FaxDispatch configuration"
+    else
+        info "FaxDispatch already exists"
+    fi
+
+    # Ensure faxrcvd script uses email delivery
+    if [ -f /var/spool/hylafax/bin/faxrcvd ]; then
+        # faxrcvd should already be configured by HylaFAX to use FaxDispatch
+        info "faxrcvd script exists"
+    fi
+
+    track_install "fax_to_email"
+    success "Fax-to-email configured to: ${FAX_TO_EMAIL_ADDRESS}"
+}
+
+# =============================================================================
 # HYLAFAX+ INSTALLATION
 # =============================================================================
 
@@ -1901,9 +2148,9 @@ install_hylafax() {
         --with-PATH_EGETTY=/bin/false >> "${LOG_FILE}" 2>&1 || \
         error "HylaFax+ configure failed"
 
-    # Compile and install
+    # Compile and install (sequential make required for HylaFax+)
     info "Compiling and installing HylaFax+..."
-    make -j$(nproc) >> "${LOG_FILE}" 2>&1 || \
+    make >> "${LOG_FILE}" 2>&1 || \
         error "HylaFax+ compilation failed"
 
     make install >> "${LOG_FILE}" 2>&1 || \
@@ -1934,7 +2181,7 @@ install_iaxmodem() {
     local IAXMODEM_VERSION="1.3.4"
     local IAXMODEM_URL="https://sourceforge.net/projects/iaxmodem/files/latest/download"
 
-    curl -sL "${IAXMODEM_URL}" -o "iaxmodem-${IAXMODEM_VERSION}.tar.gz" >> "${LOG_FILE}" 2>&1 || \
+    wget -O "iaxmodem-${IAXMODEM_VERSION}.tar.gz" "${IAXMODEM_URL}" >> "${LOG_FILE}" 2>&1 || \
         error "Failed to download IAXmodem"
 
     # Extract
@@ -2021,22 +2268,34 @@ install_avantfax() {
                 warn "Failed to install PHP ${PHP_AVANTFAX_VERSION}"
             ;;
         yum|dnf)
-            ${PACKAGE_MANAGER} module enable -y php:remi-${PHP_AVANTFAX_VERSION} >> "${LOG_FILE}" 2>&1 || true
+            # Use Remi SCL packages for PHP 7.4 (allows coexistence with PHP 8.2)
             ${PACKAGE_MANAGER} install -y \
-                php${PHP_AVANTFAX_VERSION} \
-                php${PHP_AVANTFAX_VERSION}-mysqlnd \
-                php${PHP_AVANTFAX_VERSION}-gd \
-                php${PHP_AVANTFAX_VERSION}-imap >> "${LOG_FILE}" 2>&1 || \
-                warn "Failed to install PHP ${PHP_AVANTFAX_VERSION}"
+                php74-php \
+                php74-php-cli \
+                php74-php-common \
+                php74-php-gd \
+                php74-php-mbstring \
+                php74-php-mysqlnd \
+                php74-php-pdo \
+                php74-php-xml \
+                php74-php-ldap \
+                php74-php-imap >> "${LOG_FILE}" 2>&1 || \
+                warn "Failed to install PHP 7.4"
             ;;
     esac
 
-    # Download AvantFax
-    info "Downloading AvantFax..."
-    git clone https://github.com/iFax/AvantFAX.git avantfax >> "${LOG_FILE}" 2>&1 || \
-        error "Failed to clone AvantFax repository"
+    # Download AvantFax from SourceForge (official source)
+    info "Downloading AvantFax 3.4.1..."
+    AVANTFAX_VERSION="3.4.1"
+    AVANTFAX_URL="https://sourceforge.net/projects/avantfax/files/avantfax-${AVANTFAX_VERSION}.tgz/download"
 
-    cd avantfax || error "Failed to enter AvantFax directory"
+    wget -O avantfax-${AVANTFAX_VERSION}.tgz "${AVANTFAX_URL}" >> "${LOG_FILE}" 2>&1 || \
+        error "Failed to download AvantFax from SourceForge (REQUIRED)"
+
+    tar xzf avantfax-${AVANTFAX_VERSION}.tgz >> "${LOG_FILE}" 2>&1 || \
+        error "Failed to extract AvantFax tarball (REQUIRED)"
+
+    cd avantfax-${AVANTFAX_VERSION} || error "Failed to enter AvantFax directory (REQUIRED)"
 
     # Install to web directory
     info "Installing AvantFax..."
@@ -3724,6 +3983,9 @@ EOF
     systemctl restart "${APACHE_SERVICE}" 2>/dev/null
     systemctl restart asterisk 2>/dev/null
 
+    # Save configuration to persistent .env file
+    save_pbx_env
+
     success "Installation finalized"
 }
 
@@ -3805,6 +4067,10 @@ run_installation() {
 
     # System preparation
     detect_system
+
+    # Load existing .env configuration (if this is a re-run)
+    load_pbx_env
+
     prepare_system
     setup_repositories
 
@@ -3835,9 +4101,12 @@ run_installation() {
 
     # Fax system (if enabled)
     if [ "${INSTALL_AVANTFAX}" = "1" ]; then
+        install_postfix
         install_hylafax
         install_iaxmodem
         install_avantfax
+        configure_email_to_fax
+        configure_fax_to_email
     fi
 
     # Security systems

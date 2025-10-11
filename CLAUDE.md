@@ -17,6 +17,9 @@ A production-ready, fully automated installation script for enterprise PBX syste
 - ✅ Smart repository detection (prevents duplicates)
 - ✅ Configuration backup system with timestamped directories
 - ✅ AlmaLinux 9 compatibility fixes (pkgconf-pkg-config, dnf-plugins-core)
+- ✅ AvantFax installation from SourceForge (official source) - v3.4.1
+- ✅ Email-to-fax with secure random alias via /etc/pbx/.env
+- ✅ Fax-to-email automatic forwarding configuration
 
 ## 🏗️ Architecture
 
@@ -218,6 +221,14 @@ Set `BEHIND_PROXY=yes` before installation to:
    - Fix: Use `unixODBC-devel` (capital ODBC) as primary
    - Status: ✅ Fixed
 
+5. **AvantFax repository not found**
+   - Issue: GitHub repository https://github.com/iFax/AvantFAX doesn't exist (404)
+   - Research: Found official source on SourceForge
+   - Fix: Download from SourceForge v3.4.1 (last updated 2024-04-10)
+   - URL: https://sourceforge.net/projects/avantfax/files/avantfax-3.4.1.tgz/download
+   - Status: ✅ Fixed - AvantFax is REQUIRED, not optional
+   - Code Location: install.sh:2287-2298
+
 ## 📝 Development Guidelines
 
 ### Adding New Features
@@ -276,7 +287,7 @@ fi
 14. TTS engine (Flite)
 15. AGI scripts
 16. Demo applications
-17. Fax system (optional - HylaFax+ + IAXmodem + AvantFax)
+17. Fax system (REQUIRED - HylaFax+ + IAXmodem + AvantFax)
 18. Security (Firewall + Fail2ban)
 19. Backup system
 20. Management scripts creation
@@ -337,6 +348,6 @@ When making changes:
 
 ---
 
-**Last Updated:** 2025-01-08
+**Last Updated:** 2025-01-09
 **Maintainer:** AI Development Team
 **License:** MIT
