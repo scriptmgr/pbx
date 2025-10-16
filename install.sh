@@ -910,10 +910,22 @@ install_core_dependencies() {
             # Core build tools - install one-by-one with dependencies
             info "Installing build tools..."
             for pkg in gcc gcc-c++ make cmake autoconf automake libtool \
-                       git wget curl unzip bzip2 tar gzip patch kernel-headers; do
+                       git wget curl unzip bzip2 tar gzip patch; do
                 ${PACKAGE_MANAGER} install -y "${pkg}" >> "${LOG_FILE}" 2>&1 || \
                 warn "Package ${pkg} not available"
             done
+
+            # Install matching kernel headers based on running kernel
+            if uname -r | grep -q 'elrepo'; then
+                info "Detected ELRepo kernel, installing kernel-ml-headers..."
+                try_install_package "kernel-ml-headers" "kernel-ml-headers" || \
+                    warn "Failed to install kernel-ml-headers, trying standard kernel-headers"
+                try_install_package "kernel-headers" "kernel-headers" || true
+            else
+                info "Installing standard kernel-headers..."
+                try_install_package "kernel-headers" "kernel-headers" || \
+                    warn "kernel-headers not available"
+            fi
 
             # Try pkg-config variants (CRITICAL)
             # AlmaLinux/RHEL 9 uses pkgconf-pkg-config, older versions use pkgconfig
