@@ -2248,6 +2248,7 @@ install_hylafax() {
     # Configure
     info "Configuring HylaFax+..."
     ./configure \
+        --nointeractive \
         --with-DIR_BIN=/usr/local/bin \
         --with-DIR_SBIN=/usr/local/sbin \
         --with-DIR_LIBDATA=/usr/local/lib/fax \
