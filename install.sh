@@ -347,7 +347,6 @@ fi
 # Logging functions
 log() {
     echo "$(date '+%Y-%m-%d %H:%M:%S'): $*" >> "$LOG_FILE"
-    echo "$*"
 }
 
 error() {
@@ -918,9 +917,11 @@ install_core_dependencies() {
             # Install matching kernel headers based on running kernel
             if uname -r | grep -q 'elrepo'; then
                 info "Detected ELRepo kernel, installing kernel-ml-headers..."
-                try_install_package "kernel-ml-headers" "kernel-ml-headers" || \
-                    warn "Failed to install kernel-ml-headers, trying standard kernel-headers"
-                try_install_package "kernel-headers" "kernel-headers" || true
+                if ! try_install_package "kernel-ml-headers" "kernel-ml-headers"; then
+                    warn "Failed to install kernel-ml-headers, trying standard kernel-headers as fallback..."
+                    try_install_package "kernel-headers" "kernel-headers" || \
+                        warn "Could not install any kernel headers"
+                fi
             else
                 info "Installing standard kernel-headers..."
                 try_install_package "kernel-headers" "kernel-headers" || \
