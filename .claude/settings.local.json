@@ -31,7 +31,12 @@
       "WebFetch(domain:raw.githubusercontent.com)",
       "Bash(ssh:*)",
       "Bash(scp:*)",
-      "Bash(for i in {1..10})"
+      "Bash(for i in {1..10})",
+      "Bash(xargs -r kill -9)",
+      "Bash(while read container)",
+      "Bash(do echo \"Stopping $container...\")",
+      "Bash(do echo:*)",
+      "Bash(docker ps:*)"
     ],
     "deny": [],
     "ask": []

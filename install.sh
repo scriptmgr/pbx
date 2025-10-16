@@ -815,7 +815,7 @@ install_core_dependencies() {
             # Core build tools - install one-by-one with dependencies
             info "Installing build tools..."
             for pkg in build-essential gcc g++ make cmake autoconf automake libtool \
-                       git wget curl unzip bzip2 tar gzip patch pkg-config; do
+                       git wget curl unzip bzip2 tar gzip patch pkg-config linux-headers-generic; do
                 DEBIAN_FRONTEND=noninteractive apt-get install -y "${pkg}" >> "${LOG_FILE}" 2>&1 || \
                 warn "Package ${pkg} not available"
             done
@@ -910,7 +910,7 @@ install_core_dependencies() {
             # Core build tools - install one-by-one with dependencies
             info "Installing build tools..."
             for pkg in gcc gcc-c++ make cmake autoconf automake libtool \
-                       git wget curl unzip bzip2 tar gzip patch; do
+                       git wget curl unzip bzip2 tar gzip patch kernel-headers; do
                 ${PACKAGE_MANAGER} install -y "${pkg}" >> "${LOG_FILE}" 2>&1 || \
                 warn "Package ${pkg} not available"
             done
