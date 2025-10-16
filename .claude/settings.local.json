@@ -36,9 +36,12 @@
       "Bash(while read container)",
       "Bash(do echo \"Stopping $container...\")",
       "Bash(do echo:*)",
-      "Bash(docker ps:*)"
+      "Bash(docker ps:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
     ],
     "deny": [],
     "ask": []
-  }
+  },
+  "includeCoAuthoredBy": false
 }
