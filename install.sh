@@ -1121,11 +1121,23 @@ install_php() {
             # Configure PHP
             PHP_INI="/etc/php.ini"
             if [ -f "${PHP_INI}" ]; then
+                backup_config "${PHP_INI}"
                 sed -i 's/memory_limit = .*/memory_limit = 512M/' "${PHP_INI}"
                 sed -i 's/upload_max_filesize = .*/upload_max_filesize = 100M/' "${PHP_INI}"
                 sed -i 's/post_max_size = .*/post_max_size = 100M/' "${PHP_INI}"
                 sed -i 's/max_execution_time = .*/max_execution_time = 300/' "${PHP_INI}"
             fi
+
+            # Configure PHP-FPM to listen on TCP port 9000
+            if [ -f /etc/php-fpm.d/www.conf ]; then
+                backup_config /etc/php-fpm.d/www.conf
+                sed -i 's/^listen = .*/listen = 127.0.0.1:9000/' /etc/php-fpm.d/www.conf
+                sed -i 's/^;listen.allowed_clients/listen.allowed_clients/' /etc/php-fpm.d/www.conf
+            fi
+
+            # Enable and start PHP-FPM
+            systemctl enable php-fpm >> "${LOG_FILE}" 2>&1 || warn "Failed to enable PHP-FPM"
+            systemctl start php-fpm >> "${LOG_FILE}" 2>&1 || warn "Failed to start PHP-FPM"
             ;;
     esac
 
@@ -1141,16 +1153,21 @@ install_apache() {
 
     case "${PACKAGE_MANAGER}" in
         apt-get)
-            safe_execute "DEBIAN_FRONTEND=noninteractive apt-get install -y apache2 libapache2-mod-php${PHP_VERSION}" "Failed to install Apache"
+            # Install Apache without mod_php - using PHP-FPM only
+            safe_execute "DEBIAN_FRONTEND=noninteractive apt-get install -y apache2" "Failed to install Apache"
 
-            # Enable required modules
+            # Enable required modules for PHP-FPM
             safe_execute "a2enmod rewrite" "Failed to enable rewrite module"
             safe_execute "a2enmod ssl" "Failed to enable SSL module"
             safe_execute "a2enmod headers" "Failed to enable headers module"
+            safe_execute "a2enmod proxy" "Failed to enable proxy module"
+            safe_execute "a2enmod proxy_fcgi" "Failed to enable proxy_fcgi module"
+            safe_execute "a2enmod setenvif" "Failed to enable setenvif module"
             ;;
 
         yum|dnf)
             safe_execute "${PACKAGE_MANAGER} install -y httpd mod_ssl" "Failed to install Apache"
+            # Note: proxy modules are compiled in by default on RHEL/CentOS
             ;;
     esac
 
@@ -1165,12 +1182,65 @@ install_apache() {
     # Set ownership
     chown -R "${APACHE_USER}:${APACHE_GROUP}" "${WEB_ROOT}"
 
+    # Configure Apache for PHP-FPM
+    configure_apache_phpfpm
+
     # Start and enable Apache
     safe_execute "systemctl enable ${APACHE_SERVICE}" "Failed to enable Apache"
     safe_execute "systemctl start ${APACHE_SERVICE}" "Failed to start Apache"
 
     track_install "apache"
     success "Apache installation completed"
+}
+
+# Configure Apache to use PHP-FPM instead of mod_php
+configure_apache_phpfpm() {
+    info "Configuring Apache for PHP-FPM..."
+
+    case "${PACKAGE_MANAGER}" in
+        apt-get)
+            # Debian/Ubuntu: Create PHP-FPM configuration
+            cat > /etc/apache2/conf-available/php-fpm.conf << 'EOF'
+# PHP-FPM Configuration for Apache
+<FilesMatch \.php$>
+    SetHandler "proxy:unix:/run/php/php-fpm.sock|fcgi://localhost"
+</FilesMatch>
+EOF
+            a2enconf php-fpm >> "${LOG_FILE}" 2>&1
+            ;;
+
+        yum|dnf)
+            # RHEL/CentOS: Create PHP-FPM configuration
+            cat > /etc/httpd/conf.d/php-fpm.conf << 'EOF'
+# PHP-FPM Configuration for Apache
+# Default: Use PHP 8.2 FPM for all .php files
+<FilesMatch \.php$>
+    SetHandler "proxy:fcgi://127.0.0.1:9000"
+</FilesMatch>
+
+# AvantFax: Use PHP 7.4 FPM
+<Directory "/var/www/html/avantfax">
+    <FilesMatch \.php$>
+        SetHandler "proxy:fcgi://127.0.0.1:9074"
+    </FilesMatch>
+</Directory>
+
+# Proxy configuration
+<Proxy "fcgi://127.0.0.1:9000">
+    ProxySet timeout=300
+</Proxy>
+
+<Proxy "fcgi://127.0.0.1:9074">
+    ProxySet timeout=300
+</Proxy>
+
+# Directory index for PHP
+DirectoryIndex index.php index.html
+EOF
+            ;;
+    esac
+
+    success "Apache PHP-FPM configuration completed"
 }
 
 # =============================================================================
@@ -2026,6 +2096,11 @@ EOFMODULES
     fwconsole ma downloadinstall restapi >> "${LOG_FILE}" 2>&1 || true
     fwconsole ma downloadinstall arimanager >> "${LOG_FILE}" 2>&1 || true
 
+    # User Control Panel & WebRTC
+    info "Installing UCP and WebRTC modules..."
+    fwconsole ma downloadinstall ucp >> "${LOG_FILE}" 2>&1 || true
+    fwconsole ma downloadinstall webrtc >> "${LOG_FILE}" 2>&1 || true
+
     # Advanced Features
     info "Installing advanced feature modules..."
     fwconsole ma downloadinstall weakpasswords >> "${LOG_FILE}" 2>&1 || true
@@ -2391,8 +2466,20 @@ install_avantfax() {
                 php74-php-pdo \
                 php74-php-xml \
                 php74-php-ldap \
-                php74-php-imap >> "${LOG_FILE}" 2>&1 || \
+                php74-php-imap \
+                php74-php-fpm >> "${LOG_FILE}" 2>&1 || \
                 warn "Failed to install PHP 7.4"
+
+            # Configure PHP 7.4 FPM to listen on port 9074
+            if [ -f /etc/opt/remi/php74/php-fpm.d/www.conf ]; then
+                backup_config /etc/opt/remi/php74/php-fpm.d/www.conf
+                sed -i 's/^listen = .*/listen = 127.0.0.1:9074/' /etc/opt/remi/php74/php-fpm.d/www.conf
+                sed -i 's/^;listen.allowed_clients/listen.allowed_clients/' /etc/opt/remi/php74/php-fpm.d/www.conf
+            fi
+
+            # Enable and start PHP 7.4 FPM
+            systemctl enable php74-php-fpm >> "${LOG_FILE}" 2>&1 || warn "Failed to enable PHP 7.4 FPM"
+            systemctl start php74-php-fpm >> "${LOG_FILE}" 2>&1 || warn "Failed to start PHP 7.4 FPM"
             ;;
     esac
 
@@ -2409,10 +2496,16 @@ install_avantfax() {
 
     cd avantfax-${AVANTFAX_VERSION} || error "Failed to enter AvantFax directory (REQUIRED)"
 
-    # Install to web directory
+    # Install to web directory (copy from inner avantfax subdirectory)
     info "Installing AvantFax..."
     mkdir -p "${AVANTFAX_WEB_DIR}"
-    cp -r * "${AVANTFAX_WEB_DIR}/"
+    if [ -d "avantfax" ]; then
+        # Newer tarball structure has nested directory
+        cp -r avantfax/* "${AVANTFAX_WEB_DIR}/"
+    else
+        # Older tarball structure has files at top level
+        cp -r * "${AVANTFAX_WEB_DIR}/"
+    fi
     chown -R "${APACHE_USER}:${APACHE_GROUP}" "${AVANTFAX_WEB_DIR}"
 
     # Create database
@@ -2539,6 +2632,32 @@ echo "TTS audio saved to /tmp/tts_output.wav"
 EOF
         chmod +x /var/lib/asterisk/agi-bin/tts-test
         chown asterisk:asterisk /var/lib/asterisk/agi-bin/tts-test
+
+        # Create 411 Directory Service audio prompts
+        info "Creating 411 directory service prompts..."
+        SOUNDS_DIR="/var/lib/asterisk/sounds/en"
+        mkdir -p "${SOUNDS_DIR}"
+
+        # Create intro prompt
+        flite -t "Welcome to directory assistance. This service is free and provided by your P B X system." \
+            -o "${SOUNDS_DIR}/dir-intro.wav" 2>/dev/null || true
+
+        # Create options menu
+        flite -t "Press 1 to search by first name. Press 2 to search by last name. Press 3 to browse all extensions. Or stay on the line to search by last name." \
+            -o "${SOUNDS_DIR}/dir-options.wav" 2>/dev/null || true
+
+        # Convert to appropriate formats for Asterisk
+        if command_exists sox; then
+            for file in dir-intro dir-options; do
+                if [ -f "${SOUNDS_DIR}/${file}.wav" ]; then
+                    sox "${SOUNDS_DIR}/${file}.wav" -r 8000 -c 1 -t wav "${SOUNDS_DIR}/${file}.sln" 2>/dev/null || true
+                    sox "${SOUNDS_DIR}/${file}.wav" -r 8000 -c 1 "${SOUNDS_DIR}/${file}.ulaw" 2>/dev/null || true
+                fi
+            done
+        fi
+
+        chown -R asterisk:asterisk "${SOUNDS_DIR}"
+        success "411 directory service prompts created"
     fi
 
     track_install "tts"
@@ -2880,6 +2999,30 @@ exten => 2,1,Playback(connecting-to)
  same => n,Hangup()
 
 exten => 3,1,Directory(default,from-internal)
+
+; 411 - Enhanced Directory Assistance Service
+; Comprehensive directory service similar to Google 411
+exten => 411,1,Answer()
+ same => n,Wait(1)
+ same => n,Playback(dir-intro)
+ same => n,Background(dir-options)
+ same => n,WaitExten(10)
+
+; Option 1: Search by last name
+exten => 1,1,Directory(default,from-internal,f)  ; First name search
+ same => n,Goto(411,1)
+
+; Option 2: Search by first name
+exten => 2,1,Directory(default,from-internal,l)  ; Last name search
+ same => n,Goto(411,1)
+
+; Option 3: Browse all extensions
+exten => 3,1,Directory(default,from-internal,b)  ; Both names
+ same => n,Goto(411,1)
+
+; Timeout - default to last name search
+exten => t,1,Directory(default,from-internal,l)
+ same => n,Goto(411,1)
 
 exten => i,1,Playback(invalid)
  same => n,Goto(s,menu)
@@ -3536,10 +3679,62 @@ add_extension() {
         2>$TEMPFILE
 
     if [ $? -eq 0 ]; then
-        EXT_NUM=$(sed -n 1p $TEMPFILE)
+        EXT_NUM=$(sed -n 1p $TEMPFILE | tr -d ' ')
         EXT_NAME=$(sed -n 2p $TEMPFILE)
         EXT_SECRET=$(sed -n 3p $TEMPFILE)
         EXT_EMAIL=$(sed -n 4p $TEMPFILE)
+
+        # Validate required fields
+        if [ -z "$EXT_NUM" ]; then
+            dialog --title "Error" --msgbox "Extension number is required!" 6 $WIDTH
+            add_extension
+            return
+        fi
+
+        if [ -z "$EXT_NAME" ]; then
+            dialog --title "Error" --msgbox "Display name is required!" 6 $WIDTH
+            add_extension
+            return
+        fi
+
+        if [ -z "$EXT_SECRET" ]; then
+            dialog --title "Error" --msgbox "Password is required!" 6 $WIDTH
+            add_extension
+            return
+        fi
+
+        # Validate extension number is numeric
+        if ! [[ "$EXT_NUM" =~ ^[0-9]+$ ]]; then
+            dialog --title "Error" --msgbox "Extension number must be numeric!" 6 $WIDTH
+            add_extension
+            return
+        fi
+
+        # Validate extension number length - avoid phone number formats
+        # Phone numbers: 7 (local), 10 (USA), 11 (international with 1), 12+ (international)
+        # Valid extensions: 1-2 digits (too short for production), 3-6 digits (good), 8-9 digits (avoid confusion)
+        local ext_len=${#EXT_NUM}
+        if [ $ext_len -eq 7 ] || [ $ext_len -eq 10 ] || [ $ext_len -eq 11 ] || [ $ext_len -ge 12 ]; then
+            dialog --title "Error" --msgbox "Extension length conflicts with phone number format!\nAvoid: 7, 10, 11, or 12+ digits\nUse: 3-6 digits or 8-9 digits" 10 $WIDTH
+            add_extension
+            return
+        fi
+
+        # Block emergency/service numbers (411 allowed for directory service)
+        case "$EXT_NUM" in
+            911|311|511|611|711|811|999|000|100|101|211|988)
+                dialog --title "Error" --msgbox "Cannot use emergency or service numbers!\nBlocked: 911, 311, 511, 611, 711, 811, 988, 999\nNote: 411 allowed for directory service" 10 $WIDTH
+                add_extension
+                return
+                ;;
+        esac
+
+        # Require at least 3 digits for production use
+        if [ $ext_len -lt 3 ]; then
+            dialog --title "Error" --msgbox "Extension must be at least 3 digits for security!" 6 $WIDTH
+            add_extension
+            return
+        fi
 
         # Create extension using fwconsole
         fwconsole extension add pjsip "$EXT_NUM" "$EXT_NAME" "$EXT_SECRET" "$EXT_EMAIL" >/dev/null 2>&1
@@ -3589,10 +3784,17 @@ configure_voipms() {
         2>$TEMPFILE
 
     if [ $? -eq 0 ]; then
-        VOIPMS_ACCOUNT=$(sed -n 1p $TEMPFILE)
-        VOIPMS_USER=$(sed -n 2p $TEMPFILE)
+        VOIPMS_ACCOUNT=$(sed -n 1p $TEMPFILE | tr -d ' ')
+        VOIPMS_USER=$(sed -n 2p $TEMPFILE | tr -d ' ')
         VOIPMS_PASS=$(sed -n 3p $TEMPFILE)
-        VOIPMS_SERVER=$(sed -n 4p $TEMPFILE)
+        VOIPMS_SERVER=$(sed -n 4p $TEMPFILE | tr -d ' ')
+
+        # Validate required fields
+        if [ -z "$VOIPMS_ACCOUNT" ] || [ -z "$VOIPMS_USER" ] || [ -z "$VOIPMS_PASS" ] || [ -z "$VOIPMS_SERVER" ]; then
+            dialog --title "Error" --msgbox "All fields are required for voip.ms configuration!" 6 $WIDTH
+            configure_voipms
+            return
+        fi
 
         # Create trunk configuration
         TRUNK_NAME="voipms_${VOIPMS_ACCOUNT}"
@@ -4073,7 +4275,19 @@ finalize_installation() {
             <div class="service">
                 <h3>📞 FreePBX Admin</h3>
                 <p>Complete PBX management interface</p>
-                <a href="/admin/">Access FreePBX</a>
+                <a href="/admin/">Access Admin Panel</a>
+            </div>
+
+            <div class="service">
+                <h3>👤 User Control Panel</h3>
+                <p>User self-service portal (UCP)</p>
+                <a href="/ucp/">Access UCP</a>
+            </div>
+
+            <div class="service">
+                <h3>📠 Fax Management</h3>
+                <p>AvantFax web interface</p>
+                <a href="/avantfax/">Access AvantFax</a>
             </div>
         </div>
 
@@ -4114,6 +4328,65 @@ EOF
     save_pbx_env
 
     success "Installation finalized"
+}
+
+# =============================================================================
+# INSTALLATION VERIFICATION
+# =============================================================================
+
+verify_installation() {
+    step "🔍 Verifying installation..."
+
+    local verification_failed=0
+
+    # Check critical binaries
+    info "Checking installed binaries..."
+    for cmd in asterisk fwconsole mysql php httpd hylafax sendfax faxstat; do
+        if command_exists "${cmd}"; then
+            success "✓ ${cmd} installed"
+        else
+            warn "✗ ${cmd} NOT found"
+            verification_failed=1
+        fi
+    done
+
+    # Check critical services
+    info "Checking service status..."
+    for service in asterisk mariadb httpd hylafax; do
+        if systemctl is-active --quiet "${service}" 2>/dev/null; then
+            success "✓ ${service} service running"
+        else
+            warn "✗ ${service} service NOT running"
+            verification_failed=1
+        fi
+    done
+
+    # Check FreePBX
+    if [ -d /var/www/html/admin ] && command_exists fwconsole; then
+        success "✓ FreePBX installed"
+    else
+        warn "✗ FreePBX NOT properly installed"
+        verification_failed=1
+    fi
+
+    # Check fax modems if fax system enabled
+    if [ "${FAX_ENABLED}" = "1" ]; then
+        local modem_count=$(ls -1 /dev/ttyIAX* 2>/dev/null | wc -l)
+        if [ "${modem_count}" -ge 1 ]; then
+            success "✓ Fax modems configured (${modem_count} modems)"
+        else
+            warn "✗ Fax modems NOT configured"
+            verification_failed=1
+        fi
+    fi
+
+    # Summary
+    if [ ${verification_failed} -eq 0 ]; then
+        success "Installation verification PASSED - all components installed and running"
+    else
+        warn "Installation verification found issues - see warnings above"
+        warn "System may still be functional, check 'pbx-status' for details"
+    fi
 }
 
 # =============================================================================
@@ -4255,6 +4528,9 @@ run_installation() {
 
     # Final configuration
     finalize_installation
+
+    # Verify installation
+    verify_installation
 
     # Show completion message
     show_completion_message
