@@ -1135,11 +1135,50 @@ install_php() {
                 sed -i 's/^;listen.allowed_clients/listen.allowed_clients/' /etc/php-fpm.d/www.conf
             fi
 
-            # Enable and start PHP-FPM
+            # Enable and restart PHP-FPM (restart to apply TCP port configuration)
             systemctl enable php-fpm >> "${LOG_FILE}" 2>&1 || warn "Failed to enable PHP-FPM"
-            systemctl start php-fpm >> "${LOG_FILE}" 2>&1 || warn "Failed to start PHP-FPM"
+            systemctl restart php-fpm >> "${LOG_FILE}" 2>&1 || warn "Failed to restart PHP-FPM"
+
+            # Verify PHP-FPM is listening on correct port
+            sleep 2
+            if ss -tln | grep -q ':9000'; then
+                info "PHP-FPM listening on port 9000"
+            else
+                warn "PHP-FPM may not be listening on port 9000"
+            fi
             ;;
     esac
+
+    # Install ionCube Loader (required by some FreePBX commercial modules)
+    info "Installing ionCube Loader for PHP ${PHP_VERSION}..."
+    cd "${WORK_DIR}"
+
+    if ! php -m | grep -q ionCube; then
+        wget -q https://downloads.ioncube.com/loader_downloads/ioncube_loaders_lin_x86-64.tar.gz >> "${LOG_FILE}" 2>&1
+        tar xzf ioncube_loaders_lin_x86-64.tar.gz >> "${LOG_FILE}" 2>&1
+
+        PHP_EXT_DIR=$(php -i | grep '^extension_dir' | awk '{print $3}')
+
+        case "${PHP_VERSION}" in
+            8.2) cp ioncube/ioncube_loader_lin_8.2.so "${PHP_EXT_DIR}/" ;;
+            8.1) cp ioncube/ioncube_loader_lin_8.1.so "${PHP_EXT_DIR}/" ;;
+            8.0) cp ioncube/ioncube_loader_lin_8.0.so "${PHP_EXT_DIR}/" ;;
+            7.4) cp ioncube/ioncube_loader_lin_7.4.so "${PHP_EXT_DIR}/" ;;
+        esac
+
+        echo "zend_extension=ioncube_loader_lin_${PHP_VERSION}.so" > /etc/php.d/00-ioncube.ini
+
+        # Restart PHP-FPM to load ionCube
+        systemctl restart php-fpm >> "${LOG_FILE}" 2>&1
+
+        if php -m | grep -q ionCube; then
+            success "ionCube Loader installed successfully"
+        else
+            warn "ionCube Loader may not be loaded correctly"
+        fi
+    else
+        info "ionCube Loader already installed"
+    fi
 
     success "PHP installation completed"
 }
@@ -1185,12 +1224,75 @@ install_apache() {
     # Configure Apache for PHP-FPM
     configure_apache_phpfpm
 
+    # Configure FreePBX directories with AllowOverride
+    configure_freepbx_apache
+
     # Start and enable Apache
     safe_execute "systemctl enable ${APACHE_SERVICE}" "Failed to enable Apache"
     safe_execute "systemctl start ${APACHE_SERVICE}" "Failed to start Apache"
 
     track_install "apache"
     success "Apache installation completed"
+}
+
+# Configure FreePBX Apache directories
+configure_freepbx_apache() {
+    info "Configuring FreePBX Apache directories..."
+
+    case "${PACKAGE_MANAGER}" in
+        yum|dnf)
+            cat > /etc/httpd/conf.d/freepbx.conf << 'EOF'
+# FreePBX Apache Configuration
+# Enable .htaccess files for FreePBX
+
+<Directory /var/www/html>
+    Options -Indexes +FollowSymLinks
+    AllowOverride All
+    Require all granted
+</Directory>
+
+<Directory /var/www/html/admin>
+    Options -Indexes +FollowSymLinks
+    AllowOverride All
+    Require all granted
+</Directory>
+
+<Directory /var/www/html/ucp>
+    Options -Indexes +FollowSymLinks
+    AllowOverride All
+    Require all granted
+</Directory>
+EOF
+            ;;
+
+        apt-get)
+            cat > /etc/apache2/conf-available/freepbx.conf << 'EOF'
+# FreePBX Apache Configuration
+# Enable .htaccess files for FreePBX
+
+<Directory /var/www/html>
+    Options -Indexes +FollowSymLinks
+    AllowOverride All
+    Require all granted
+</Directory>
+
+<Directory /var/www/html/admin>
+    Options -Indexes +FollowSymLinks
+    AllowOverride All
+    Require all granted
+</Directory>
+
+<Directory /var/www/html/ucp>
+    Options -Indexes +FollowSymLinks
+    AllowOverride All
+    Require all granted
+</Directory>
+EOF
+            a2enconf freepbx >> "${LOG_FILE}" 2>&1
+            ;;
+    esac
+
+    success "FreePBX Apache configuration completed"
 }
 
 # Configure Apache to use PHP-FPM instead of mod_php
@@ -1210,6 +1312,18 @@ EOF
             ;;
 
         yum|dnf)
+            # Disable old php.conf files that conflict with PHP-FPM
+            if [ -f /etc/httpd/conf.d/php.conf ]; then
+                backup_config /etc/httpd/conf.d/php.conf
+                mv /etc/httpd/conf.d/php.conf /etc/httpd/conf.d/php.conf.disabled
+                info "Disabled conflicting php.conf (using PHP-FPM instead)"
+            fi
+            if [ -f /etc/httpd/conf.d/php74-php.conf ]; then
+                backup_config /etc/httpd/conf.d/php74-php.conf
+                mv /etc/httpd/conf.d/php74-php.conf /etc/httpd/conf.d/php74-php.conf.disabled
+                info "Disabled conflicting php74-php.conf (using PHP-FPM instead)"
+            fi
+
             # RHEL/CentOS: Create PHP-FPM configuration
             cat > /etc/httpd/conf.d/php-fpm.conf << 'EOF'
 # PHP-FPM Configuration for Apache
@@ -1501,9 +1615,10 @@ Restart=on-failure
 RestartSec=5
 TimeoutStartSec=300
 LimitNOFILE=65536
-PrivateTmp=true
-ProtectSystem=full
-ProtectHome=true
+# Systemd hardening disabled - prevents control socket creation
+#PrivateTmp=true
+#ProtectSystem=full
+#ProtectHome=true
 
 [Install]
 WantedBy=multi-user.target
@@ -1683,7 +1798,11 @@ install_asterisk() {
     # Set ownership
     info "Setting Asterisk permissions..."
     chown -R asterisk:asterisk /etc/asterisk
-    chown -R asterisk:asterisk /var/{lib,log,spool,run}/asterisk
+    chown -R asterisk:asterisk /var/lib/asterisk
+    chown -R asterisk:asterisk /var/log/asterisk
+    chown -R asterisk:asterisk /var/spool/asterisk
+    chown -R asterisk:asterisk /var/run/asterisk
+    chmod 775 /var/run/asterisk
     chown -R asterisk:asterisk /usr/lib/asterisk 2>/dev/null || true
 
     # Configure Asterisk control socket for FreePBX
@@ -2477,9 +2596,17 @@ install_avantfax() {
                 sed -i 's/^;listen.allowed_clients/listen.allowed_clients/' /etc/opt/remi/php74/php-fpm.d/www.conf
             fi
 
-            # Enable and start PHP 7.4 FPM
+            # Enable and restart PHP 7.4 FPM (restart to apply TCP port configuration)
             systemctl enable php74-php-fpm >> "${LOG_FILE}" 2>&1 || warn "Failed to enable PHP 7.4 FPM"
-            systemctl start php74-php-fpm >> "${LOG_FILE}" 2>&1 || warn "Failed to start PHP 7.4 FPM"
+            systemctl restart php74-php-fpm >> "${LOG_FILE}" 2>&1 || warn "Failed to restart PHP 7.4 FPM"
+
+            # Verify PHP 7.4 FPM is listening on correct port
+            sleep 2
+            if ss -tln | grep -q ':9074'; then
+                info "PHP 7.4 FPM listening on port 9074"
+            else
+                warn "PHP 7.4 FPM may not be listening on port 9074"
+            fi
             ;;
     esac
 
@@ -2525,12 +2652,24 @@ EOF
 
     # Configure AvantFax
     info "Configuring AvantFax..."
-    if [ -f "${AVANTFAX_WEB_DIR}/includes/local_config.php.sample" ]; then
+
+    # Try different config file names (version dependent)
+    if [ -f "${AVANTFAX_WEB_DIR}/includes/local_config-example.php" ]; then
+        cp "${AVANTFAX_WEB_DIR}/includes/local_config-example.php" \
+           "${AVANTFAX_WEB_DIR}/includes/local_config.php"
+    elif [ -f "${AVANTFAX_WEB_DIR}/includes/local_config.php.sample" ]; then
         cp "${AVANTFAX_WEB_DIR}/includes/local_config.php.sample" \
            "${AVANTFAX_WEB_DIR}/includes/local_config.php"
+    fi
 
-        sed -i "s/DB_PASSWORD', ''/DB_PASSWORD', '${AVANTFAX_DB_PASSWORD}'/" \
+    # Update database password in config
+    if [ -f "${AVANTFAX_WEB_DIR}/includes/local_config.php" ]; then
+        sed -i "s/define('AFDB_PASS',.*/define('AFDB_PASS',		'${AVANTFAX_DB_PASSWORD}');		\/\/ password/" \
             "${AVANTFAX_WEB_DIR}/includes/local_config.php"
+        chmod 640 "${AVANTFAX_WEB_DIR}/includes/local_config.php"
+        info "AvantFax configuration file created and configured"
+    else
+        warn "Could not find AvantFax config template"
     fi
 
     # Set permissions

@@ -1,47 +1,69 @@
 {
+  "model": "sonnet[1m]",
   "permissions": {
     "allow": [
-      "Bash(bash:*)",
-      "Bash(grep:*)",
-      "Read(///**)",
-      "Bash(cat:*)",
-      "Bash(awk:*)",
-      "Bash(incus list:*)",
-      "Bash(incus launch:*)",
-      "Bash(incus remote:*)",
-      "Bash(incus file push:*)",
-      "Bash(incus exec:*)",
-      "Bash(incus delete:*)",
-      "Bash(chmod:*)",
-      "Bash(sh:*)",
-      "Bash(docker run:*)",
-      "Bash(docker exec:*)",
-      "Bash(docker rm:*)",
+      "Read(**)",
+      "Write(**)",
       "WebSearch",
-      "WebFetch(domain:pkgs.org)",
-      "Bash(docker cp:*)",
-      "Bash(incus stop:*)",
-      "Bash(while true)",
-      "Bash(do sleep:*)",
-      "Bash(done)",
-      "Bash(for i in {1..20})",
-      "WebFetch(domain:sourceforge.net)",
+      "WebFetch(domain:github.com)",
+      "Bash(mkdir:*)",
+      "Bash(tree:*)",
+      "Bash(go:*)",
       "Bash(curl:*)",
-      "Bash(for i in {1..60})",
-      "WebFetch(domain:raw.githubusercontent.com)",
-      "Bash(ssh:*)",
-      "Bash(scp:*)",
-      "Bash(for i in {1..10})",
-      "Bash(xargs -r kill -9)",
-      "Bash(while read container)",
-      "Bash(do echo \"Stopping $container...\")",
-      "Bash(do echo:*)",
-      "Bash(docker ps:*)",
-      "Bash(git add:*)",
+      "Bash(wget:*)",
+      "Bash(echo:*)",
+      "Bash(make:*)",
+      "Bash(find:*)",
+      "Bash(grep:*)",
+      "Bash(awk:*)",
+      "Bash(sed:*)",
+      "Bash(cat:*)",
+      "Bash(chmod:*)",
+      "Bash(chown:*)",
+      "Bash(docker:*)",
+      "Bash(docker-compose:*)",
+      "Bash(incus:*)",
+      "Bash(git:*)",
+      "Bash(pkill:*)",
+      "Bash(rm:*)",
+      "Bash(mv:*)",
+      "Bash(cp:*)",
+      "Bash(ls:*)",
+      "Bash(pwd:*)",
+      "Bash(cd:*)",
+      "Bash(head:*)",
+      "Bash(timeout:*)",
+      "Bash(do:*)",
+      "Bash(ln:*)",
+      "Bash(test:*)",
+      "Bash(do)",
+      "Bash(sort:*)",
+      "Bash(paste:*)",
+      "Bash(*:*)"
+    ],
+    "deny": [
       "Bash(git commit:*)"
     ],
-    "deny": [],
     "ask": []
   },
-  "includeCoAuthoredBy": false
+  "preferences": {
+    "auto_commit": false
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write(**)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if grep -qi 'anthropic\\|claude' \"$file\" 2>/dev/null; then echo 'Error: File contains vendor names (Anthropic/Claude)' >&2; exit 1; fi"
+          }
+        ]
+      }
+    ]
+  },
+  "env": {
+    "MAX_THINKING_TOKENS": "1000"
+  }
 }
+
