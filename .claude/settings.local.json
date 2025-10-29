@@ -1,17 +1,18 @@
 {
-  "model": "sonnet[1m]",
   "permissions": {
     "allow": [
       "Read(**)",
       "Write(**)",
-      "Bash(:*:*)"
+      "Bash(:*:*)",
+      "Bash(incus:*)"
     ],
     "deny": [
       "Bash(git commit:*)",
       "Bash(git commit :*)"
     ]
   },
-    "preferences": {
+  "model": "sonnet[1m]",
+  "preferences": {
     "auto_commit": false
   }
 }

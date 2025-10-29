@@ -54,6 +54,7 @@ DETECTED_VERSION=""
 
 # Generated passwords (will be set during installation)
 MYSQL_ROOT_PASSWORD=""
+FREEPBX_ADMIN_USERNAME=""
 FREEPBX_ADMIN_PASSWORD=""
 FREEPBX_DB_PASSWORD=""
 AVANTFAX_DB_PASSWORD=""
@@ -117,6 +118,7 @@ FAX_TO_EMAIL_ADDRESS="${FAX_TO_EMAIL_ADDRESS}"
 
 # Passwords (for reference, also stored in ${AUTO_PASSWORDS_FILE})
 MYSQL_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD}"
+FREEPBX_ADMIN_USERNAME="${FREEPBX_ADMIN_USERNAME}"
 FREEPBX_ADMIN_PASSWORD="${FREEPBX_ADMIN_PASSWORD}"
 FREEPBX_DB_PASSWORD="${FREEPBX_DB_PASSWORD}"
 AVANTFAX_DB_PASSWORD="${AVANTFAX_DB_PASSWORD}"
@@ -543,6 +545,7 @@ prepare_system() {
 
     # Generate passwords (use existing from .env if available, otherwise generate new)
     MYSQL_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD:-$(generate_password)}"
+    FREEPBX_ADMIN_USERNAME="${FREEPBX_ADMIN_USERNAME:-administrator}"
     FREEPBX_ADMIN_PASSWORD="${FREEPBX_ADMIN_PASSWORD:-$(generate_password)}"
     FREEPBX_DB_PASSWORD="${FREEPBX_DB_PASSWORD:-$(generate_password)}"
     AVANTFAX_DB_PASSWORD="${AVANTFAX_DB_PASSWORD:-$(generate_password)}"
@@ -572,9 +575,9 @@ freepbx_db_password='${FREEPBX_DB_PASSWORD}'
 avantfax_db_password='${AVANTFAX_DB_PASSWORD}'
 
 # Application Passwords
-freepbx_admin_user='administrator'
+freepbx_admin_user='${FREEPBX_ADMIN_USERNAME}'
 freepbx_admin_password='${FREEPBX_ADMIN_PASSWORD}'
-avantfax_admin_user='administrator'
+avantfax_admin_user='${FREEPBX_ADMIN_USERNAME}'
 avantfax_admin_password='${FREEPBX_ADMIN_PASSWORD}'
 
 # Fax Configuration
@@ -1644,9 +1647,7 @@ Requires=asterisk.service
 
 [Service]
 Type=forking
-User=uucp
-Group=uucp
-ExecStart=/usr/local/sbin/iaxmodem ttyIAX${modem_num}
+ExecStart=/usr/local/bin/iaxmodem ttyIAX${modem_num}
 PIDFile=/var/run/iaxmodem/iaxmodem${modem_num}.pid
 Restart=on-failure
 RestartSec=5
@@ -1657,6 +1658,7 @@ EOF
 
         systemctl daemon-reload
         systemctl enable "iaxmodem${modem_num}" 2>/dev/null || true
+        systemctl start "iaxmodem${modem_num}" 2>/dev/null || true
     done
 }
 
@@ -1675,8 +1677,6 @@ ExecStart=/usr/local/sbin/faxq
 ExecStop=/usr/bin/pkill -f faxq
 Restart=on-failure
 RestartSec=5
-User=uucp
-Group=uucp
 
 [Install]
 WantedBy=multi-user.target
@@ -1684,6 +1684,7 @@ EOF
 
     systemctl daemon-reload
     systemctl enable hylafax 2>/dev/null || true
+    systemctl start hylafax 2>/dev/null || true
 }
 
 # =============================================================================
@@ -1932,20 +1933,26 @@ install_freepbx() {
         error "FreePBX installation failed - fwconsole or admin directory not found"
     fi
 
-    # Set admin password
+    # Set admin password using direct database insertion
     info "Setting FreePBX admin password..."
-    fwconsole user create administrator \
-        --password="${FREEPBX_ADMIN_PASSWORD}" >> "${LOG_FILE}" 2>&1 || \
-    fwconsole user administrator setpassword "${FREEPBX_ADMIN_PASSWORD}" >> "${LOG_FILE}" 2>&1 || \
-        warn "Failed to set admin password (may need manual setup)"
+    mysql asterisk << EOSQL >> "${LOG_FILE}" 2>&1 || warn "Failed to create admin user (may need manual setup)"
+INSERT INTO ampusers (username, password_sha1, sections, deptname, extension_low, extension_high)
+VALUES ('${FREEPBX_ADMIN_USERNAME}', SHA1('${FREEPBX_ADMIN_PASSWORD}'), '*', 'administrators', '', '')
+ON DUPLICATE KEY UPDATE password_sha1=SHA1('${FREEPBX_ADMIN_PASSWORD}');
+EOSQL
 
     # Install core modules
     info "Installing FreePBX core modules..."
     fwconsole ma downloadinstall framework core >> "${LOG_FILE}" 2>&1 || warn "Some modules may have failed"
 
-    # Reload FreePBX
+    # Reload FreePBX with retry logic
     info "Reloading FreePBX configuration..."
-    fwconsole reload >> "${LOG_FILE}" 2>&1 || warn "Failed to reload FreePBX"
+    sleep 5  # Give modules time to settle
+    if ! fwconsole reload >> "${LOG_FILE}" 2>&1; then
+        info "First reload attempt failed, waiting and retrying..."
+        sleep 10
+        fwconsole reload >> "${LOG_FILE}" 2>&1 || warn "FreePBX reload failed after retry"
+    fi
 
     # Restart Asterisk (using safe restart to avoid dual process issues)
     info "Restarting Asterisk..."
@@ -2467,6 +2474,12 @@ install_hylafax() {
     # Set permissions
     chown -R uucp:uucp /var/spool/hylafax
     chmod 755 /var/spool/hylafax
+
+    # Run faxsetup to create configuration (non-interactive)
+    info "Configuring HylaFax+ with faxsetup..."
+    # Provide answers to faxsetup prompts: yes, root, yes, yes, no (repeat 300 times for modem ports)
+    ( yes '' | head -300 ) | /usr/local/sbin/faxsetup -server >> "${LOG_FILE}" 2>&1 || \
+        warn "faxsetup had issues but continuing..."
 
     # Create systemd service
     create_hylafax_service
@@ -4560,15 +4573,15 @@ show_completion_message() {
     echo "   Main Portal: http://${SYSTEM_FQDN}/"
     echo ""
     echo "   FreePBX Admin: http://${SYSTEM_FQDN}/admin/"
-    echo "   Username: administrator"
+    echo "   Username: ${FREEPBX_ADMIN_USERNAME}"
     echo "   Password: ${FREEPBX_ADMIN_PASSWORD}"
     echo ""
     echo "   AvantFax: http://${SYSTEM_FQDN}/avantfax/"
-    echo "   Username: administrator"
+    echo "   Username: ${FREEPBX_ADMIN_USERNAME}"
     echo "   Password: ${FREEPBX_ADMIN_PASSWORD}"
     echo ""
     echo "   UCP (User Control Panel): http://${SYSTEM_FQDN}/ucp/"
-    echo "   Username: administrator"
+    echo "   Username: ${FREEPBX_ADMIN_USERNAME}"
     echo "   Password: ${FREEPBX_ADMIN_PASSWORD}"
     echo ""
     echo "📁 Important Files:"
