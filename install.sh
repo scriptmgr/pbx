@@ -572,8 +572,10 @@ freepbx_db_password='${FREEPBX_DB_PASSWORD}'
 avantfax_db_password='${AVANTFAX_DB_PASSWORD}'
 
 # Application Passwords
-freepbx_admin_user='admin'
+freepbx_admin_user='administrator'
 freepbx_admin_password='${FREEPBX_ADMIN_PASSWORD}'
+avantfax_admin_user='administrator'
+avantfax_admin_password='${FREEPBX_ADMIN_PASSWORD}'
 
 # Fax Configuration
 email_to_fax_alias='${EMAIL_TO_FAX_ALIAS}@${SYSTEM_DOMAIN}'
@@ -1932,9 +1934,9 @@ install_freepbx() {
 
     # Set admin password
     info "Setting FreePBX admin password..."
-    fwconsole user create admin \
+    fwconsole user create administrator \
         --password="${FREEPBX_ADMIN_PASSWORD}" >> "${LOG_FILE}" 2>&1 || \
-    fwconsole user admin setpassword "${FREEPBX_ADMIN_PASSWORD}" >> "${LOG_FILE}" 2>&1 || \
+    fwconsole user administrator setpassword "${FREEPBX_ADMIN_PASSWORD}" >> "${LOG_FILE}" 2>&1 || \
         warn "Failed to set admin password (may need manual setup)"
 
     # Install core modules
@@ -2649,6 +2651,22 @@ EOF
         mysql avantfax < "${AVANTFAX_WEB_DIR}/database.sql" >> "${LOG_FILE}" 2>&1 || \
             warn "Failed to import AvantFax database"
     fi
+
+    # Initialize AvantFax database tables
+    info "Initializing AvantFax database..."
+    if [ -f "${AVANTFAX_WEB_DIR}/create_tables.sql" ]; then
+        mysql avantfax < "${AVANTFAX_WEB_DIR}/create_tables.sql" >> "${LOG_FILE}" 2>&1 || \
+            warn "AvantFax tables may already exist"
+    fi
+
+    # Create AvantFax admin user with same password as FreePBX
+    info "Creating AvantFax admin user..."
+    mysql avantfax << EOF >> "${LOG_FILE}" 2>&1 || warn "AvantFax admin user may already exist"
+-- Create admin user with same password as FreePBX admin
+-- Using INSERT IGNORE to skip if user already exists
+INSERT IGNORE INTO UserAccount (uid, username, password, name, email, superuser, is_admin, acc_enabled, any_modem)
+VALUES (1, 'administrator', MD5('${FREEPBX_ADMIN_PASSWORD}'), 'System Administrator', '${ADMIN_EMAIL}', 1, 1, 1, 1);
+EOF
 
     # Configure AvantFax
     info "Configuring AvantFax..."
@@ -4540,8 +4558,17 @@ show_completion_message() {
     echo ""
     echo "🌐 Web Access:"
     echo "   Main Portal: http://${SYSTEM_FQDN}/"
+    echo ""
     echo "   FreePBX Admin: http://${SYSTEM_FQDN}/admin/"
-    echo "   Username: admin"
+    echo "   Username: administrator"
+    echo "   Password: ${FREEPBX_ADMIN_PASSWORD}"
+    echo ""
+    echo "   AvantFax: http://${SYSTEM_FQDN}/avantfax/"
+    echo "   Username: administrator"
+    echo "   Password: ${FREEPBX_ADMIN_PASSWORD}"
+    echo ""
+    echo "   UCP (User Control Panel): http://${SYSTEM_FQDN}/ucp/"
+    echo "   Username: administrator"
     echo "   Password: ${FREEPBX_ADMIN_PASSWORD}"
     echo ""
     echo "📁 Important Files:"
