@@ -265,15 +265,6 @@ rollback_installation() {
     exit 1
 }
 
-# Enhanced error function with rollback
-error() {
-    echo "${RED}❌ ERROR: $*${NC}" >&2
-    echo "$(date '+%Y-%m-%d %H:%M:%S'): ERROR: $*" >> "${ERROR_LOG}"
-    echo "$(date '+%Y-%m-%d %H:%M:%S'): ERROR: $*" >> "${LOG_FILE}"
-
-    rollback_installation "$*"
-}
-
 # =============================================================================
 # UTILITY FUNCTIONS
 # =============================================================================
@@ -355,7 +346,7 @@ error() {
     echo "${RED}❌ ERROR: $*${NC}" >&2
     echo "$(date '+%Y-%m-%d %H:%M:%S'): ERROR: $*" >> "$ERROR_LOG"
     echo "$(date '+%Y-%m-%d %H:%M:%S'): ERROR: $*" >> "$LOG_FILE"
-    exit 1
+    rollback_installation "$*"
 }
 
 warn() {
@@ -665,21 +656,28 @@ setup_repositories() {
             ;;
 
         yum|dnf)
-            # EPEL repository
-            if ! repo_exists "fedoraproject.org/epel"; then
-                info "Installing EPEL repository..."
-                safe_execute "${PACKAGE_MANAGER} install -y epel-release" "Failed to install EPEL"
-            else
-                success "EPEL repository already configured, skipping..."
+            # EPEL repository (not needed for Fedora, which is upstream)
+            if [ "${DETECTED_OS}" != "fedora" ]; then
+                if ! repo_exists "fedoraproject.org/epel"; then
+                    info "Installing EPEL repository..."
+                    safe_execute "${PACKAGE_MANAGER} install -y epel-release" "Failed to install EPEL"
+                else
+                    success "EPEL repository already configured, skipping..."
+                fi
             fi
 
             # Remi repository for PHP
             if ! repo_exists "rpms.remirepo.net"; then
                 info "Installing Remi repository..."
-                if [ "${DETECTED_VERSION%%.*}" = "8" ]; then
+                local remi_ver="${DETECTED_VERSION%%.*}"
+                if [ "${DETECTED_OS}" = "fedora" ]; then
+                    safe_execute "${PACKAGE_MANAGER} install -y https://rpms.remirepo.net/fedora/remi-release-${remi_ver}.rpm" "Failed to install Remi repository"
+                elif [ "${remi_ver}" = "8" ]; then
                     safe_execute "${PACKAGE_MANAGER} install -y https://rpms.remirepo.net/enterprise/remi-release-8.rpm" "Failed to install Remi repository"
-                elif [ "${DETECTED_VERSION%%.*}" = "9" ]; then
+                elif [ "${remi_ver}" = "9" ]; then
                     safe_execute "${PACKAGE_MANAGER} install -y https://rpms.remirepo.net/enterprise/remi-release-9.rpm" "Failed to install Remi repository"
+                else
+                    warn "Unknown version ${remi_ver} for Remi repository — skipping"
                 fi
             else
                 success "Remi repository already configured, skipping..."
@@ -1110,6 +1108,10 @@ install_php() {
                 sed -i 's/post_max_size = .*/post_max_size = 100M/' "${PHP_INI}"
                 sed -i 's/max_execution_time = .*/max_execution_time = 300/' "${PHP_INI}"
             fi
+
+            # Enable and start PHP-FPM
+            systemctl enable "php${PHP_VERSION}-fpm" >> "${LOG_FILE}" 2>&1 || warn "Failed to enable php${PHP_VERSION}-fpm"
+            systemctl restart "php${PHP_VERSION}-fpm" >> "${LOG_FILE}" 2>&1 || warn "Failed to start php${PHP_VERSION}-fpm"
             ;;
 
         yum|dnf)
@@ -1171,10 +1173,31 @@ install_php() {
             7.4) cp ioncube/ioncube_loader_lin_7.4.so "${PHP_EXT_DIR}/" ;;
         esac
 
-        echo "zend_extension=ioncube_loader_lin_${PHP_VERSION}.so" > /etc/php.d/00-ioncube.ini
+        case "${PACKAGE_MANAGER}" in
+            apt-get)
+                mkdir -p "/etc/php/${PHP_VERSION}/mods-available"
+                echo "zend_extension=ioncube_loader_lin_${PHP_VERSION}.so" > "/etc/php/${PHP_VERSION}/mods-available/ioncube.ini"
+                phpenmod -v "${PHP_VERSION}" ioncube 2>/dev/null || {
+                    ln -sf "/etc/php/${PHP_VERSION}/mods-available/ioncube.ini" \
+                        "/etc/php/${PHP_VERSION}/apache2/conf.d/00-ioncube.ini" 2>/dev/null || true
+                    ln -sf "/etc/php/${PHP_VERSION}/mods-available/ioncube.ini" \
+                        "/etc/php/${PHP_VERSION}/fpm/conf.d/00-ioncube.ini" 2>/dev/null || true
+                }
+                ;;
+            yum|dnf)
+                echo "zend_extension=ioncube_loader_lin_${PHP_VERSION}.so" > /etc/php.d/00-ioncube.ini
+                ;;
+        esac
 
         # Restart PHP-FPM to load ionCube
-        systemctl restart php-fpm >> "${LOG_FILE}" 2>&1
+        case "${PACKAGE_MANAGER}" in
+            apt-get)
+                systemctl restart "php${PHP_VERSION}-fpm" >> "${LOG_FILE}" 2>&1 || true
+                ;;
+            yum|dnf)
+                systemctl restart php-fpm >> "${LOG_FILE}" 2>&1 || true
+                ;;
+        esac
 
         if php -m | grep -q ionCube; then
             success "ionCube Loader installed successfully"
@@ -1306,12 +1329,22 @@ configure_apache_phpfpm() {
 
     case "${PACKAGE_MANAGER}" in
         apt-get)
-            # Debian/Ubuntu: Create PHP-FPM configuration
-            cat > /etc/apache2/conf-available/php-fpm.conf << 'EOF'
+            # Debian/Ubuntu: Create PHP-FPM configuration using versioned sockets
+            PHP_FPM_SOCK="/run/php/php${PHP_VERSION}-fpm.sock"
+            PHP74_FPM_SOCK="/run/php/php${PHP_AVANTFAX_VERSION}-fpm.sock"
+            cat > /etc/apache2/conf-available/php-fpm.conf << EOF
 # PHP-FPM Configuration for Apache
-<FilesMatch \.php$>
-    SetHandler "proxy:unix:/run/php/php-fpm.sock|fcgi://localhost"
+# Default: Use PHP ${PHP_VERSION} FPM for all .php files
+<FilesMatch \.php\$>
+    SetHandler "proxy:unix:${PHP_FPM_SOCK}|fcgi://localhost"
 </FilesMatch>
+
+# AvantFax: Use PHP ${PHP_AVANTFAX_VERSION} FPM
+<Directory "/var/www/html/avantfax">
+    <FilesMatch \.php\$>
+        SetHandler "proxy:unix:${PHP74_FPM_SOCK}|fcgi://localhost"
+    </FilesMatch>
+</Directory>
 EOF
             a2enconf php-fpm >> "${LOG_FILE}" 2>&1
             ;;
@@ -2583,10 +2616,17 @@ install_avantfax() {
         apt-get)
             DEBIAN_FRONTEND=noninteractive apt-get install -y \
                 php${PHP_AVANTFAX_VERSION} \
+                php${PHP_AVANTFAX_VERSION}-fpm \
                 php${PHP_AVANTFAX_VERSION}-mysql \
                 php${PHP_AVANTFAX_VERSION}-gd \
-                php${PHP_AVANTFAX_VERSION}-imap >> "${LOG_FILE}" 2>&1 || \
+                php${PHP_AVANTFAX_VERSION}-imap \
+                php${PHP_AVANTFAX_VERSION}-mbstring \
+                php${PHP_AVANTFAX_VERSION}-xml >> "${LOG_FILE}" 2>&1 || \
                 warn "Failed to install PHP ${PHP_AVANTFAX_VERSION}"
+
+            # Enable and start PHP 7.4 FPM (default Debian socket: /run/php/php7.4-fpm.sock)
+            systemctl enable "php${PHP_AVANTFAX_VERSION}-fpm" >> "${LOG_FILE}" 2>&1 || warn "Failed to enable php${PHP_AVANTFAX_VERSION}-fpm"
+            systemctl restart "php${PHP_AVANTFAX_VERSION}-fpm" >> "${LOG_FILE}" 2>&1 || warn "Failed to start php${PHP_AVANTFAX_VERSION}-fpm"
             ;;
         yum|dnf)
             # Use Remi SCL packages for PHP 7.4 (allows coexistence with PHP 8.2)
@@ -3382,6 +3422,7 @@ EOF
     safe_execute "systemctl enable fail2ban" "Failed to enable Fail2ban"
     safe_execute "systemctl start fail2ban" "Failed to start Fail2ban"
 
+    track_install "fail2ban"
     success "Fail2ban installed and configured"
 }
 
@@ -4511,7 +4552,7 @@ verify_installation() {
 
     # Check critical binaries
     info "Checking installed binaries..."
-    for cmd in asterisk fwconsole mysql php httpd hylafax sendfax faxstat; do
+    for cmd in asterisk fwconsole mysql php hylafax sendfax faxstat; do
         if command_exists "${cmd}"; then
             success "✓ ${cmd} installed"
         else
@@ -4519,10 +4560,19 @@ verify_installation() {
             verification_failed=1
         fi
     done
+    # Check web server binary (name differs per distro)
+    local httpd_bin
+    httpd_bin="${APACHE_SERVICE:-httpd}"
+    if command_exists "httpd" || command_exists "apache2"; then
+        success "✓ httpd/apache2 installed"
+    else
+        warn "✗ httpd/apache2 NOT found"
+        verification_failed=1
+    fi
 
     # Check critical services
     info "Checking service status..."
-    for service in asterisk mariadb httpd hylafax; do
+    for service in asterisk mariadb hylafax; do
         if systemctl is-active --quiet "${service}" 2>/dev/null; then
             success "✓ ${service} service running"
         else
@@ -4530,6 +4580,12 @@ verify_installation() {
             verification_failed=1
         fi
     done
+    if systemctl is-active --quiet "${APACHE_SERVICE:-httpd}" 2>/dev/null; then
+        success "✓ ${APACHE_SERVICE:-httpd} service running"
+    else
+        warn "✗ ${APACHE_SERVICE:-httpd} service NOT running"
+        verification_failed=1
+    fi
 
     # Check FreePBX
     if [ -d /var/www/html/admin ] && command_exists fwconsole; then
@@ -4540,7 +4596,7 @@ verify_installation() {
     fi
 
     # Check fax modems if fax system enabled
-    if [ "${FAX_ENABLED}" = "1" ]; then
+    if [ "${INSTALL_AVANTFAX}" = "1" ]; then
         local modem_count=$(ls -1 /dev/ttyIAX* 2>/dev/null | wc -l)
         if [ "${modem_count}" -ge 1 ]; then
             success "✓ Fax modems configured (${modem_count} modems)"
