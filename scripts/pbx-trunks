@@ -1,0 +1,81 @@
+#!/bin/bash
+setup_output() {
+    if [ -n "${NO_COLOR+x}" ] || [ ! -t 1 ] || [ "${TERM:-}" = "dumb" ] || [ "${CI:-}" = "true" ]; then
+        RED=""; GREEN=""; YELLOW=""; BLUE=""; CYAN=""; BOLD=""; NC=""
+        USE_EMOJI=0
+    else
+        RED="$(printf '\033[0;31m')"; GREEN="$(printf '\033[0;32m')"; YELLOW="$(printf '\033[1;33m')"
+        BLUE="$(printf '\033[0;34m')"; CYAN="$(printf '\033[0;36m')"
+        BOLD="$(printf '\033[1m')"; NC="$(printf '\033[0m')"
+        USE_EMOJI=1
+    fi
+}
+setup_output
+e() { [ "$USE_EMOJI" = "1" ] && printf "%s " "$1" || true; }
+ok()   { printf "%s${GREEN}%s${NC}\n" "$(e ✅)" "$*"; }
+info() { printf "%s${BLUE}%s${NC}\n"  "$(e ℹ️ )" "$*"; }
+warn() { printf "%s${YELLOW}%s${NC}\n" "$(e ⚠️ )" "$*"; }
+err()  { printf "%s${RED}%s${NC}\n" "$(e ❌)" "$*" >&2; }
+hdr()  { printf "\n${BOLD}%s%s${NC}\n" "$(e 🔧)" "$*"; }
+
+[ -f /etc/pbx/.env ] && . /etc/pbx/.env
+[ "$(id -u)" -ne 0 ] && { err "Must run as root"; exit 1; }
+
+usage() {
+    printf "Usage: pbx-trunks [options]\n\nSIP trunk monitoring.\n\nOptions:\n"
+    printf "  (no args)      Show trunk registration status\n"
+    printf "  --test TRUNK   Send OPTIONS ping to a trunk\n"
+    printf "  --add          Open pbx-config trunk wizard\n"
+    printf "  --monitor      Live view (5s refresh, q to quit)\n"
+    printf "  --help/-h      Show help\n"; exit 0
+}
+
+need_ast() { command -v asterisk >/dev/null 2>&1 || { err "Asterisk not found"; exit 1; }; }
+
+show_trunks() {
+    hdr "SIP Trunk Registration Status"
+    need_ast
+    timeout 5 asterisk -rx "pjsip show registrations" 2>/dev/null | while IFS= read -r line; do
+        case "$line" in
+            *Registered*)   printf "%s${GREEN}%s${NC}\n" "" "$line" ;;
+            *Rejected*|*Failed*|*Unregistered*)
+                            printf "%s${RED}%s${NC}\n" "" "$line" ;;
+            *Trying*|*Pending*)
+                            printf "%s${YELLOW}%s${NC}\n" "" "$line" ;;
+            *)              printf "%s\n" "$line" ;;
+        esac
+    done || warn "Could not get registration status"
+}
+
+case "${1:-}" in
+    --help|-h) usage ;;
+    --test)
+        TRUNK="${2:-}"; [ -z "$TRUNK" ] && { err "--test requires a TRUNK name"; exit 1; }
+        need_ast
+        hdr "Testing trunk: ${TRUNK}"
+        timeout 5 asterisk -rx "pjsip send OPTIONS ${TRUNK}" 2>/dev/null \
+            && ok "OPTIONS sent to ${TRUNK}" || warn "Could not send OPTIONS to ${TRUNK}"
+        timeout 5 asterisk -rx "pjsip show aor ${TRUNK}" 2>/dev/null || true ;;
+    --add)
+        command -v pbx-config >/dev/null 2>&1 && exec pbx-config || \
+            { err "pbx-config not found"; exit 1; } ;;
+    --monitor)
+        need_ast
+        hdr "Live Trunk Monitor (q to quit)"
+        while true; do
+            clear
+            printf "${BOLD}PBX Trunk Status - %s${NC}\n\n" "$(date '+%Y-%m-%d %H:%M:%S')"
+            timeout 5 asterisk -rx "pjsip show registrations" 2>/dev/null | grep -v "^$" | while IFS= read -r line; do
+                case "$line" in
+                    *Registered*)   printf "${GREEN}%s${NC}\n" "$line" ;;
+                    *Rejected*|*Failed*) printf "${RED}%s${NC}\n" "$line" ;;
+                    *Trying*)       printf "${YELLOW}%s${NC}\n" "$line" ;;
+                    *)              printf "%s\n" "$line" ;;
+                esac
+            done
+            if read -t 5 -n 1 key 2>/dev/null; then
+                [ "$key" = "q" ] || [ "$key" = "Q" ] && break
+            fi
+        done ;;
+    *) show_trunks ;;
+esac

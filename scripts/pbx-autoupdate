@@ -1,0 +1,31 @@
+#!/bin/bash
+# FreePBX weekly auto-update with pre-update DB backup
+LOG=/var/log/pbx/autoupdate.log
+BKDIR=/mnt/backups/pbx/database
+mkdir -p "$BKDIR"
+DATE=$(date +%Y%m%d)
+echo "=== Auto-update $(date) ===" >> "$LOG"
+
+# Load credentials
+# shellcheck disable=SC1091
+source /etc/pbx/.env 2>/dev/null || true
+
+# Pre-update DB backup
+mysqldump -u root -p"${MYSQL_ROOT_PASSWORD:-}" --all-databases 2>/dev/null \
+    | gzip > "$BKDIR/pre-update-${DATE}.sql.gz" \
+  && echo "DB backup OK: $BKDIR/pre-update-${DATE}.sql.gz" >> "$LOG" \
+  || { echo "DB backup FAILED — skipping update" >> "$LOG"; exit 1; }
+
+# Compute checksum of DB backup
+sha256sum "$BKDIR/pre-update-${DATE}.sql.gz" > "$BKDIR/pre-update-${DATE}.sql.gz.sha256" 2>/dev/null || true
+
+# Update FreePBX modules
+/usr/sbin/fwconsole chown --quiet 2>/dev/null || true
+/usr/sbin/fwconsole ma upgradeall --autoenable >> "$LOG" 2>&1 || true
+/usr/sbin/fwconsole reload --quiet 2>/dev/null || true
+
+# Cleanup old pre-update backups (keep 4 weeks)
+find "$BKDIR" -name "pre-update-*.sql.gz" -mtime +28 -delete 2>/dev/null || true
+find "$BKDIR" -name "pre-update-*.sha256" -mtime +28 -delete 2>/dev/null || true
+
+echo "Update complete $(date)" >> "$LOG"

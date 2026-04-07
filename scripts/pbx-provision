@@ -1,0 +1,19 @@
+#!/bin/bash
+# PBX Phone Provisioning Manager
+# shellcheck disable=SC1091
+source /etc/pbx/.env 2>/dev/null || true
+PBX_IP="${PRIVATE_IP:-$(hostname -I 2>/dev/null | awk '{print $1}')}"
+TFTP_ROOT="/var/lib/tftpboot"
+HTTP_ROOT="/var/www/html/provisioning"
+
+echo "=== PBX Phone Provisioning ==="
+echo "TFTP root : ${TFTP_ROOT}"
+echo "HTTP root : ${HTTP_ROOT}"
+echo "HTTP URL  : http://${PBX_IP}/provisioning/"
+echo ""
+echo "Yealink template: ${TFTP_ROOT}/yealink/y000000000000.cfg"
+echo ""
+echo "To provision a Yealink phone:"
+echo "  1. Set provisioning server on phone to: tftp://${PBX_IP}/"
+echo "  2. Or HTTP: http://${PBX_IP}/provisioning/"
+echo "  3. Copy yealink template and rename to MAC address (lowercase, no colons)"

@@ -1,0 +1,15 @@
+#!/bin/bash
+# Sync PBX backups to remote storage via rclone
+# Configure RCLONE_REMOTE in /etc/pbx/.env, then run: rclone config
+# shellcheck disable=SC1091
+source /etc/pbx/.env 2>/dev/null || true
+REMOTE="${RCLONE_REMOTE:-}"
+if [ -z "${REMOTE}" ]; then
+    echo "ERROR: Configure RCLONE_REMOTE in /etc/pbx/.env"
+    echo "  Example: RCLONE_REMOTE=s3:my-bucket  or  RCLONE_REMOTE=gdrive:pbx-backups"
+    echo "  Then run: rclone config"
+    exit 1
+fi
+echo "Syncing backups to ${REMOTE}/pbx-backups/ ..."
+rclone sync /mnt/backups/pbx/ "${REMOTE}/pbx-backups/" --progress 2>&1
+echo "Remote backup complete"

@@ -1,0 +1,73 @@
+#!/bin/bash
+setup_output() {
+    if [ -n "${NO_COLOR+x}" ] || [ ! -t 1 ] || [ "${TERM:-}" = "dumb" ] || [ "${CI:-}" = "true" ]; then
+        RED=""; GREEN=""; YELLOW=""; BLUE=""; CYAN=""; BOLD=""; NC=""
+        USE_EMOJI=0
+    else
+        RED="$(printf '\033[0;31m')"; GREEN="$(printf '\033[0;32m')"; YELLOW="$(printf '\033[1;33m')"
+        BLUE="$(printf '\033[0;34m')"; CYAN="$(printf '\033[0;36m')"
+        BOLD="$(printf '\033[1m')"; NC="$(printf '\033[0m')"
+        USE_EMOJI=1
+    fi
+}
+setup_output
+e() { [ "$USE_EMOJI" = "1" ] && printf "%s " "$1" || true; }
+ok()   { printf "%s${GREEN}%s${NC}\n" "$(e ✅)" "$*"; }
+info() { printf "%s${BLUE}%s${NC}\n"  "$(e ℹ️ )" "$*"; }
+warn() { printf "%s${YELLOW}%s${NC}\n" "$(e ⚠️ )" "$*"; }
+err()  { printf "%s${RED}%s${NC}\n" "$(e ❌)" "$*" >&2; }
+hdr()  { printf "\n${BOLD}%s%s${NC}\n" "$(e 🔧)" "$*"; }
+
+[ -f /etc/pbx/.env ] && . /etc/pbx/.env
+
+usage() { printf "Usage: pbxstatus\nFast compact PBX status summary.\n"; exit 0; }
+[ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ] && usage
+
+# Fast: no slow commands; use timeouts
+IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+HOST=$(hostname 2>/dev/null)
+
+# Asterisk version (fast, no socket)
+AST_VER=$(asterisk -V 2>/dev/null | awk '{print $NF}' || echo "n/a")
+
+# FreePBX version (from module if available)
+FPBX_VER=$(php -r "if(file_exists('/etc/freepbx.conf')){require_once('/etc/freepbx.conf');\$c=\FreePBX::Create();\$m=\$c->modules->getActiveModules();echo \$m['framework']['version']??'n/a';}else echo 'n/a';" 2>/dev/null || echo "n/a")
+
+# PHP version
+PHP_VER=$(php -r "echo PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION;" 2>/dev/null || echo "n/a")
+
+# Active calls (with timeout)
+CALLS=$(timeout 2 asterisk -rx "core show channels concise" 2>/dev/null | grep -cE "^PJSIP|^SIP|^Local" || echo "?")
+
+# Registered peers (with timeout)
+PEERS=$(timeout 2 asterisk -rx "pjsip show endpoints" 2>/dev/null | grep -c "^Object" || echo "?")
+
+# Service status (fast)
+svc_ok() {
+    systemctl is-active --quiet "$1" 2>/dev/null && printf "${GREEN}OK${NC}" || printf "${RED}--${NC}"
+}
+AST_S=$(svc_ok asterisk)
+DB_S=$(systemctl is-active --quiet mariadb 2>/dev/null && printf "${GREEN}OK${NC}" || \
+       systemctl is-active --quiet mysql    2>/dev/null && printf "${GREEN}OK${NC}" || printf "${RED}--${NC}")
+WEB_S=$(systemctl is-active --quiet httpd 2>/dev/null && printf "${GREEN}OK${NC}" || \
+        systemctl is-active --quiet apache2 2>/dev/null && printf "${GREEN}OK${NC}" || printf "${RED}--${NC}")
+
+# Resources from /proc (fast)
+MEM_TOTAL=$(awk '/MemTotal/{printf "%.1f", $2/1048576}' /proc/meminfo 2>/dev/null)
+MEM_FREE=$(awk '/MemAvailable/{printf "%.1f", $2/1048576}' /proc/meminfo 2>/dev/null)
+MEM_USED=$(awk "BEGIN{printf \"%.1f\", ${MEM_TOTAL:-0} - ${MEM_FREE:-0}}")
+DISK=$(df -h / 2>/dev/null | tail -1 | awk '{print $3"/"$2" ("$5")"}')
+LOAD=$(cut -d' ' -f1 /proc/loadavg 2>/dev/null)
+CPU=$(top -bn1 2>/dev/null | grep "Cpu(s)" | awk '{print $2}' | tr -d '%us,' || echo "$LOAD")
+
+LINE="================================================="
+printf "\n${BOLD}%s${NC}\n" "$LINE"
+printf "${BOLD}  PBX Server — %s — %s${NC}\n" "$HOST" "${IP:-unknown}"
+printf "${BOLD}%s${NC}\n" "$LINE"
+printf "  Asterisk ${CYAN}%s${NC} | FreePBX ${CYAN}%s${NC} | PHP ${CYAN}%s${NC}\n" "$AST_VER" "$FPBX_VER" "$PHP_VER"
+printf "  Active calls: ${CYAN}%s${NC} | Registered peers: ${CYAN}%s${NC}\n\n" "$CALLS" "$PEERS"
+printf "  Services: asterisk[%b] freepbx[%b] mariadb[%b]\n" "$AST_S" "$(svc_ok freepbx)" "$DB_S"
+printf "  Resources: CPU %s%% | RAM %s/%sGB | Disk %s\n" "$CPU" "$MEM_USED" "$MEM_TOTAL" "$DISK"
+printf "\n${BOLD}%s${NC}\n" "$LINE"
+printf "${BOLD}  Web: http://%s/ | Admin: http://%s/admin/${NC}\n" "${IP:-localhost}" "${IP:-localhost}"
+printf "${BOLD}%s${NC}\n\n" "$LINE"

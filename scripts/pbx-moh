@@ -1,0 +1,94 @@
+#!/bin/bash
+setup_output() {
+    if [ -n "${NO_COLOR+x}" ] || [ ! -t 1 ] || [ "${TERM:-}" = "dumb" ] || [ "${CI:-}" = "true" ]; then
+        RED=""; GREEN=""; YELLOW=""; BLUE=""; CYAN=""; BOLD=""; NC=""
+        USE_EMOJI=0
+    else
+        RED="$(printf '\033[0;31m')"; GREEN="$(printf '\033[0;32m')"; YELLOW="$(printf '\033[1;33m')"
+        BLUE="$(printf '\033[0;34m')"; CYAN="$(printf '\033[0;36m')"
+        BOLD="$(printf '\033[1m')"; NC="$(printf '\033[0m')"
+        USE_EMOJI=1
+    fi
+}
+setup_output
+e() { [ "$USE_EMOJI" = "1" ] && printf "%s " "$1" || true; }
+ok()   { printf "%s${GREEN}%s${NC}\n" "$(e ✅)" "$*"; }
+info() { printf "%s${BLUE}%s${NC}\n"  "$(e ℹ️ )" "$*"; }
+warn() { printf "%s${YELLOW}%s${NC}\n" "$(e ⚠️ )" "$*"; }
+err()  { printf "%s${RED}%s${NC}\n" "$(e ❌)" "$*" >&2; }
+hdr()  { printf "\n${BOLD}%s%s${NC}\n" "$(e 🔧)" "$*"; }
+
+[ -f /etc/pbx/.env ] && . /etc/pbx/.env
+[ "$(id -u)" -ne 0 ] && { err "Must run as root"; exit 1; }
+
+MOH_DIR="/var/lib/asterisk/moh"
+
+usage() {
+    printf "Usage: pbx-moh [options]\n\nMusic on Hold management.\n\nOptions:\n"
+    printf "  (no args) / --list     List MOH classes and files\n"
+    printf "  --add FILE CLASS       Add file to MOH class (converts if needed)\n"
+    printf "  --play CLASS           Play a MOH class\n"
+    printf "  --reload               Reload MOH in Asterisk\n"
+    printf "  --import URL           Download and add MOH file from URL\n"
+    printf "  --help/-h              Show help\n"; exit 0
+}
+
+do_reload() {
+    command -v asterisk >/dev/null 2>&1 \
+        && timeout 5 asterisk -rx "moh reload" 2>/dev/null && ok "MOH reloaded" \
+        || warn "Could not reload MOH (Asterisk may not be running)"
+}
+
+case "${1:-}" in
+    --help|-h) usage ;;
+    --list|"")
+        hdr "Music on Hold Classes"
+        if [ -d "$MOH_DIR" ]; then
+            for class_dir in "${MOH_DIR}"/*/; do
+                [ -d "$class_dir" ] || continue
+                class=$(basename "$class_dir")
+                count=$(find "$class_dir" -maxdepth 1 -type f 2>/dev/null | wc -l)
+                info "  Class: ${class} (${count} files)"
+                find "$class_dir" -maxdepth 1 -type f 2>/dev/null | while IFS= read -r f; do
+                    printf "    %s\n" "$(basename "$f")"
+                done
+            done
+        else
+            warn "MOH directory not found: $MOH_DIR"
+        fi ;;
+    --add)
+        FILE="${2:-}"; CLASS="${3:-default}"
+        [ -z "$FILE" ] && { err "--add requires FILE and CLASS"; exit 1; }
+        [ ! -f "$FILE" ] && { err "File not found: $FILE"; exit 1; }
+        DEST_DIR="${MOH_DIR}/${CLASS}"
+        mkdir -p "$DEST_DIR"
+        FNAME=$(basename "$FILE")
+        if echo "$FNAME" | grep -qiE '\.(mp3|ogg|flac)$' && command -v sox >/dev/null 2>&1; then
+            DEST="${DEST_DIR}/${FNAME%.*}.wav"
+            sox "$FILE" -r 8000 -c 1 "$DEST" 2>/dev/null \
+                && ok "Converted and added: $(basename "$DEST")" || err "sox conversion failed"
+        else
+            cp "$FILE" "${DEST_DIR}/${FNAME}" && ok "Added: $FNAME to class ${CLASS}"
+        fi
+        do_reload ;;
+    --play)
+        CLASS="${2:-default}"
+        command -v asterisk >/dev/null 2>&1 \
+            && timeout 5 asterisk -rx "moh play ${CLASS}" 2>/dev/null \
+            || warn "Could not play MOH (requires an active channel)"
+        info "Note: moh play requires an active channel in Asterisk" ;;
+    --reload) do_reload ;;
+    --import)
+        URL="${2:-}"; [ -z "$URL" ] && { err "--import requires a URL"; exit 1; }
+        FNAME=$(basename "$URL" | sed 's/?.*//')
+        DEST="${MOH_DIR}/${FNAME}"
+        hdr "Downloading ${URL}"
+        if command -v curl >/dev/null 2>&1; then
+            curl -fsSL -o "$DEST" "$URL" 2>/dev/null && ok "Downloaded: $DEST" || err "Download failed"
+        elif command -v wget >/dev/null 2>&1; then
+            wget -q -O "$DEST" "$URL" 2>/dev/null && ok "Downloaded: $DEST" || err "Download failed"
+        else
+            err "curl or wget required for --import"
+        fi
+        do_reload ;;
+esac

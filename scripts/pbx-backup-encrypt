@@ -1,0 +1,58 @@
+#!/bin/bash
+# PBX Backup Encryption Helper
+# Usage:
+#   pbx-backup-encrypt init          — generate GPG key pair
+#   pbx-backup-encrypt encrypt FILE  — encrypt a backup archive
+
+set -euo pipefail
+
+case "${1:-help}" in
+    init)
+        echo "Generating GPG key for backup encryption..."
+        KEYNAME="PBX Backup $(hostname -f 2>/dev/null || hostname)"
+        BATCH_FILE=$(mktemp)
+        cat > "${BATCH_FILE}" << GPGBATCH
+%no-protection
+Key-Type: RSA
+Key-Length: 4096
+Subkey-Type: RSA
+Subkey-Length: 4096
+Name-Real: ${KEYNAME}
+Name-Email: backup@$(hostname -f 2>/dev/null || hostname)
+Expire-Date: 0
+%commit
+GPGBATCH
+        gpg --batch --gen-key "${BATCH_FILE}" 2>/dev/null
+        rm -f "${BATCH_FILE}"
+        KEY_ID=$(gpg --list-keys --with-colons 2>/dev/null \
+            | grep "^pub" | tail -1 | cut -d: -f5)
+        gpg --armor --export "${KEY_ID}" > /root/pbx-backup-key.pub 2>/dev/null
+        # Store key ID in /etc/pbx/.env
+        if [ -f /etc/pbx/.env ]; then
+            grep -v "^BACKUP_GPG_KEY=" /etc/pbx/.env > /etc/pbx/.env.tmp 2>/dev/null \
+                && mv /etc/pbx/.env.tmp /etc/pbx/.env || true
+        fi
+        echo "BACKUP_GPG_KEY=${KEY_ID}" >> /etc/pbx/.env
+        if ! grep -q "^BACKUP_ENCRYPT=" /etc/pbx/.env 2>/dev/null; then
+            echo "BACKUP_ENCRYPT=no" >> /etc/pbx/.env
+        fi
+        echo "GPG key generated: ${KEY_ID}"
+        echo "Public key exported: /root/pbx-backup-key.pub"
+        echo "Set BACKUP_ENCRYPT=yes in /etc/pbx/.env to enable auto-encryption"
+        ;;
+    encrypt)
+        ARCHIVE="${2:-}"
+        [ -z "${ARCHIVE}" ] && { echo "Usage: pbx-backup-encrypt encrypt <file>"; exit 1; }
+        [ -f "${ARCHIVE}" ] || { echo "File not found: ${ARCHIVE}"; exit 1; }
+        # shellcheck disable=SC1091
+        source /etc/pbx/.env 2>/dev/null || true
+        [ -z "${BACKUP_GPG_KEY:-}" ] && { echo "BACKUP_GPG_KEY not set — run: pbx-backup-encrypt init"; exit 1; }
+        gpg --batch --yes --encrypt --recipient "${BACKUP_GPG_KEY}" \
+            --output "${ARCHIVE}.gpg" "${ARCHIVE}" \
+            && rm -f "${ARCHIVE}" \
+            && echo "Encrypted: ${ARCHIVE}.gpg"
+        ;;
+    *)
+        echo "Usage: pbx-backup-encrypt [init|encrypt <file>]"
+        ;;
+esac

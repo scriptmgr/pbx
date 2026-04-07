@@ -1,0 +1,84 @@
+#!/bin/bash
+setup_output() {
+    if [ -n "${NO_COLOR+x}" ] || [ ! -t 1 ] || [ "${TERM:-}" = "dumb" ] || [ "${CI:-}" = "true" ]; then
+        RED=""; GREEN=""; YELLOW=""; BLUE=""; CYAN=""; BOLD=""; NC=""
+        USE_EMOJI=0
+    else
+        RED="$(printf '\033[0;31m')"; GREEN="$(printf '\033[0;32m')"; YELLOW="$(printf '\033[1;33m')"
+        BLUE="$(printf '\033[0;34m')"; CYAN="$(printf '\033[0;36m')"
+        BOLD="$(printf '\033[1m')"; NC="$(printf '\033[0m')"
+        USE_EMOJI=1
+    fi
+}
+setup_output
+e() { [ "$USE_EMOJI" = "1" ] && printf "%s " "$1" || true; }
+ok()   { printf "%s${GREEN}%s${NC}\n" "$(e ✅)" "$*"; }
+info() { printf "%s${BLUE}%s${NC}\n"  "$(e ℹ️ )" "$*"; }
+warn() { printf "%s${YELLOW}%s${NC}\n" "$(e ⚠️ )" "$*"; }
+err()  { printf "%s${RED}%s${NC}\n" "$(e ❌)" "$*" >&2; }
+hdr()  { printf "\n${BOLD}%s%s${NC}\n" "$(e 🔧)" "$*"; }
+
+[ -f /etc/pbx/.env ] && . /etc/pbx/.env
+[ "$(id -u)" -ne 0 ] && { err "Must run as root"; exit 1; }
+
+usage() {
+    printf "Usage: pbx-calls [options]\n\nActive call monitoring.\n\nOptions:\n"
+    printf "  (no args)            Live call monitor (q to quit)\n"
+    printf "  --history            Show last 20 CDR records\n"
+    printf "  --hangup CHANNEL     Hang up a specific channel\n"
+    printf "  --monitor CHANNEL    Start recording a channel\n"
+    printf "  --help/-h            Show help\n"; exit 0
+}
+
+need_ast() { command -v asterisk >/dev/null 2>&1 || { err "Asterisk not found"; exit 1; }; }
+
+parse_channels() {
+    timeout 3 asterisk -rx "core show channels concise" 2>/dev/null | while IFS='!' read -r chan cidnum cidname dest ctx ext pri app appdata elapsed lastvtx; do
+        [ -z "$chan" ] && continue
+        printf "  %-35s %-15s -> %-10s  %ss\n" "$chan" "${cidnum:-unknown}" "${dest:-$ext}" "${elapsed:-0}"
+    done
+}
+
+case "${1:-}" in
+    --help|-h) usage ;;
+    --history)
+        hdr "Recent Call Records"
+        CDR="/var/log/asterisk/cdr-csv/Master.csv"
+        if [ -f "$CDR" ]; then
+            printf "%-15s %-15s %-15s %-20s %-8s %-12s\n" "Source" "Dest" "Context" "Start" "Duration" "Status"
+            printf "%s\n" "--------------------------------------------------------------------------------"
+            tail -20 "$CDR" | while IFS=, read -r acct src dst dctx clid chan dchan app data start ans end dur bill disp _rest; do
+                printf "%-15s %-15s %-15s %-20s %-8s %-12s\n" \
+                    "${src:-?}" "${dst:-?}" "${dctx:-?}" "${start:-?}" "${dur:-0}" "${disp:-?}"
+            done
+        else
+            warn "CDR file not found: $CDR"
+        fi ;;
+    --hangup)
+        CHAN="${2:-}"; [ -z "$CHAN" ] && { err "--hangup requires a CHANNEL"; exit 1; }
+        need_ast
+        timeout 5 asterisk -rx "channel request hangup ${CHAN}" 2>/dev/null \
+            && ok "Hangup requested for ${CHAN}" || err "Could not hang up ${CHAN}" ;;
+    --monitor)
+        CHAN="${2:-}"; [ -z "$CHAN" ] && { err "--monitor requires a CHANNEL"; exit 1; }
+        need_ast
+        timeout 5 asterisk -rx "mixmonitor start ${CHAN}" 2>/dev/null \
+            && ok "Recording started for ${CHAN}" || err "Could not start recording" ;;
+    *)
+        need_ast
+        hdr "Live Call Monitor (press q to quit)"
+        while true; do
+            clear
+            printf "${BOLD}PBX Active Calls - %s${NC}\n" "$(date '+%Y-%m-%d %H:%M:%S')"
+            printf "%s\n" "$(printf '─%.0s' {1..70})"
+            printf "  %-35s %-15s -> %-10s  %s\n" "Channel" "CallerID" "Dest" "Duration"
+            printf "%s\n" "$(printf '─%.0s' {1..70})"
+            parse_channels
+            COUNT=$(timeout 3 asterisk -rx "core show channels concise" 2>/dev/null | grep -c "^PJSIP\|^SIP\|^Local" || echo 0)
+            printf "%s\n" "$(printf '─%.0s' {1..70})"
+            printf "  Total: %s active channel(s)\n" "$COUNT"
+            if read -t 2 -n 1 key 2>/dev/null; then
+                [ "$key" = "q" ] || [ "$key" = "Q" ] && break
+            fi
+        done ;;
+esac

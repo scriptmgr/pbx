@@ -1,0 +1,104 @@
+#!/bin/bash
+setup_output() {
+    if [ -n "${NO_COLOR+x}" ] || [ ! -t 1 ] || [ "${TERM:-}" = "dumb" ] || [ "${CI:-}" = "true" ]; then
+        RED=""; GREEN=""; YELLOW=""; BLUE=""; CYAN=""; BOLD=""; NC=""
+        USE_EMOJI=0
+    else
+        RED="$(printf '\033[0;31m')"; GREEN="$(printf '\033[0;32m')"; YELLOW="$(printf '\033[1;33m')"
+        BLUE="$(printf '\033[0;34m')"; CYAN="$(printf '\033[0;36m')"
+        BOLD="$(printf '\033[1m')"; NC="$(printf '\033[0m')"
+        USE_EMOJI=1
+    fi
+}
+setup_output
+e() { [ "$USE_EMOJI" = "1" ] && printf "%s " "$1" || true; }
+ok()   { printf "%s${GREEN}%s${NC}\n" "$(e ✅)" "$*"; }
+info() { printf "%s${BLUE}%s${NC}\n"  "$(e ℹ️ )" "$*"; }
+warn() { printf "%s${YELLOW}%s${NC}\n" "$(e ⚠️ )" "$*"; }
+err()  { printf "%s${RED}%s${NC}\n" "$(e ❌)" "$*" >&2; }
+hdr()  { printf "\n${BOLD}%s%s${NC}\n" "$(e 🔧)" "$*"; }
+
+[ -f /etc/pbx/.env ] && . /etc/pbx/.env
+[ "$(id -u)" -ne 0 ] && { err "Must run as root"; exit 1; }
+
+WEBMIN_CONF="/etc/webmin/miniserv.conf"
+
+usage() {
+    printf "Usage: pbx-webmin [options]\n\nWebmin management.\n\nOptions:\n"
+    printf "  (no args)         Show Webmin status\n"
+    printf "  --restart         Restart Webmin\n"
+    printf "  --update          Update Webmin package\n"
+    printf "  --fix-modules     Prune to PBX-relevant modules\n"
+    printf "  --add-user U P    Add Webmin user\n"
+    printf "  --port PORT       Change Webmin port\n"
+    printf "  --help/-h         Show help\n"; exit 0
+}
+
+get_wm_port() {
+    grep "^port=" "$WEBMIN_CONF" 2>/dev/null | cut -d= -f2 || echo "10000"
+}
+
+ALWAYS_KEEP="useradmin cron at proc software init bootup filesystems mount fdisk quota smart-status syslog logrotate time hostname shell net firewall webmin webminlog filemin updown custom man bandwidth"
+CONDITIONAL="apache apache2 mysql mariadb postfix sshd fail2ban bind squid samba dovecot proftpd cups dhcpd spamassassin"
+
+case "${1:-}" in
+    --help|-h) usage ;;
+    --restart)
+        systemctl restart webmin 2>/dev/null && ok "Webmin restarted" || \
+        service webmin restart 2>/dev/null   && ok "Webmin restarted" || \
+        err "Could not restart Webmin" ;;
+    --update)
+        if command -v apt-get >/dev/null 2>&1; then
+            apt-get install --only-upgrade webmin 2>/dev/null && ok "Webmin updated"
+        elif command -v yum >/dev/null 2>&1; then
+            yum update -y webmin 2>/dev/null && ok "Webmin updated"
+        elif command -v dnf >/dev/null 2>&1; then
+            dnf update -y webmin 2>/dev/null && ok "Webmin updated"
+        else
+            err "No package manager found"
+        fi ;;
+    --fix-modules)
+        hdr "Pruning Webmin modules"
+        WM_BASE="/usr/share/webmin"
+        [ ! -d "$WM_BASE" ] && { err "Webmin not found at $WM_BASE"; exit 1; }
+        KEEP_LIST=""
+        for m in $ALWAYS_KEEP $CONDITIONAL; do KEEP_LIST="$KEEP_LIST $m"; done
+        REMOVED=0
+        for mod_dir in "${WM_BASE}"/*/; do
+            mod=$(basename "$mod_dir")
+            [ "$mod" = "." ] || [ "$mod" = ".." ] || [ "$mod" = "acl" ] && continue
+            FOUND=0
+            for k in $KEEP_LIST; do [ "$k" = "$mod" ] && FOUND=1; done
+            if [ "$FOUND" -eq 0 ]; then
+                rm -rf "$mod_dir" 2>/dev/null && { info "  Removed module: $mod"; REMOVED=$((REMOVED+1)); }
+            fi
+        done
+        ok "Pruned ${REMOVED} modules"
+        systemctl restart webmin 2>/dev/null || service webmin restart 2>/dev/null || true ;;
+    --add-user)
+        USER="${2:-}"; PASS="${3:-}"
+        [ -z "$USER" ] || [ -z "$PASS" ] && { err "--add-user requires USER and PASS"; exit 1; }
+        if [ -x /usr/libexec/webmin/acl/add_user.pl ]; then
+            /usr/libexec/webmin/acl/add_user.pl "$USER" "$PASS" / 2>/dev/null && ok "User $USER added"
+        else
+            HASH=$(openssl passwd -1 "$PASS" 2>/dev/null || printf '%s' "$PASS")
+            printf "%s:%s:0:0:99999:7:::\n" "$USER" "$HASH" >> /etc/webmin/webmin.passwd 2>/dev/null \
+                && ok "User $USER added to webmin.passwd" || err "Could not add user"
+        fi ;;
+    --port)
+        PORT="${2:-}"; [ -z "$PORT" ] && { err "--port requires a PORT number"; exit 1; }
+        [ -f "$WEBMIN_CONF" ] || { err "Webmin config not found: $WEBMIN_CONF"; exit 1; }
+        sed -i "s/^port=.*/port=${PORT}/" "$WEBMIN_CONF"
+        systemctl restart webmin 2>/dev/null || service webmin restart 2>/dev/null || true
+        ok "Webmin port changed to ${PORT}" ;;
+    *)
+        hdr "Webmin Status"
+        PORT=$(get_wm_port)
+        IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+        if systemctl is-active --quiet webmin 2>/dev/null || service webmin status >/dev/null 2>&1; then
+            ok "Webmin is RUNNING on port ${PORT}"
+            printf "  URL: https://%s:%s/\n" "${IP:-localhost}" "$PORT"
+        else
+            warn "Webmin is NOT running"
+        fi ;;
+esac

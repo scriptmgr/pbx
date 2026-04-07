@@ -2,12 +2,13 @@
 
 ## Project Status: Active Development
 
-A production-ready, fully automated installation script for enterprise PBX systems with Asterisk 21, FreePBX 17, and comprehensive management tools.
+A production-ready, fully automated installation script for enterprise PBX systems with Asterisk 22, FreePBX 17, and comprehensive management tools.
 
 ## 🎯 Current Version: 2.0
 
 ### Latest Updates
-- ✅ Full idempotency - script can be re-run safely
+- ✅ Asterisk 22 LTS (21 for CentOS 7, 18 for CentOS 6)
+- ✅ Full idempotency — script can be re-run safely (state in /etc/pbx/state.json)
 - ✅ 70+ FreePBX modules automatic installation
 - ✅ Comprehensive demo applications (DEMO, 123, 947, 951, LENNY, etc.)
 - ✅ TUI configuration tool (`pbx-config`) for extensions/trunks/routes
@@ -20,11 +21,29 @@ A production-ready, fully automated installation script for enterprise PBX syste
 - ✅ AvantFax installation from SourceForge (official source) - v3.4.1
 - ✅ Email-to-fax with secure random alias via /etc/pbx/.env
 - ✅ Fax-to-email automatic forwarding configuration
+- ✅ 29 management scripts in /usr/local/bin/pbx-*
+- ✅ PHP-FPM runs as `asterisk` user (required for FreePBX file permissions)
+- ✅ FreePBX admin user created via direct SQL (fwconsole userman removed in FP17)
+- ✅ HylaFax service detects binary path (package vs source-compiled)
+- ✅ /var/spool/hylafax owned by uucp for FIFO creation
+- ✅ freepbx.service (oneshot, RemainAfterExit=yes) started via systemd in finalize
+- ✅ WebRTC WSS transport on port 8089 with STUN (stun.l.google.com)
+- ✅ Health monitoring cron (every 5 min, auto-restart + email alerts)
+- ✅ FOP2 Flash Operator Panel (optional, INSTALL_FOP2=yes)
+- ✅ Phone auto-provisioning (TFTP + HTTP, Yealink templates)
+- ✅ rclone remote backup to S3/Backblaze/SFTP
+- ✅ GPG backup encryption support
+- ✅ FreePBX weekly auto-update with pre-update DB backup
+- ✅ Anonymous SIP inbound (for DID providers without registration)
+- ✅ Download integrity via SHA256 checksum verification
+- ✅ CentOS 6 and CentOS 7 compatibility layers
+- ✅ /health JSON endpoint for external monitoring
+- ✅ Installation summary email to admin
 
 ## 🏗️ Architecture
 
 ### Core Components
-1. **Asterisk 21 LTS** - VoIP engine with PJSIP (chan_sip disabled)
+1. **Asterisk 22 LTS** - VoIP engine with PJSIP (chan_sip disabled)
 2. **FreePBX 17** - Web-based PBX management with 70+ modules
 3. **MariaDB** - Database backend
 4. **Apache/HTTPD** - Web server with reverse proxy support
@@ -33,56 +52,78 @@ A production-ready, fully automated installation script for enterprise PBX syste
 
 ### Additional Features
 - **AvantFax + IAXmodem** - 4 virtual fax modems with HylaFax+
-- **TTS Engine** - Flite for text-to-speech
+- **TTS Engine** - Flite (system) + gTTS (Google) for text-to-speech
 - **AGI Scripts** - Call logging, validation, business hours
 - **Demo Dialplan** - Comprehensive test applications
 - **Feature Codes** - Call forwarding, DND, recording, etc.
 - **Conference Bridge** - Multi-party calling support
 - **Music on Hold** - File-based and streaming support
+- **WebRTC** - Browser-based calling via FreePBX UCP (WSS on 8089)
+- **Phone Provisioning** - TFTP + HTTP auto-provisioning for Yealink/Cisco/Polycom
+- **Remote Backup** - rclone sync to S3/Backblaze/SFTP/GCS
+- **FOP2** - Flash Operator Panel 2 (optional)
+- **Asternic** - Call center queue statistics dashboard
+- **sngrep** - SIP traffic analyzer (optional)
 
 ## 📁 Repository Structure
 
 ```
 /root/Projects/github/scriptmgr/pbx/
-├── install.sh              # Main installation script (3800+ lines)
+├── install.sh              # Main installation script (5500+ lines)
+├── scripts/                # Management scripts (29 files)
+│   ├── pbx-status          # System overview
+│   ├── pbx-backup          # Backup management (with GPG encrypt + verify)
+│   ├── pbx-config          # TUI extension/trunk/route configuration
+│   ├── pbx-asterisk        # Asterisk management
+│   ├── pbx-calls           # Active call monitoring
+│   ├── pbx-cdr             # CDR call reporting
+│   ├── pbx-diag            # Support diagnostics
+│   ├── pbx-trunks          # SIP trunk health monitoring
+│   ├── pbxstatus           # Quick status utility
+│   └── ... (20 more)
 ├── README.md               # User-facing documentation
-├── CLAUDE.md              # This file - development guide
-├── TODO.md                # Active task tracking
-├── LICENSE                # MIT License
-└── .tmp/                  # Temporary testing directory (git-ignored)
+├── CLAUDE.md               # This file - development guide
+├── TODO.md                 # Active task tracking
+└── LICENSE                 # MIT License
 ```
 
 ## 🐳 Development Environment
 
-### Docker Testing (AlmaLinux 9)
+### Incus Testing (preferred)
 
-Always use Docker for testing to keep the repository clean:
+Use incus containers for testing — faster than Docker, better systemd support:
+
+```bash
+# Create test containers
+incus launch images:almalinux/9 pbx-alma9
+incus launch images:debian/12 pbx-deb12
+
+# Push installer to container
+incus file push install.sh pbx-alma9/root/install.sh
+
+# Run installation
+incus exec pbx-alma9 -- bash -c 'nohup bash /root/install.sh > /root/install.log 2>&1 &'
+
+# Monitor progress
+incus exec pbx-alma9 -- tail -f /root/install.log
+
+# Clean up
+incus stop pbx-alma9 && incus delete pbx-alma9
+```
+
+### Docker Testing (alternative)
 
 ```bash
 # Create test container
 docker run -it --privileged --name pbx-test almalinux:9 /bin/bash
 
-# Inside container, install git and clone repo
+# Inside container
 dnf install -y git
-git clone /path/to/pbx /opt/pbx
+git clone /path/to/pbx /opt/pbx && cd /opt/pbx && ./install.sh
 
-# Run installation
-cd /opt/pbx
-./install.sh
-
-# Clean up after testing
-exit
-docker rm pbx-test
+# Clean up
+exit && docker rm pbx-test
 ```
-
-### Testing Multiple Distributions
-
-```bash
-# Ubuntu 22.04
-docker run -it --privileged ubuntu:22.04 /bin/bash
-
-# Debian 12
-docker run -it --privileged debian:12 /bin/bash
 
 # Rocky Linux 9
 docker run -it --privileged rockylinux:9 /bin/bash
@@ -91,21 +132,22 @@ docker run -it --privileged rockylinux:9 /bin/bash
 ## 🎯 Supported Operating Systems
 
 ### Primary Support (Tested)
-- **AlmaLinux 9.x** ✅ (Current testing focus)
+- **AlmaLinux 9.x** ✅ (Primary testing platform)
+- **Debian 12** ✅ (Primary testing platform)
 - **Rocky Linux 9.x** ✅
 - **Ubuntu 22.04 LTS** ✅
-- **Debian 11/12** ✅
 
 ### Secondary Support
 - RHEL 8/9 (with subscription)
-- AlmaLinux 8.x
-- Rocky Linux 8.x
-- Ubuntu 20.04 LTS
+- AlmaLinux 8.x / Rocky Linux 8.x
+- Ubuntu 18.04/20.04 LTS
+- Debian 10/11
+- Oracle Linux 8/9
+- Fedora 35+
 
-### Not Supported
-- Oracle Linux (use Rocky/Alma instead)
-- CentOS (EOL - migrate to Rocky/Alma)
-- Fedora (testing only, not production)
+### Legacy Support
+- **CentOS 7** — Asterisk 21 LTS, FreePBX 17, PHP 8.2 via Remi
+- **CentOS 6** — Asterisk 18 LTS, FreePBX 15, PHP 7.4 via Remi SCL, SysV init
 
 ## 🔧 Key Features in Detail
 
@@ -181,12 +223,12 @@ Set `BEHIND_PROXY=yes` before installation to:
 - Detect HTTPS from X-Forwarded-Proto
 - Support Nginx, Apache, Traefik, Caddy, etc.
 
-### 9. Management Scripts (16 tools)
+### 9. Management Scripts (31 tools)
 - `pbx-config` - TUI configuration tool
 - `pbx-status` - System overview
 - `pbx-restart` - Safe service restart
 - `pbx-repair` - Automatic repair
-- `pbx-backup` - Manual backups
+- `pbx-backup` - Manual backups (with GPG encrypt + sha256 verify)
 - `pbx-cleanup` - Backup retention
 - `pbx-firewall` - Firewall management
 - `pbx-ssh` - SSH configuration
@@ -198,65 +240,93 @@ Set `BEHIND_PROXY=yes` before installation to:
 - `pbx-passwords` - Password management
 - `pbx-docs` - Documentation generation
 - `pbx-moh` - Music on Hold management
+- `pbx-autoupdate` - FreePBX weekly module updates with pre-update DB backup
+- `pbx-backup-encrypt` - GPG key management and backup archive encryption
+- `pbx-backup-remote` - Sync backups to remote storage via rclone
+- `pbx-provision` - Phone auto-provisioning info (TFTP + HTTP)
+- `pbx-calls` - Active call monitoring (live refresh mode)
+- `pbx-cdr` - Call Detail Record reporting (today/week/month)
+- `pbx-diag` - Support diagnostics (collects logs + system info)
+- `pbx-recordings` - Call recording management
+- `pbx-trunks` - SIP trunk health monitoring
+- `pbx-update` - Self-updating management scripts from GitHub
+- `pbx-webmin` - Webmin management
+- `pbx-add-ip` - Dynamic IP whitelist management
+- `pbx-ip-checker` - IP change detection
+- `pbxstatus` - Quick system status snapshot
 
 ## 🐛 Known Issues & Fixes
 
+### Critical Fixes Applied
+1. **PHP-FPM must run as `asterisk` user**
+   - FreePBX files owned by `asterisk:asterisk` (mode 660)
+   - Default FPM pool user is `apache`/`www-data` — causes HTTP 500
+   - Fix: `user = asterisk / group = asterisk` in FPM pool `www.conf`
+   - Status: ✅ Fixed
+
+2. **FreePBX admin user creation**
+   - `fwconsole userman --add` removed in FreePBX 17
+   - Fix: Direct SQL INSERT into `ampusers` with SHA1 password hash
+   - Status: ✅ Fixed
+
+3. **Asterisk service management**
+   - `freepbx.service` is oneshot (RemainAfterExit=yes) — must be started via systemd
+   - Direct start during install leaves orphaned socket; systemd shows inactive
+   - Fix: `finalize_installation()` stops direct Asterisk and starts via `systemctl start freepbx`
+   - Status: ✅ Fixed
+
+4. **HylaFax service unit binary path**
+   - Source-compiled: `/usr/local/sbin/faxq`; packages: `/usr/sbin/faxq`
+   - Fix: `create_hylafax_service()` detects path with `command -v faxq`
+   - Status: ✅ Fixed
+
+5. **HylaFax FIFO creation permission denied**
+   - `/var/spool/hylafax/` must be owned by `uucp:uucp` (uid 3 on RHEL = adm)
+   - Fix: `chown uucp:uucp /var/spool/hylafax/` after directory creation
+   - Status: ✅ Fixed
+
 ### AlmaLinux 9 Specific
-1. **pkg-config package name**
-   - Issue: `pkgconfig` not found
-   - Fix: Use `pkgconf-pkg-config pkgconf pkgconfig pkg-config`
-   - Status: ✅ Fixed
-
-2. **dnf config-manager**
-   - Issue: Command not found
-   - Fix: Install `dnf-plugins-core` first
-   - Status: ✅ Fixed
-
-3. **CRB repository**
-   - RHEL 9 uses `crb` instead of `powertools`
-   - Status: ✅ Fixed
-
-4. **unixodbc-devel**
-   - Issue: Package not found (case-sensitive)
-   - Fix: Use `unixODBC-devel` (capital ODBC) as primary
-   - Status: ✅ Fixed
-
-5. **AvantFax repository not found**
-   - Issue: GitHub repository https://github.com/iFax/AvantFAX doesn't exist (404)
-   - Research: Found official source on SourceForge
-   - Fix: Download from SourceForge v3.4.1 (last updated 2024-04-10)
-   - URL: https://sourceforge.net/projects/avantfax/files/avantfax-3.4.1.tgz/download
-   - Status: ✅ Fixed - AvantFax is REQUIRED, not optional
-   - Code Location: install.sh:2287-2298
+1. **pkg-config package name** — Use `pkgconf-pkg-config pkgconf` ✅
+2. **dnf config-manager** — Install `dnf-plugins-core` first ✅
+3. **CRB repository** — RHEL 9 uses `crb` not `powertools` ✅
+4. **unixODBC-devel** — Capital ODBC on RHEL ✅
+5. **AvantFax source** — SourceForge v3.4.1 (GitHub 404) ✅
 
 ## 📝 Development Guidelines
 
 ### Adding New Features
 1. Update CLAUDE.md first with planned changes
-2. Use `/root/Projects/github/scriptmgr/pbx/.tmp/` for testing
-3. Test in Docker (AlmaLinux 9 primary)
+2. Use incus containers for testing (alma9, deb12)
+3. Test on both AlmaLinux 9 and Debian 12
 4. Update README.md when user-facing
-5. Mark in TODO.md when complete
+5. Run `bash -n install.sh` to verify syntax after edits
 
 ### Code Style
 - POSIX-compliant shell script
-- Use `set -e` for error handling
-- Add idempotency checks before operations
-- Backup configs before modification
-- Use `info`, `success`, `warn`, `error` for output
-- Track installations with `track_install`
+- Use `set -euo pipefail` for error handling
+- Add idempotency checks before operations: `skip_if_done COMPONENT && return 0`
+- Backup configs before modification: `backup_config /path/to/file`
+- Use `info`, `success`, `warn`, `error`, `step` for output
+- Track installations with `mark_done COMPONENT`
 
 ### Testing Protocol
-1. Create clean Docker container
-2. Run `./install.sh` fully
-3. Test re-run (idempotency)
-4. Test management scripts
-5. Test demo applications
-6. Test TUI tool (`pbx-config`)
+1. Create clean incus containers: `incus launch images:almalinux/9 pbx-alma9`
+2. Push install.sh: `incus file push install.sh pbx-alma9/root/`
+3. Run: `incus exec pbx-alma9 -- bash /root/install.sh`
+4. Test re-run (idempotency)
+5. Test on Debian 12 as well
+6. Clean up: `incus stop pbx-alma9 && incus delete pbx-alma9`
+
+### Path Conventions
+- Management scripts: `/usr/local/bin/pbx-*`
+- System state: `/var/lib/pbx/install_inventory`
+- Logs: `/var/log/pbx/`
+- Credentials: `/etc/pbx/pbx_passwords` (chmod 600)
+- Env file: `/etc/pbx/.env` (chmod 600)
+- State JSON: `/etc/pbx/state.json`
 
 ### Backup Strategy
 - All config backups go to: `/mnt/backups/pbx-config-backups/{epoch}/`
-- Mirrors original directory structure
 - Never overwrites user configurations
 - Uses `backup_config()` function
 

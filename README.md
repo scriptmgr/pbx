@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![GitHub](https://img.shields.io/badge/GitHub-scriptmgr%2Fpbx-blue)](https://github.com/scriptmgr/pbx)
 [![Platform](https://img.shields.io/badge/Platform-Linux-green)](https://www.linux.org/)
-[![Asterisk](https://img.shields.io/badge/Asterisk-21_LTS-orange)](https://www.asterisk.org/)
+[![Asterisk](https://img.shields.io/badge/Asterisk-22_LTS-orange)](https://www.asterisk.org/)
 [![FreePBX](https://img.shields.io/badge/FreePBX-17-red)](https://www.freepbx.org/)
 
 A production-ready, fully automated installation script for deploying a complete enterprise PBX system with Asterisk, FreePBX, AvantFax, and comprehensive management tools.
@@ -11,7 +11,7 @@ A production-ready, fully automated installation script for deploying a complete
 ## 🌟 Features
 
 ### Core PBX System
-- **Asterisk 21 LTS** - Enterprise VoIP engine with full SIP/IAX support
+- **Asterisk 22 LTS** - Enterprise VoIP engine with full SIP/IAX support
 - **FreePBX 17** - Modern web-based PBX management interface
 - **70+ Free Modules** - All IncrediblePBX modules included
 - **Multi-Transport SIP** - UDP, TCP, and TLS support
@@ -42,13 +42,13 @@ A production-ready, fully automated installation script for deploying a complete
 - **Backup Verification** - Integrity checking for all backups
 
 ### Management Suite
-16 powerful `pbx-*` command-line tools for complete system control:
+29 powerful `pbx-*` command-line tools for complete system control:
 - `pbx-config` - **TUI Configuration Tool** (Extensions, Trunks, Routes)
 - `pbx-status` - System overview and health monitoring
 - `pbx-restart` - Safe service restart procedures
 - `pbx-repair` - Automatic system repair and recovery
-- `pbx-backup` - Manual backup operations
-- `pbx-cleanup` - Backup retention management
+- `pbx-backup` - Manual backup operations with optional GPG encryption
+- `pbx-cleanup` - Backup retention management and integrity verification
 - `pbx-firewall` - Firewall rule management
 - `pbx-ssh` - SSH configuration and key management
 - `pbx-security` - Security audit and vulnerability checks
@@ -59,6 +59,17 @@ A production-ready, fully automated installation script for deploying a complete
 - `pbx-passwords` - Credential management
 - `pbx-docs` - Documentation generation
 - `pbx-moh` - Music on Hold management
+- `pbx-asterisk` - Asterisk version and reload management
+- `pbx-calls` - Active call monitoring (live refresh)
+- `pbx-cdr` - Call Detail Record reporting
+- `pbx-diag` - Support diagnostic data collection
+- `pbx-recordings` - Call recording management
+- `pbx-trunks` - SIP trunk health monitoring
+- `pbx-update` - Self-updating management scripts
+- `pbx-webmin` - Webmin management
+- `pbx-add-ip` - Dynamic IP whitelist management
+- `pbx-ip-checker` - IP change detection
+- `pbxstatus` - Quick system status snapshot
 
 ### Demo Applications & Features
 **Built-in test applications accessible from any extension:**
@@ -85,19 +96,30 @@ A production-ready, fully automated installation script for deploying a complete
 
 ### Supported Operating Systems
 
-**Base Distributions:**
-- **Ubuntu 22.04+** LTS (Recommended for production)
-- **Debian 11+** (Bullseye or newer)
-- **Rocky Linux 8+** (RHEL-compatible, recommended for enterprise)
-- **AlmaLinux 8+** (RHEL-compatible)
-- **RHEL 8+** (Requires valid subscription for package repositories)
-- **Oracle Linux 8+** (RHEL-compatible)
-- **Fedora 38+** (Rapid release cycle - suitable for testing/development)
+**Primary Support (Tested):**
+| Distribution | Versions | Notes |
+|---|---|---|
+| **AlmaLinux** | 8, 9 | ✅ Recommended for RHEL-compatible |
+| **Rocky Linux** | 8, 9 | ✅ Recommended for RHEL-compatible |
+| **Ubuntu** | 18.04, 20.04, 22.04, 24.04 LTS | ✅ Recommended for Debian-based |
+| **Debian** | 10, 11, 12 | ✅ Fully supported |
+| **RHEL** | 8, 9 | ✅ Requires active subscription |
+| **Oracle Linux** | 8, 9 | ✅ Supported |
+| **Fedora** | 35–40+ | ⚠️ Rapid release — development/testing only |
+| **CentOS** | 7 | ⚠️ EOL — migrate to Rocky/Alma |
+| **CentOS** | 6 | ⚠️ Legacy support — Asterisk 18, FreePBX 15 |
 
-**Derivative Distributions:**
-The installer automatically detects and supports all distributions based on the above:
-- **Debian-based**: Linux Mint, MX Linux, Kali Linux, Parrot OS, Deepin, etc.
-- **Ubuntu-based**: Pop!_OS, Elementary OS, Zorin OS, Linux Mint, KDE neon, etc.
+### Version Matrix
+
+| Distribution | Asterisk | FreePBX | PHP |
+|---|---|---|---|
+| RHEL/Alma/Rocky 9, Ubuntu 22+, Debian 12 | **22 LTS** | **17** | 8.2 |
+| RHEL/Alma/Rocky 8, Ubuntu 20, Debian 11 | 22 LTS | 17 | 8.2 |
+| CentOS 7 | 21 LTS | 17 | 8.2 (Remi) |
+| CentOS 6 (legacy) | 18 LTS | 15 | 7.4 (Remi SCL) |
+
+**Derivative Distributions (auto-detected via `ID_LIKE`):**
+- **Debian-based**: Linux Mint, MX Linux, Kali Linux, Parrot OS, Pop!_OS, Zorin, etc.
 - **RHEL-based**: CentOS Stream, Scientific Linux, VzLinux, EuroLinux, etc.
 
 ### System Requirements
@@ -191,10 +213,17 @@ BEHIND_PROXY=yes ./install.sh
 ```
 
 **What Gets Configured:**
-- Apache configured to trust `X-Forwarded-For` headers
-- `X-Forwarded-Proto` detection for HTTPS
+- Apache binds to `127.0.0.1` only on a random port in the `6x5xx` range (e.g. `127.0.0.1:62543`)
+- Port is persisted to `/etc/pbx/.env` as `PROXY_HTTP_PORT` and reused on re-runs
+- `X-Forwarded-For` / `X-Forwarded-Proto` forwarding fully trusted
 - RemoteIP module enabled
-- Trusted proxy networks: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+- No conflict with any front-end proxy running on the same server
+
+After installation, the completion message shows the exact loopback port to use:
+```
+⚠️  Reverse Proxy Mode: Apache bound to 127.0.0.1:62543
+   Point your proxy to: http://127.0.0.1:62543/
+```
 
 **Example Nginx Configuration:**
 ```nginx
@@ -206,7 +235,7 @@ server {
     ssl_certificate_key /etc/letsencrypt/live/pbx.example.com/privkey.pem;
 
     location / {
-        proxy_pass http://localhost:80;
+        proxy_pass http://127.0.0.1:62543;   # use actual port from /etc/pbx/.env
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -218,8 +247,13 @@ server {
 **Example Caddy Configuration:**
 ```caddy
 pbx.example.com {
-    reverse_proxy localhost:80
+    reverse_proxy 127.0.0.1:62543   # use actual port from /etc/pbx/.env
 }
+```
+
+**Find Your Port:**
+```bash
+grep PROXY_HTTP_PORT /etc/pbx/.env
 ```
 
 ### Directory Structure
@@ -228,11 +262,18 @@ pbx.example.com {
 ├── index.html                 # Main portal
 ├── admin/                     # FreePBX interface
 ├── avantfax/                  # AvantFax interface
-└── status/                    # System status
+├── status/                    # System status dashboard
+├── health/                    # JSON health endpoint (/health/)
+├── callcenter/                # Asternic call center stats
+├── provisioning/              # Phone auto-provisioning (HTTP)
+├── reminder/                  # Telephone reminder app
+└── ucp/                       # FreePBX User Control Panel
+
+/var/lib/tftpboot/             # Phone provisioning (TFTP)
 
 /mnt/backups/pbx/              # Backup storage
 ├── config/                    # Configuration backups
-├── database/                  # Database backups
+├── database/                  # Database backups (+ pre-update snapshots)
 ├── daily/                     # Daily backups
 ├── weekly/                    # Weekly backups
 ├── monthly/                   # Monthly backups
@@ -251,12 +292,22 @@ After installation, access your PBX system through:
 
 | Interface | URL | Description |
 |-----------|-----|-------------|
-| **Main Portal** | `http://your-fqdn/` | System overview with links to all services |
-| **FreePBX Admin** | `http://your-fqdn/admin/` | Complete PBX configuration |
-| **AvantFax** | `http://your-fqdn/avantfax/` | Fax management interface |
-| **HTTPS Access** | `https://your-fqdn/` | Secure access (if SSL configured) |
+| **Main Portal** | `https://your-fqdn/` | Links to all interfaces |
+| **FreePBX Admin** | `https://your-fqdn/admin/` | Complete PBX configuration |
+| **User Control Panel** | `https://your-fqdn/ucp/` | End-user voicemail, call history, WebRTC |
+| **AvantFax** | `https://your-fqdn/avantfax/` | Fax management interface |
+| **Webmin** | `https://your-fqdn:9001/` | System administration |
+| **Call Center Stats** | `https://your-fqdn/callcenter/` | Asternic queue statistics |
+| **System Status** | `https://your-fqdn/status/` | Real-time health dashboard |
+| **Health Endpoint** | `https://your-fqdn/health/` | JSON health check (monitoring) |
+| **Provisioning** | `https://your-fqdn/provisioning/` | Phone auto-provisioning |
+| **Reminder** | `https://your-fqdn/reminder/` | Telephone reminder scheduling |
+| **HTTP** | `http://your-fqdn/` | Redirects to HTTPS automatically |
 
-Default credentials are stored in `/root/.pbx_passwords`
+> **SSL**: By default a self-signed certificate is generated. Run `pbx-ssl install` to replace it with a Let's Encrypt certificate.
+> **Reverse Proxy**: When `BEHIND_PROXY=yes`, Apache binds to `127.0.0.1:RANDOM_PORT` only — the proxy handles SSL, and you point it to the loopback port shown in the completion message.
+
+Default credentials are stored in `/etc/pbx/pbx_passwords` (mode 600)
 
 ## 📚 Documentation
 
@@ -280,7 +331,7 @@ The installer performs these steps automatically:
 
 ### Post-Installation Steps
 1. **Access the Web Interface**: Navigate to `http://your-fqdn/`
-2. **Login to FreePBX**: Use credentials from `/root/.pbx_passwords`
+2. **Login to FreePBX**: Use credentials from `/etc/pbx/pbx_passwords`
 3. **Configure SIP Trunks**: Add your VoIP providers
 4. **Create Extensions**: Set up user extensions
 5. **Configure IVR**: Design your call flow
@@ -399,7 +450,7 @@ pbx-moh remove  # Remove source
 | Network connectivity | Use `pbx-network` for diagnostics |
 | Storage issues | Check with `pbx-status`, cleanup with `pbx-cleanup force` |
 | SSL problems | Run `pbx-ssl status` and `pbx-ssl test` |
-| Login issues | Check `/root/.pbx_passwords` for credentials |
+| Login issues | Check `/etc/pbx/pbx_passwords` for credentials |
 
 ### Log Locations
 - Installation: `/var/log/pbx-install.log`
@@ -451,10 +502,30 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 🚦 Status
 
-- **Current Version**: 1.0
-- **Asterisk Version**: 21 LTS
-- **FreePBX Version**: 17
-- **Last Updated**: 2024
+- **Current Version**: 2.0
+- **Asterisk Version**: 22 LTS (21 LTS for CentOS 7, 18 LTS for CentOS 6)
+- **FreePBX Version**: 17 (15 for CentOS 6)
+- **Last Updated**: 2026
+
+### Optional Components (disabled by default)
+Enable by setting environment variables before running `install.sh`:
+
+| Variable | Description |
+|---|---|
+| `INSTALL_FOP2=yes` | FOP2 Flash Operator Panel (real-time agent dashboard) |
+| `INSTALL_KNOCKD=yes` | knockd port-knocking daemon (advanced profile) |
+| `INSTALL_OPENVPN=yes` | OpenVPN server setup (advanced profile) |
+| `INSTALL_SNGREP=yes` | sngrep SIP traffic analyzer |
+| `INSTALL_WEBMIN=yes` | Webmin system administration panel (default: yes) |
+
+### Advanced Features
+- **Phone Auto-Provisioning** — TFTP + HTTP server for Yealink/Cisco/Polycom devices
+- **Remote Backup** — rclone sync to S3, Backblaze, SFTP, or any cloud storage
+- **GPG Backup Encryption** — Encrypt backup archives before remote upload
+- **FOP2 Dashboard** — Real-time call center agent panel
+- **Asternic Call Center** — Queue statistics and historical reporting
+- **WebRTC** — Browser-based calling via FreePBX UCP
+- **sngrep** — Live SIP traffic monitoring and troubleshooting
 
 ---
 

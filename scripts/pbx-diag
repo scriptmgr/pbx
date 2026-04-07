@@ -1,0 +1,103 @@
+#!/bin/bash
+setup_output() {
+    if [ -n "${NO_COLOR+x}" ] || [ ! -t 1 ] || [ "${TERM:-}" = "dumb" ] || [ "${CI:-}" = "true" ]; then
+        RED=""; GREEN=""; YELLOW=""; BLUE=""; CYAN=""; BOLD=""; NC=""
+        USE_EMOJI=0
+    else
+        RED="$(printf '\033[0;31m')"; GREEN="$(printf '\033[0;32m')"; YELLOW="$(printf '\033[1;33m')"
+        BLUE="$(printf '\033[0;34m')"; CYAN="$(printf '\033[0;36m')"
+        BOLD="$(printf '\033[1m')"; NC="$(printf '\033[0m')"
+        USE_EMOJI=1
+    fi
+}
+setup_output
+e() { [ "$USE_EMOJI" = "1" ] && printf "%s " "$1" || true; }
+ok()   { printf "%s${GREEN}%s${NC}\n" "$(e ✅)" "$*"; }
+info() { printf "%s${BLUE}%s${NC}\n"  "$(e ℹ️ )" "$*"; }
+warn() { printf "%s${YELLOW}%s${NC}\n" "$(e ⚠️ )" "$*"; }
+err()  { printf "%s${RED}%s${NC}\n" "$(e ❌)" "$*" >&2; }
+hdr()  { printf "\n${BOLD}%s%s${NC}\n" "$(e 🔧)" "$*"; }
+
+[ -f /etc/pbx/.env ] && . /etc/pbx/.env
+[ "$(id -u)" -ne 0 ] && { err "Must run as root"; exit 1; }
+
+usage() {
+    printf "Usage: pbx-diag [--send EMAIL]\n\nGenerate comprehensive diagnostic report.\n\nOptions:\n"
+    printf "  (no args)      Generate report to /var/log/pbx/pbx-diag-TIMESTAMP.txt\n"
+    printf "  --send EMAIL   Mail report to EMAIL after generating\n"
+    printf "  --help/-h      Show help\n"; exit 0
+}
+[ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ] && usage
+
+SEND_TO=""
+[ "${1:-}" = "--send" ] && { SEND_TO="${2:-}"; [ -z "$SEND_TO" ] && { err "--send requires an EMAIL"; exit 1; }; }
+
+TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+mkdir -p /var/log/pbx
+REPORT="/var/log/pbx/pbx-diag-${TIMESTAMP}.txt"
+
+hdr "Generating PBX Diagnostic Report"
+info "Output: ${REPORT}"
+
+{
+    printf "=== PBX DIAGNOSTIC REPORT ===\nGenerated: %s\n\n" "$(date)"
+
+    printf "=== SYSTEM INFO ===\n"
+    uname -a 2>/dev/null; cat /etc/os-release 2>/dev/null | grep PRETTY_NAME
+    printf "RAM: "; free -h 2>/dev/null | head -2
+    printf "CPU: "; grep "model name" /proc/cpuinfo 2>/dev/null | head -1 | cut -d: -f2
+    printf "Disk: "; df -h / 2>/dev/null | tail -1
+
+    printf "\n=== COMPONENT VERSIONS ===\n"
+    command -v asterisk >/dev/null 2>&1 && { printf "Asterisk: "; timeout 5 asterisk -rx "core show version" 2>/dev/null || asterisk -V 2>/dev/null; }
+    command -v fwconsole >/dev/null 2>&1 && { printf "FreePBX: "; fwconsole --version 2>/dev/null; }
+    command -v php >/dev/null 2>&1 && { printf "PHP: "; php -v 2>/dev/null | head -1; }
+    command -v mysql >/dev/null 2>&1 && { printf "MySQL: "; mysql --version 2>/dev/null; }
+
+    printf "\n=== SERVICE STATUS ===\n"
+    for svc in asterisk freepbx mariadb mysql apache2 httpd fail2ban postfix hylafax; do
+        state=$(systemctl is-active "$svc" 2>/dev/null || echo "unknown")
+        printf "  %-20s %s\n" "$svc" "$state"
+    done
+
+    printf "\n=== LAST 50 LINES: /var/log/pbx-install.log ===\n"
+    tail -50 /var/log/pbx-install.log 2>/dev/null || printf "File not found\n"
+
+    printf "\n=== LAST 20 LINES: /var/log/asterisk/full ===\n"
+    tail -20 /var/log/asterisk/full 2>/dev/null || printf "File not found\n"
+
+    printf "\n=== FREEPBX MODULES ===\n"
+    command -v fwconsole >/dev/null 2>&1 && fwconsole ma list 2>/dev/null || printf "fwconsole not available\n"
+
+    printf "\n=== PEER COUNT ===\n"
+    command -v asterisk >/dev/null 2>&1 && \
+        timeout 5 asterisk -rx "pjsip show endpoints" 2>/dev/null | wc -l || printf "unavailable\n"
+
+    printf "\n=== NETWORK CONFIG ===\n"
+    ip addr 2>/dev/null || ifconfig 2>/dev/null
+    printf "\n"; ip route 2>/dev/null || route -n 2>/dev/null
+
+    printf "\n=== OPEN PORTS ===\n"
+    ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null || printf "ss/netstat not found\n"
+
+    printf "\n=== IPTABLES ===\n"
+    iptables -L -n 2>/dev/null || printf "iptables not available\n"
+
+    printf "\n=== CRONTAB ===\n"
+    crontab -l 2>/dev/null || printf "No root crontab\n"
+    printf "\n/etc/cron.d/ contents:\n"
+    ls -la /etc/cron.d/ 2>/dev/null
+
+    printf "\n=== END OF REPORT ===\n"
+} > "$REPORT" 2>&1
+
+ok "Report saved to: ${REPORT} ($(du -sh "$REPORT" 2>/dev/null | cut -f1))"
+
+if [ -n "$SEND_TO" ]; then
+    if command -v mail >/dev/null 2>&1; then
+        mail -s "PBX Diagnostics - $(hostname) - $(date +%Y-%m-%d)" "$SEND_TO" < "$REPORT" \
+            && ok "Report sent to ${SEND_TO}" || err "Failed to send email"
+    else
+        warn "mail command not found; cannot send report"
+    fi
+fi
