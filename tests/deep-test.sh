@@ -312,24 +312,35 @@ sep "3. DIALPLAN INTEGRITY"
 DIALPLAN_ALL=$(ast "dialplan show" 2>/dev/null)
 
 # Check contexts exist
+# Asterisk 'dialplan show' format: [ Context 'name' created by '...' ]
 _check_ctx() {
-    local ctx="$1"
-    echo "$DIALPLAN_ALL" | grep -q "\[ *${ctx} *\]" \
-        && ok "CONTEXT [${ctx}]: present" \
-        || fail "CONTEXT [${ctx}]: MISSING"
+    local ctx="$1" severity="${2:-fail}"
+    if echo "$DIALPLAN_ALL" | grep -qE "Context '${ctx}'"; then
+        ok "CONTEXT [${ctx}]: present"
+        return 0
+    else
+        if [ "$severity" = "warn" ]; then
+            warn "CONTEXT [${ctx}]: not found (may be unconfigured)"
+        else
+            fail "CONTEXT [${ctx}]: MISSING"
+        fi
+        return 1
+    fi
 }
 
-# from-internal (FreePBX) or pbx-demo (custom)
-if echo "$DIALPLAN_ALL" | grep -qE "\[ *(from-internal|pbx-demo) *\]"; then
+# from-internal (FreePBX) or pbx-demo (custom) or demo-menu
+if echo "$DIALPLAN_ALL" | grep -qE "Context '(from-internal|pbx-demo|demo-menu)'"; then
     ok "CONTEXT from-internal or pbx-demo: present"
 else
     fail "CONTEXT from-internal / pbx-demo: MISSING"
 fi
 
-_check_ctx "from-trunk"   2>/dev/null || \
-    echo "$DIALPLAN_ALL" | grep -qE "\[ *(from-pstn|from-provider) *\]" \
-        && ok "CONTEXT from-trunk/from-pstn/from-provider: present" \
-        || warn "CONTEXT from-trunk/from-pstn: not found (may be unconfigured)"
+# from-trunk / from-pstn / from-provider (warn-only: unconfigured is valid)
+if echo "$DIALPLAN_ALL" | grep -qE "Context '(from-trunk|from-pstn|from-provider|from-analog)'"; then
+    ok "CONTEXT from-trunk/from-pstn/from-provider: present"
+else
+    warn "CONTEXT from-trunk/from-pstn: not found (no trunks configured yet)"
+fi
 
 # Check extensions in pbx-demo or from-internal
 _check_ext() {
