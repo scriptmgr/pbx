@@ -32,12 +32,38 @@ ${BOLD}%s%s${NC}
 [ "$(id -u)" -ne 0 ] && { err "Must run as root"; exit 1; }
 
 usage() {
-    printf "Usage: pbx-repair [--deep]\n\nFreePBX repair sequence.\n\nOptions:\n"
+    printf "Usage: pbx-repair [--check|--deep]\n\nFreePBX repair sequence.\n\nOptions:\n"
+    printf "  --check    Read-only status check (no restarts)\n"
     printf "  --deep     Also upgrade modules and check PHP syntax\n"
     printf "  --help/-h  Show help\n"; exit 0
 }
-DEEP=0
-case "${1:-}" in --help|-h) usage ;; --deep) DEEP=1 ;; esac
+DEEP=0; CHECK=0
+case "${1:-}" in
+    --help|-h)  usage ;;
+    --check|--dry-run|--status) CHECK=1 ;;
+    --deep)     DEEP=1 ;;
+esac
+
+# --check: read-only status report, no restarts
+if [ "$CHECK" -eq 1 ]; then
+    hdr "PBX Status Check (read-only)"
+    for svc in asterisk httpd apache2 mariadb mysqld; do
+        if command -v systemctl >/dev/null 2>&1; then
+            if systemctl is-active --quiet "$svc" 2>/dev/null; then
+                ok "Service $svc: running"
+            elif systemctl list-unit-files "${svc}.service" &>/dev/null 2>&1; then
+                warn "Service $svc: not running"
+            fi
+        fi
+    done
+    fwconsole ma list 2>/dev/null | grep -iE "broken|failed" && warn "Broken modules found" || ok "No broken FreePBX modules"
+    if command -v asterisk >/dev/null 2>&1; then
+        AMOD=$(asterisk -rx "module show" 2>/dev/null | tail -1)
+        ok "Asterisk modules: $AMOD"
+    fi
+    ok "Status check complete"
+    exit 0
+fi
 
 command -v fwconsole >/dev/null 2>&1 || { err "fwconsole not found"; exit 1; }
 

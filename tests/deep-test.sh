@@ -205,13 +205,13 @@ _run_mgmt "pbx-passwords"              pbx-passwords "2>&1 || true"         "pas
 _run_mgmt "pbx-provision --help"       pbx-provision "--help 2>&1 || true"  "help|provision|phone|device"
 # pbx-recordings
 _run_mgmt "pbx-recordings"             pbx-recordings "2>&1 || true"        "record|call|file|no recording"
-# pbx-repair --check
+# pbx-repair --check (read-only, safe to run in tests)
 if command -v pbx-repair >/dev/null 2>&1; then
-    out=$(NO_COLOR=1 timeout 60 pbx-repair --check 2>&1 || NO_COLOR=1 timeout 60 pbx-repair --dry-run 2>&1 || true)
+    out=$(NO_COLOR=1 timeout 60 pbx-repair --check 2>&1 || true)
     if [ -n "$out" ]; then
-        ok "SCRIPT pbx-repair: ran without error"
+        ok "SCRIPT pbx-repair: --check ran without error"
     else
-        warn "SCRIPT pbx-repair: no output from --check/--dry-run"
+        warn "SCRIPT pbx-repair: no output from --check"
     fi
 else
     skip "SCRIPT pbx-repair: not installed"
@@ -279,7 +279,7 @@ _check_module "res_musiconhold"
 _check_module "app_record"
 _check_module "app_playback"
 _check_module "res_agi"
-_check_module "app_agi"
+_check_module "app_agi"   "warn"  # merged into res_agi in Asterisk 18+
 
 # ConfBridge or MeetMe
 MOD_CONF_OUT=$(ast "module show like app_confbridge")
@@ -1438,17 +1438,15 @@ FWSTATUS=$(timeout 15 fwconsole sa 2>/dev/null || timeout 15 fwconsole info 2>/d
 sep "23. IDEMPOTENCY SPOT-CHECK"
 # =============================================================================
 
-# a) Re-run pbx-repair (read-only check mode)
+# a) Re-run pbx-repair in read-only check mode only (never full repair in tests)
 if command -v pbx-repair >/dev/null 2>&1; then
-    info "Running pbx-repair --check (idempotency)..."
-    REP_OUT=$(NO_COLOR=1 timeout 60 pbx-repair --check 2>&1 \
-        || NO_COLOR=1 timeout 60 pbx-repair --dry-run 2>&1 \
-        || NO_COLOR=1 timeout 60 pbx-repair 2>&1 || true)
+    info "Running pbx-repair --check (read-only status)..."
+    REP_OUT=$(NO_COLOR=1 timeout 60 pbx-repair --check 2>&1 || true)
     EC=$?
-    if [ -n "$REP_OUT" ] && ([ $EC -eq 0 ] || echo "$REP_OUT" | grep -qiE "ok|pass|repair|check"); then
-        ok "IDEMPOTENCY pbx-repair: ran without fatal errors"
+    if [ -n "$REP_OUT" ] && echo "$REP_OUT" | grep -qiE "ok|pass|repair|check|status|running"; then
+        ok "IDEMPOTENCY pbx-repair --check: ran without fatal errors"
     else
-        warn "IDEMPOTENCY pbx-repair: exit=$EC, output: $(echo "$REP_OUT" | tail -2 | tr '\n' '|')"
+        warn "IDEMPOTENCY pbx-repair --check: exit=$EC, output: $(echo "$REP_OUT" | tail -2 | tr '\n' '|')"
     fi
 else
     skip "IDEMPOTENCY pbx-repair: not installed"
