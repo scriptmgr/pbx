@@ -8,6 +8,55 @@
 set -euo pipefail
 
 # =============================================================================
+# SIGNAL HANDLING
+# =============================================================================
+
+# Temporary files / dirs created during the run — cleaned on any exit.
+_CLEANUP_TMPFILES=()
+_INSTALL_INTERRUPTED=0
+
+# Register a temp path for automatic cleanup.
+register_tmpfile() { _CLEANUP_TMPFILES+=("$@"); }
+
+_cleanup() {
+    local exit_code=$?
+    # Restore terminal in case a child left it raw
+    stty sane 2>/dev/null || true
+    # Remove temporary files/dirs registered during the run
+    for f in "${_CLEANUP_TMPFILES[@]+"${_CLEANUP_TMPFILES[@]}"}"; do
+        rm -rf "$f" 2>/dev/null || true
+    done
+    # If killed/interrupted mid-install, leave a clear message
+    if [ "${_INSTALL_INTERRUPTED}" -eq 1 ]; then
+        printf "\n\033[1;33m[WARN]\033[0m Installation interrupted (signal received).\n" >&2
+        printf "       The script is idempotent — re-run to continue:\n" >&2
+        printf "       \033[1mcurl -LSsf https://raw.githubusercontent.com/scriptmgr/pbx/main/install.sh | bash\033[0m\n\n" >&2
+        printf "[%s] INTERRUPTED (exit=%d)\n" "$(date '+%H:%M:%S')" "${exit_code}" >> "${LOG_FILE:-/var/log/pbx-install.log}" 2>/dev/null || true
+    fi
+}
+
+_on_signal() {
+    _INSTALL_INTERRUPTED=1
+    exit 130
+}
+
+_on_err() {
+    local exit_code=$? line="${BASH_LINENO[0]:-?}" fn="${FUNCNAME[1]:-main}"
+    # Don't double-print if we already set interrupted
+    if [ "${_INSTALL_INTERRUPTED}" -eq 0 ]; then
+        printf "\n\033[0;31m[ERROR]\033[0m Script failed in %s() at line %s (exit %s)\n" \
+            "${fn}" "${line}" "${exit_code}" >&2
+        printf "[%s] ERROR in %s() at line %s (exit=%s)\n" \
+            "$(date '+%H:%M:%S')" "${fn}" "${line}" "${exit_code}" >> "${LOG_FILE:-/var/log/pbx-install.log}" 2>/dev/null || true
+    fi
+}
+
+# EXIT always runs; SIGINT/SIGTERM set the interrupted flag before exiting.
+trap '_cleanup'   EXIT
+trap '_on_err'    ERR
+trap '_on_signal' INT TERM HUP
+
+# =============================================================================
 # SECTION 1: CONFIGURATION & DEFAULTS
 # =============================================================================
 
@@ -140,12 +189,14 @@ PBX_STATE_FILE="/etc/pbx/state.json"
 # SECTION 2: COLORS & OUTPUT FUNCTIONS  (NO_COLOR compliant — no-color.org)
 # =============================================================================
 
-# Disable color AND emoji when: NO_COLOR set, not a TTY, dumb terminal, or CI
+# NO_COLOR compliant (no-color.org): when NO_COLOR is set (any value), disable
+# color AND emoji. When unset, auto-detect from terminal capabilities.
 setup_output() {
     if [ -n "${NO_COLOR+x}" ] || [ ! -t 1 ] || \
        [ "${TERM:-}" = "dumb" ] || [ "${CI:-}" = "true" ]; then
         USE_COLOR=0; USE_EMOJI=0
         RED=""; GREEN=""; YELLOW=""; BLUE=""; PURPLE=""; CYAN=""; BOLD=""; DIM=""; NC=""
+        SYM_OK="+"; SYM_FAIL="-"
     else
         USE_COLOR=1; USE_EMOJI=1
         RED="$(printf '\033[0;31m')"
@@ -157,6 +208,7 @@ setup_output() {
         BOLD="$(printf '\033[1m')"
         DIM="$(printf '\033[2m')"
         NC="$(printf '\033[0m')"
+        SYM_OK="✓"; SYM_FAIL="✗"
     fi
 }
 setup_output
@@ -169,20 +221,31 @@ log_raw() { printf "[%s] %-5s %s\n" "$(date '+%H:%M:%S')" "$1" "$2" >> "${LOG_FI
 STEP_CURRENT=0
 STEP_TOTAL=59
 
+# Strip all non-ASCII bytes (emoji, special symbols) when USE_EMOJI=0.
+# Used by output functions so callers need not worry about embedded emoji.
+_strip_e() {
+    if [ "${USE_EMOJI:-0}" = "1" ]; then
+        printf '%s' "$*"
+    else
+        printf '%s' "$*" | tr -dc '\001-\177'
+    fi
+}
+
 _emoji() { [ "${USE_EMOJI:-0}" = "1" ] && printf "%s " "$1" || true; }
 
 log()     { log_raw "LOG  " "$*"; }
-error()   { printf "%s${RED}%sERROR: %s${NC}\n" "$(_emoji ❌)" "" "$*" >&2; log_raw "ERROR" "$*"; }
-warn()    { printf "%s${YELLOW}%sWARN: %s${NC}\n"    "$(_emoji ⚠️ )" "" "$*"; log_raw "WARN " "$*"; }
-info()    { printf "%s${BLUE}%s%s${NC}\n"             "$(_emoji ℹ️ )" "" "$*"; log_raw "INFO " "$*"; }
-success() { printf "%s${GREEN}%s%s${NC}\n"            "$(_emoji ✅)" "" "$*"; log_raw "OK   " "$*"; }
+error()   { local m; m=$(_strip_e "$*"); printf "%s${RED}%sERROR: %s${NC}\n" "$(_emoji ❌)" "" "${m}" >&2; log_raw "ERROR" "${m}"; }
+warn()    { local m; m=$(_strip_e "$*"); printf "%s${YELLOW}%sWARN: %s${NC}\n"  "$(_emoji ⚠️ )" "" "${m}"; log_raw "WARN " "${m}"; }
+info()    { local m; m=$(_strip_e "$*"); printf "%s${BLUE}%s%s${NC}\n"           "$(_emoji ℹ️ )" "" "${m}"; log_raw "INFO " "${m}"; }
+success() { local m; m=$(_strip_e "$*"); printf "%s${GREEN}%s%s${NC}\n"          "$(_emoji ✅)" "" "${m}"; log_raw "OK   " "${m}"; }
 step()    {
     STEP_CURRENT=$(( STEP_CURRENT + 1 ))
+    local m; m=$(_strip_e "$*")
     printf "\n%s${PURPLE}${BOLD}%s[%d/%d] %s${NC}\n" \
-        "$(_emoji 🔧)" "" "${STEP_CURRENT}" "${STEP_TOTAL}" "$*"
-    log_raw "STEP " "[${STEP_CURRENT}/${STEP_TOTAL}] $*"
+        "$(_emoji 🔧)" "" "${STEP_CURRENT}" "${STEP_TOTAL}" "${m}"
+    log_raw "STEP " "[${STEP_CURRENT}/${STEP_TOTAL}] ${m}"
 }
-header()  { printf "\n${BOLD}%s%s%s${NC}\n" "$(_emoji 🚀)" "" "$*"; log_raw "===  " "$*"; }
+header()  { local m; m=$(_strip_e "$*"); printf "\n${BOLD}%s%s%s${NC}\n" "$(_emoji 🚀)" "" "${m}"; log_raw "===  " "${m}"; }
 
 # =============================================================================
 # SECTION 3: SERVICE MANAGEMENT WRAPPERS
@@ -620,7 +683,7 @@ component_ok() {
 fail_component() {
     local component="$1" reason="${2:-installation failed}"
     error "${component}: ${reason}"
-    INSTALL_FAILURES="${INSTALL_FAILURES}  ✗ ${component}: ${reason}\n"
+    INSTALL_FAILURES="${INSTALL_FAILURES}  ${SYM_FAIL} ${component}: ${reason}\n"
     state_set "installed_${component}" "failed"
     state_set "installed_${component}_reason" "${reason}"
 }
@@ -631,7 +694,7 @@ skip_if_done() {
     [ "${PBX_FORCE:-0}" = "1" ] && return 1   # force reinstall
     [ "$(state_get "installed_${component}")" = "yes" ] || return 1  # not marked done
     if component_ok "${component}"; then
-        info "✓ ${component} already installed and healthy — skipping"
+        info "${SYM_OK} ${component} already installed and healthy — skipping"
         return 0  # healthy, skip
     fi
     info "${component} marked done but health check failed — reinstalling"
@@ -3012,6 +3075,15 @@ install_hylafax() {
         return 0
     fi
 
+    # Ensure uucp user/group exists — required by HylaFAX (faxq runs as uucp).
+    # Package installs on Debian/Ubuntu create it automatically; on RHEL/Fedora
+    # when compiling from source it must be created explicitly.
+    if ! id uucp >/dev/null 2>&1; then
+        groupadd -r uucp 2>/dev/null || true
+        useradd -r -g uucp -d /var/spool/uucp -s /sbin/nologin \
+                -c "UUCP subsystem" uucp 2>/dev/null || true
+    fi
+
     # Initialize HylaFAX server config non-interactively.
     # faxsetup -server is interactive (calls faxaddmodem for hardware modems).
     # We use IAXmodem (software modem) so we skip hardware modem detection
@@ -5379,9 +5451,9 @@ verify_installation() {
     fi
 
     if [ "${errors}" -eq 0 ] && [ -z "${INSTALL_FAILURES}" ]; then
-        success "All verification checks passed ✓"
+        success "All verification checks passed ${SYM_OK}"
     else
-        local total=$(( errors + $(printf "%b" "${INSTALL_FAILURES}" | grep -c "✗" 2>/dev/null || echo 0) ))
+        local total=$(( errors + $(printf "%b" "${INSTALL_FAILURES}" | grep -c "${SYM_FAIL}" 2>/dev/null || echo 0) ))
         warn "${total} issue(s) found — run: install.sh fix    or: pbx-repair"
     fi
 }
@@ -5598,7 +5670,7 @@ s=json.load(open(f))
 v=s.get('installed',{}).get('${comp}',{}).get('version','')
 print(v) if v else sys.exit(1)
 " 2>/dev/null) && \
-            printf "  ✓ %-16s %s\n" "${comp}" "${ver}" || \
+            printf "  %s %-16s %s\n" "${SYM_OK}" "${comp}" "${ver}" || \
             printf "  - %-16s not installed\n" "${comp}"
     done
     echo ""
@@ -5606,9 +5678,9 @@ print(v) if v else sys.exit(1)
     for svc in asterisk mariadb apache2 httpd postfix fail2ban webmin; do
         if command_exists systemctl 2>/dev/null; then
             systemctl is-active --quiet "${svc}" 2>/dev/null && \
-                printf "  ✓ %-16s running\n" "${svc}" || \
+                printf "  %s %-16s running\n" "${SYM_OK}" "${svc}" || \
                 systemctl is-enabled --quiet "${svc}" 2>/dev/null && \
-                    printf "  ✗ %-16s stopped\n" "${svc}" || true
+                    printf "  %s %-16s stopped\n" "${SYM_FAIL}" "${svc}" || true
         fi
     done
 }
