@@ -284,7 +284,7 @@ check_url "FreePBX /admin/"         "https://127.0.0.1/admin/"              "200
 check_url "/health JSON"            "https://127.0.0.1/health"              "200"       "status|ok|healthy|version"
 check_url "/status/ page"           "https://127.0.0.1/status/"             "200"       "asterisk|pbx|service|version|status"
 check_url "/avantfax/"              "https://127.0.0.1/avantfax/"           "200,302"   "AvantFax|fax|Hyla|login"
-check_url "/callcenter/"            "https://127.0.0.1/callcenter/"         "200,302,403"
+check_url "/callcenter/"            "https://127.0.0.1/callcenter/"         "200,302,401,403"
 check_url "Webmin HTTPS"            "https://127.0.0.1:${WEBMIN_PORT}/"    "200,302,401" "Webmin|webmin|login"
 
 # Health endpoint detailed

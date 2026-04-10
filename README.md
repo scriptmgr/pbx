@@ -379,17 +379,23 @@ pbx-logs show
 
 ### Backup Management
 ```bash
-# Manual backup
+# Full backup (config + database)
 pbx-backup full
 
-# Check backup status
+# Config files only
+pbx-backup config
+
+# Database only
+pbx-backup db
+
+# List existing backups
 pbx-backup status
 
-# Cleanup old backups
+# Cleanup old backups (keeps 30d config, 14d database)
 pbx-cleanup
 
-# Verify backup integrity
-pbx-cleanup verify
+# Preview what cleanup would remove
+pbx-cleanup --dry-run
 ```
 
 ### Security Management

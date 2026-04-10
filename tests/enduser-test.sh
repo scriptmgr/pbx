@@ -19,7 +19,8 @@ WEBMIN_PORT="9001"
 WEB_ROOT="/var/www/apache/pbx"
 
 if [ -f "$ENV_FILE" ]; then
-    v=$(grep "^FREEPBX_ADMIN_PASSWORD=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
+    v=$(grep "^ADMIN_PASSWORD=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
+    [ -z "$v" ] && v=$(grep "^FREEPBX_ADMIN_PASSWORD=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
     [ -n "$v" ] && FREEPBX_PASS="$v"
     v=$(grep "^MYSQL_ROOT_PASSWORD=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
     [ -n "$v" ] && MYSQL_PASS="$v"
@@ -545,7 +546,7 @@ systemctl is-enabled hylafax >/dev/null 2>&1 && ok "Boot: hylafax enabled" || wa
 systemctl is-enabled fail2ban >/dev/null 2>&1 && ok "Boot: fail2ban enabled" || warn "Boot: fail2ban not enabled"
 
 # .env completeness
-for var in MYSQL_ROOT_PASSWORD FREEPBX_ADMIN_PASSWORD SYSTEM_FQDN DISTRO_FAMILY \
+for var in MYSQL_ROOT_PASSWORD ADMIN_PASSWORD SYSTEM_FQDN DISTRO_FAMILY \
            ASTERISK_VERSION FREEPBX_VERSION PHP_VERSION; do
     grep -q "^${var}=" "$ENV_FILE" 2>/dev/null \
         && ok ".env: $var present" || warn ".env: $var missing"

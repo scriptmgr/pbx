@@ -27,10 +27,13 @@ BACKUP_DIR="${BACKUP_DIR:-/mnt/backups/pbx}"
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 
 usage() {
-    printf "Usage: pbx-backup [--config|--db|--full] [--list] [--restore FILE]\n\nOptions:\n"
-    printf "  --config       Config files only\n  --db           Database only\n"
-    printf "  --full         Full backup (default)\n  --list         List existing backups\n"
-    printf "  --restore FILE Restore from backup\n  --help/-h      Show help\n"; exit 0
+    printf "Usage: pbx-backup [OPTION]\n\nOptions:\n"
+    printf "  full, --now    Full backup — config + database (default)\n"
+    printf "  config         Config files only\n"
+    printf "  db             Database only\n"
+    printf "  status, list   List existing backups and total size\n"
+    printf "  --restore FILE Restore config from backup archive\n"
+    printf "  --help/-h      Show help\n"; exit 0
 }
 
 backup_config() {
@@ -57,28 +60,32 @@ backup_db() {
     MYSQL_OPTS=""
     [ -n "${MYSQL_ROOT_PASSWORD:-}" ] && MYSQL_OPTS="-p${MYSQL_ROOT_PASSWORD}"
     # shellcheck disable=SC2086
-    mysqldump $MYSQL_OPTS asterisk asteriskcdrdb 2>/dev/null | gzip > "$out" \
+    mysqldump $MYSQL_OPTS --databases asterisk asteriskcdrdb 2>/dev/null | gzip > "$out" \
         && ok "DB backup: $out ($(du -sh "$out" 2>/dev/null | cut -f1))" \
         || err "Database backup failed"
 }
 
+show_status() {
+    hdr "Existing Backups in ${BACKUP_DIR}"
+    if [ -d "$BACKUP_DIR" ]; then
+        find "$BACKUP_DIR" -type f \( -name "*.tar.gz" -o -name "*.sql.gz" \) 2>/dev/null \
+            | sort | while IFS= read -r f; do
+                printf "  %s  (%s)\n" "$f" "$(du -sh "$f" 2>/dev/null | cut -f1)"
+            done
+        TOTAL=$(du -sh "$BACKUP_DIR" 2>/dev/null | cut -f1)
+        info "Total backup size: ${TOTAL}"
+    else
+        warn "Backup directory not found: ${BACKUP_DIR}"
+    fi
+}
+
 MODE="full"
 case "${1:-}" in
-    --help|-h) usage ;;
-    --config)  MODE="config" ;;
-    --db)      MODE="db" ;;
-    --full)    MODE="full" ;;
-    --list)
-        hdr "Existing Backups in ${BACKUP_DIR}"
-        if [ -d "$BACKUP_DIR" ]; then
-            find "$BACKUP_DIR" -type f \( -name "*.tar.gz" -o -name "*.sql.gz" \) 2>/dev/null \
-                | sort | while IFS= read -r f; do
-                    printf "  %s  (%s)\n" "$f" "$(du -sh "$f" 2>/dev/null | cut -f1)"
-                done
-        else
-            warn "Backup directory not found: $BACKUP_DIR"
-        fi
-        exit 0 ;;
+    --help|-h)            usage ;;
+    full|--full|--now)    MODE="full" ;;
+    config|--config)      MODE="config" ;;
+    db|--db)              MODE="db" ;;
+    status|list|--list)   show_status; exit 0 ;;
     --restore)
         FILE="${2:-}"; [ -z "$FILE" ] && { err "--restore requires a FILE"; exit 1; }
         [ ! -f "$FILE" ] && { err "File not found: $FILE"; exit 1; }
@@ -90,5 +97,9 @@ case "${1:-}" in
 esac
 
 mkdir -p "${BACKUP_DIR}/config" "${BACKUP_DIR}/database"
-case "$MODE" in config) backup_config ;; db) backup_db ;; full) backup_config; backup_db ;; esac
+case "$MODE" in
+    config) backup_config ;;
+    db)     backup_db ;;
+    full)   backup_config; backup_db ;;
+esac
 ok "Backup complete. Location: ${BACKUP_DIR}"

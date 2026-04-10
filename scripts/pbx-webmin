@@ -67,7 +67,7 @@ case "${1:-}" in
         REMOVED=0
         for mod_dir in "${WM_BASE}"/*/; do
             mod=$(basename "$mod_dir")
-            [ "$mod" = "." ] || [ "$mod" = ".." ] || [ "$mod" = "acl" ] && continue
+            { [ "$mod" = "." ] || [ "$mod" = ".." ] || [ "$mod" = "acl" ]; } && continue
             FOUND=0
             for k in $KEEP_LIST; do [ "$k" = "$mod" ] && FOUND=1; done
             if [ "$FOUND" -eq 0 ]; then
