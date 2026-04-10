@@ -80,7 +80,7 @@ MARIADB_SOCKET=""
 ODBC_DRIVER_PATH=""
 PKG_WEBMIN_REPO_TYPE=""   # deb | rpm  (used by install_webmin only)
 PKG_IPTABLES_PERSIST=""   # iptables-persistent | iptables-services (used by configure_iptables)
-PKG_NTP=""                # ntp | chrony  (service name too)
+PKG_NTP=""                # chrony (service: chronyd)
 
 SYSTEM_FQDN=""
 SYSTEM_DOMAIN=""
@@ -247,6 +247,10 @@ svc_daemon_reload() {
     [ "${INIT_SYSTEM}" = "systemd" ] && systemctl daemon-reload || true
 }
 
+svc_reset_failed() {
+    [ "${INIT_SYSTEM}" = "systemd" ] && systemctl reset-failed "$1" 2>/dev/null || true
+}
+
 # =============================================================================
 # SECTION 4: SYSTEM DETECTION
 # =============================================================================
@@ -410,7 +414,7 @@ setup_pkg_map() {
             APACHE_USER="www-data"
             APACHE_GROUP="www-data"
 
-            PACKAGES_DISTRO_BUILD="build-essential autoconf automake libtool bison flex doxygen imagemagick"
+            PACKAGES_DISTRO_BUILD="build-essential autoconf automake libtool bison flex doxygen imagemagick patch"
             PACKAGES_DISTRO_ASTERISK_DEPS="libssl-dev libxml2-dev libxslt1-dev libsqlite3-dev sqlite3 uuid-dev libncurses5-dev libncursesw5-dev libnewt-dev libjansson-dev libcurl4-openssl-dev default-libmysqlclient-dev libsrtp2-dev libspeex-dev libspeexdsp-dev libasound2-dev libogg-dev libvorbis-dev libtiff-dev libpng-dev libjpeg-dev libicu-dev libldap2-dev libreadline-dev libedit-dev libgd-dev"
             PACKAGES_DISTRO_WEBSERVER="apache2 apache2-utils"
             # Optional apache modules — installed one-by-one so a missing name never blocks apache2
@@ -420,13 +424,13 @@ setup_pkg_map() {
             PACKAGES_DISTRO_MARIADB="mariadb-server mariadb-client"
             PACKAGES_DISTRO_PYTHON="python3-dev python3-pip"
             PACKAGES_DISTRO_NODE="nodejs npm"
-            PACKAGES_DISTRO_SYSTEM="ntp pkg-config iptables-persistent cron"
+            PACKAGES_DISTRO_SYSTEM="chrony pkg-config iptables-persistent cron"
             PACKAGES_DISTRO_KNOCKD="knockd"
             PACKAGES_DISTRO_FAX="hylafax-server iaxmodem"
             PACKAGES_DISTRO_SNGREP="sngrep"
             ODBC_DEV_PKG="unixodbc-dev"
             ODBC_DRIVER_PKG="odbc-mariadb"
-            PKG_NTP="ntp"
+            PKG_NTP="chrony"
             PKG_IPTABLES_PERSIST="iptables-persistent"
             PKG_WEBMIN_REPO_TYPE="deb"
             PHP_FPM_SERVICE="php${PHP_VERSION}-fpm"
@@ -445,7 +449,7 @@ setup_pkg_map() {
             APACHE_USER="apache"
             APACHE_GROUP="apache"
 
-            PACKAGES_DISTRO_BUILD="gcc gcc-c++ make cmake autoconf automake libtool bison flex doxygen ImageMagick"
+            PACKAGES_DISTRO_BUILD="gcc gcc-c++ make cmake autoconf automake libtool bison flex doxygen ImageMagick patch"
             PACKAGES_DISTRO_ASTERISK_DEPS="openssl-devel libxml2-devel libxslt-devel sqlite-devel sqlite libuuid-devel ncurses-devel newt-devel jansson-devel libcurl-devel libsrtp-devel speex-devel speexdsp-devel alsa-lib-devel libogg-devel libvorbis-devel libtiff-devel libpng-devel libjpeg-devel libicu-devel openldap-devel readline-devel libedit-devel libgd-devel pkgconf-pkg-config pkgconf"
             PACKAGES_DISTRO_WEBSERVER="httpd httpd-tools"
             PACKAGES_DISTRO_WEBSERVER_OPT="mod_ssl mod_proxy_html"
@@ -454,7 +458,7 @@ setup_pkg_map() {
             PACKAGES_DISTRO_MARIADB="mariadb-server mariadb"
             PACKAGES_DISTRO_PYTHON="python3-devel python3-pip"
             PACKAGES_DISTRO_NODE="nodejs npm"
-            PACKAGES_DISTRO_SYSTEM="chrony iptables-services"
+            PACKAGES_DISTRO_SYSTEM="chrony iptables-services cronie-noanacron"
             PACKAGES_DISTRO_KNOCKD="knock-server"
             PACKAGES_DISTRO_FAX="hylafax+"
             PACKAGES_DISTRO_SNGREP="sngrep"
@@ -705,17 +709,17 @@ save_pbx_env() {
 # Edit values below to reconfigure; re-run install.sh to apply.
 
 # --- Credentials ---
-MYSQL_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD}"
-FREEPBX_ADMIN_USERNAME="${FREEPBX_ADMIN_USERNAME}"
-FREEPBX_ADMIN_PASSWORD="${FREEPBX_ADMIN_PASSWORD}"
-FREEPBX_DB_PASSWORD="${FREEPBX_DB_PASSWORD}"
-AVANTFAX_DB_PASSWORD="${AVANTFAX_DB_PASSWORD}"
+MYSQL_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD:-}"
+FREEPBX_ADMIN_USERNAME="${FREEPBX_ADMIN_USERNAME:-}"
+FREEPBX_ADMIN_PASSWORD="${FREEPBX_ADMIN_PASSWORD:-}"
+FREEPBX_DB_PASSWORD="${FREEPBX_DB_PASSWORD:-}"
+AVANTFAX_DB_PASSWORD="${AVANTFAX_DB_PASSWORD:-}"
 
 # --- Network ---
-PRIVATE_IP="${PRIVATE_IP}"
-PUBLIC_IP="${PUBLIC_IP}"
-SYSTEM_FQDN="${SYSTEM_FQDN}"
-SYSTEM_DOMAIN="${SYSTEM_DOMAIN}"
+PRIVATE_IP="${PRIVATE_IP:-}"
+PUBLIC_IP="${PUBLIC_IP:-}"
+SYSTEM_FQDN="${SYSTEM_FQDN:-}"
+SYSTEM_DOMAIN="${SYSTEM_DOMAIN:-}"
 
 # --- Email ---
 ADMIN_EMAIL="${ADMIN_EMAIL:-}"
@@ -723,19 +727,19 @@ FROM_EMAIL="${FROM_EMAIL:-}"
 FROM_NAME="${FROM_NAME:-}"
 
 # --- Fax ---
-EMAIL_TO_FAX_ALIAS="${EMAIL_TO_FAX_ALIAS}"
-FAX_TO_EMAIL_ADDRESS="${FAX_TO_EMAIL_ADDRESS}"
+EMAIL_TO_FAX_ALIAS="${EMAIL_TO_FAX_ALIAS:-}"
+FAX_TO_EMAIL_ADDRESS="${FAX_TO_EMAIL_ADDRESS:-}"
 NUMBER_OF_MODEMS="${NUMBER_OF_MODEMS:-4}"
 
 # --- Versions & Services (used by management scripts) ---
-ASTERISK_VERSION="${ASTERISK_VERSION}"
-FREEPBX_VERSION="${FREEPBX_VERSION}"
-PHP_VERSION="${PHP_VERSION}"
-DISTRO="${DISTRO}"
-DISTRO_FAMILY="${DISTRO_FAMILY}"
-APACHE_SERVICE="${APACHE_SERVICE}"
-PHP_FPM_SERVICE="${PHP_FPM_SERVICE}"
-PHP_FPM_SOCK="${PHP_FPM_SOCK}"
+ASTERISK_VERSION="${ASTERISK_VERSION:-}"
+FREEPBX_VERSION="${FREEPBX_VERSION:-}"
+PHP_VERSION="${PHP_VERSION:-}"
+DISTRO="${DISTRO:-}"
+DISTRO_FAMILY="${DISTRO_FAMILY:-}"
+APACHE_SERVICE="${APACHE_SERVICE:-}"
+PHP_FPM_SERVICE="${PHP_FPM_SERVICE:-}"
+PHP_FPM_SOCK="${PHP_FPM_SOCK:-}"
 BEHIND_PROXY="${BEHIND_PROXY:-no}"
 SSL_ENABLED="${SSL_ENABLED:-0}"
 WEBMIN_PORT="${WEBMIN_PORT:-9001}"
@@ -1132,12 +1136,13 @@ PWEOF
         ln -sf "/usr/share/zoneinfo/${tz}" /etc/localtime 2>/dev/null || true
     fi
 
-    # Disable SELinux for RHEL (FreePBX does not support enforcing)
+    # Disable SELinux completely — FreePBX does not support enforcing or permissive
     if [ -f /etc/selinux/config ]; then
         backup_config /etc/selinux/config
-        sed -i 's/^SELINUX=enforcing/SELINUX=permissive/' /etc/selinux/config 2>/dev/null || true
-        setenforce 0 2>/dev/null || true
-        info "SELinux set to permissive"
+        sed -i 's/^SELINUX=enforcing/SELINUX=disabled/' /etc/selinux/config 2>/dev/null || true
+        sed -i 's/^SELINUX=permissive/SELINUX=disabled/' /etc/selinux/config 2>/dev/null || true
+        setenforce 0 2>/dev/null || true   # runtime disable (takes full effect after reboot)
+        info "SELinux set to disabled (effective after reboot; runtime set to permissive)"
     fi
 
     # Bootstrap: ensure tar and curl are available before any pkg_install or downloads.
@@ -1153,9 +1158,13 @@ PWEOF
     if [ "${DISTRO_FAMILY}" = "debian" ]; then
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -y
-        apt-get upgrade -y -o Dpkg::Options::="--force-confold"
+        apt-get upgrade -y -o Dpkg::Options::="--force-confold" || \
+            apt-get upgrade -y -o Dpkg::Options::="--force-confold" --fix-broken 2>/dev/null || true
     else
-        ${PACKAGE_MGR_BIN} update -y
+        # --setopt=tsflags=noscripts avoids scriptlet failures in containers
+        # (e.g. systemd triggers during EPEL upgrade in a container environment)
+        ${PACKAGE_MGR_BIN} update -y --setopt=tsflags=noscripts 2>/dev/null || \
+            ${PACKAGE_MGR_BIN} update -y --skip-broken 2>/dev/null || true
     fi
 
     success "System prepared"
@@ -1257,10 +1266,17 @@ setup_repositories() {
             local major_ver
             major_ver=$(echo "${DETECTED_VERSION}" | cut -d. -f1)
             if [ "${major_ver}" -ge 8 ] 2>/dev/null; then
-                ${PACKAGE_MGR_BIN} config-manager --set-enabled crb 2>/dev/null \
-                    || ${PACKAGE_MGR_BIN} config-manager --set-enabled powertools 2>/dev/null \
-                    || ${PACKAGE_MGR_BIN} config-manager --enable crb 2>/dev/null \
-                    || true
+                # Oracle Linux uses "ol{N}_codeready_builder", others use "crb" or "powertools"
+                if [ "${DETECTED_OS}" = "ol" ] || [ "${DETECTED_OS}" = "oraclelinux" ]; then
+                    ${PACKAGE_MGR_BIN} config-manager --set-enabled "ol${major_ver}_codeready_builder" 2>/dev/null \
+                        || ${PACKAGE_MGR_BIN} config-manager --enable "ol${major_ver}_codeready_builder" 2>/dev/null \
+                        || true
+                else
+                    ${PACKAGE_MGR_BIN} config-manager --set-enabled crb 2>/dev/null \
+                        || ${PACKAGE_MGR_BIN} config-manager --set-enabled powertools 2>/dev/null \
+                        || ${PACKAGE_MGR_BIN} config-manager --enable crb 2>/dev/null \
+                        || true
+                fi
                 info "Enabled CRB/PowerTools"
             fi
 
@@ -1766,8 +1782,10 @@ configure_apache_phpfpm() {
 configure_freepbx_apache() {
     step "🔧 Creating web root directories for FreePBX..."
 
-    # Create directories early — FreePBX installer needs them to exist before it runs
-    mkdir -p "${WEB_ROOT}" "${WEB_ROOT}/admin"
+    # Create the web root — FreePBX installer creates admin/ itself.
+    # Do NOT pre-create admin/ here: if FreePBX was previously partially installed,
+    # re-running with an existing admin/ dir causes it to create a nested admin/admin/.
+    mkdir -p "${WEB_ROOT}"
     chown -R asterisk:asterisk "${WEB_ROOT}" 2>/dev/null || true
 
     # Point the main config's DocumentRoot at WEB_ROOT now so Apache can start serving
@@ -1885,14 +1903,20 @@ HOOKEOF
     fi
 
     if [ ! -f "${asterisk_key_dir}/fullchain.pem" ]; then
-        openssl req -new -x509 -days 365 -nodes \
-            -subj "/CN=${SYSTEM_FQDN}/O=PBX/C=US" \
-            -keyout "${asterisk_key_dir}/privkey.pem" \
-            -out    "${asterisk_key_dir}/fullchain.pem" 2>/dev/null \
-            || warn "Could not generate self-signed cert"
-        chown asterisk:asterisk "${asterisk_key_dir}"/*.pem 2>/dev/null || true
-        chmod 640               "${asterisk_key_dir}"/*.pem 2>/dev/null || true
-        info "Generated self-signed certificate"
+        local OPENSSL_BIN
+        OPENSSL_BIN=$(command -v openssl 2>/dev/null || echo "")
+        if [ -n "$OPENSSL_BIN" ]; then
+            "$OPENSSL_BIN" req -new -x509 -days 365 -nodes \
+                -subj "/CN=${SYSTEM_FQDN}/O=PBX/C=US" \
+                -keyout "${asterisk_key_dir}/privkey.pem" \
+                -out    "${asterisk_key_dir}/fullchain.pem" 2>/dev/null \
+                || warn "Could not generate self-signed cert"
+            chown asterisk:asterisk "${asterisk_key_dir}"/*.pem 2>/dev/null || true
+            chmod 640               "${asterisk_key_dir}"/*.pem 2>/dev/null || true
+            info "Generated self-signed certificate"
+        else
+            warn "openssl not found — skipping self-signed cert generation"
+        fi
     fi
 
     success "SSL/TLS configured"
@@ -1973,6 +1997,11 @@ find_free_proxy_port() {
 
     # Fallback: 65400 is unlikely to conflict
     PROXY_HTTP_PORT=65400
+    if [ -f "${PBX_ENV_FILE}" ]; then
+        grep -q "^PROXY_HTTP_PORT=" "${PBX_ENV_FILE}" 2>/dev/null \
+            && sed -i "s|^PROXY_HTTP_PORT=.*|PROXY_HTTP_PORT=\"65400\"|" "${PBX_ENV_FILE}" \
+            || echo "PROXY_HTTP_PORT=\"65400\"" >> "${PBX_ENV_FILE}"
+    fi
     echo "${PROXY_HTTP_PORT}"
 }
 
@@ -2369,6 +2398,10 @@ create_iaxmodem_services() {
     local modem_num="$1"
     [ "${INIT_SYSTEM}" != "systemd" ] && return 0
 
+    # Detect binary path — Debian/Ubuntu installs to /usr/bin, RHEL/compile to /usr/sbin
+    local iaxmodem_bin
+    iaxmodem_bin=$(command -v iaxmodem 2>/dev/null || echo "/usr/sbin/iaxmodem")
+
     cat > "/etc/systemd/system/iaxmodem-ttyIAX${modem_num}.service" << IAXSVCEOF
 [Unit]
 Description=IAXmodem ttyIAX${modem_num}
@@ -2377,7 +2410,7 @@ Wants=asterisk.service
 
 [Service]
 Type=simple
-ExecStart=/usr/sbin/iaxmodem ttyIAX${modem_num}
+ExecStart=${iaxmodem_bin} ttyIAX${modem_num}
 Restart=always
 RestartSec=10
 
@@ -2393,13 +2426,26 @@ create_hylafax_service() {
     [ "${INIT_SYSTEM}" != "systemd" ] && return 0
 
     # Detect actual binary paths — packages install to /usr/sbin, source compile to /usr/local/sbin
-    local faxq_bin faxquit_bin
-    faxq_bin=$(command -v faxq 2>/dev/null || echo "/usr/sbin/faxq")
-    faxquit_bin=$(command -v faxquit 2>/dev/null || echo "/usr/sbin/faxquit")
+    local faxq_bin faxquit_bin hfaxd_bin
+    faxq_bin=$(command -v faxq 2>/dev/null || echo "/usr/local/sbin/faxq")
+    faxquit_bin=$(command -v faxquit 2>/dev/null || echo "/usr/local/sbin/faxquit")
+    hfaxd_bin=$(command -v hfaxd 2>/dev/null || echo "/usr/local/sbin/hfaxd")
 
+    # Ensure sendq directory exists (faxq logs an error if missing)
+    mkdir -p /var/spool/hylafax/sendq
+    chown -R uucp:uucp /var/spool/hylafax/sendq 2>/dev/null || true
+
+    # In LXC/container environments, mknod is not permitted.
+    # Pre-create hylafax dev directory with symlinks so hfaxd doesn't try to mknod.
+    mkdir -p /var/spool/hylafax/dev
+    ln -sf /dev/null    /var/spool/hylafax/dev/null    2>/dev/null || true
+    ln -sf /dev/zero    /var/spool/hylafax/dev/zero    2>/dev/null || true
+    ln -sf /dev/urandom /var/spool/hylafax/dev/urandom 2>/dev/null || true
+
+    # hylafax.service — queue manager (faxq)
     cat > /etc/systemd/system/hylafax.service << HYLSVCEOF
 [Unit]
-Description=HylaFAX Fax Server
+Description=HylaFAX Queue Manager (faxq)
 After=network.target
 
 [Service]
@@ -2408,10 +2454,28 @@ ExecStart=${faxq_bin}
 ExecStop=${faxquit_bin}
 KillMode=control-group
 Restart=on-failure
+RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
 HYLSVCEOF
+
+    # hfaxd.service — client connection server (separate unit so failures don't kill faxq)
+    cat > /etc/systemd/system/hfaxd.service << HFAXDSVCEOF
+[Unit]
+Description=HylaFAX Client Server (hfaxd)
+After=hylafax.service
+Requires=hylafax.service
+
+[Service]
+Type=simple
+ExecStart=${hfaxd_bin} -d -i hylafax
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+HFAXDSVCEOF
 
     svc_daemon_reload
 }
@@ -2440,6 +2504,10 @@ install_asterisk() {
     usermod -a -G asterisk "${APACHE_USER}"  2>/dev/null || true
     # On Debian/Ubuntu, /usr/bin/crontab is setgid crontab — asterisk user needs this group
     getent group crontab >/dev/null 2>&1 && usermod -a -G crontab asterisk 2>/dev/null || true
+
+    # php-fpm pool runs as 'asterisk' — restart it now that the user exists
+    svc_reset_failed "${PHP_FPM_SERVICE}" 2>/dev/null || true
+    svc_restart "${PHP_FPM_SERVICE}" 2>/dev/null || true
 
     cd "${WORK_DIR}"
     local asterisk_tar="asterisk-${ASTERISK_VERSION}-current.tar.gz"
@@ -2582,6 +2650,8 @@ XMPPEOF
     fi
 
     info "Starting Asterisk for FreePBX installer..."
+    # Ensure cron daemon is running — FreePBX installer validates crontab entries
+    svc_start crond 2>/dev/null || svc_start cron 2>/dev/null || true
     # Kill any stuck safe_asterisk/asterisk before trying to start
     local _spid _apid
     _spid=$(pgrep -x safe_asterisk 2>/dev/null || true)
@@ -2638,7 +2708,7 @@ XMPPEOF
     fwconsole ma installall 2>/dev/null || warn "Module installall had errors"
 
     for mod in superfecta queueprio miscdests miscapps outcnam \
-               dynroute extensionsettings disa allowlist \
+               dynroute extensionsettings disa allowlist customappsreg \
                inboundroutes outboundroutes ringgroups queues ivr \
                timeconditions daynight miscdi callforward findmefollow \
                donotdisturb parking paging followme callrecording \
@@ -2694,8 +2764,10 @@ WantedBy=multi-user.target
 FPBXSVCEOF
         svc_daemon_reload
         svc_enable freepbx
-        # Disable bare asterisk.service — fwconsole (via freepbx.service) manages Asterisk
+        # Disable AND stop bare asterisk.service — freepbx.service owns Asterisk via fwconsole
         svc_disable asterisk 2>/dev/null || true
+        svc_stop   asterisk 2>/dev/null || true
+        sleep 2
     fi
 
     mark_done freepbx
@@ -2791,7 +2863,42 @@ NATEOF
     # Enable CDR and queue logging
     fwconsole setting ASTRUNDIR /var/run/asterisk 2>/dev/null || true
 
+    # Patch Config.class.php to cast null to string before str_replace (PHP 8.1+ deprecation)
+    # This affects Fedora 42+ and any distro with strict PHP deprecation handling
+    local cfg_class
+    cfg_class=$(find "${FREEPBX_WEB_DIR:-/var/www/apache/pbx/admin}" \
+        -name 'Config.class.php' -path '*/BMO/*' 2>/dev/null | head -1)
+    if [ -n "${cfg_class}" ] && [ -f "${cfg_class}" ]; then
+        python3 - "${cfg_class}" << 'CFGPATCH'
+import sys
+fname = sys.argv[1]
+with open(fname, 'r') as f:
+    c = f.read()
+# Cast $default_val to (string) so PHP 8.1+ str_replace deprecation is silenced
+c = c.replace(
+    'str_replace(array("\\r", "\\n", "\\r\\n"), "\\\\n", $default_val)',
+    'str_replace(array("\\r", "\\n", "\\r\\n"), "\\\\n", (string)$default_val)'
+)
+# Cast $this_val to (string) if not already done
+c = c.replace(
+    "str_replace(' ','\\' ',$this_val)",
+    "str_replace(' ','\\' ',(string)$this_val)"
+)
+with open(fname, 'w') as f:
+    f.write(c)
+CFGPATCH
+        # Clear PHP opcode cache so the patch takes immediate effect
+        svc_restart php-fpm 2>/dev/null || svc_restart php8.2-fpm 2>/dev/null || \
+            svc_restart php8.1-fpm 2>/dev/null || true
+    fi
+
     fwconsole reload --skip-registry-checks 2>/dev/null || true
+    # fwconsole reload may fail on some distros (PHP null deprecation in Config.class.php)
+    # but config files are written; ensure Asterisk picks them up with a direct reload.
+    asterisk -rx "core reload" 2>/dev/null || true
+    # pbx_config.so (dialplan loader) can fail to preload if extensions.conf didn't exist yet.
+    # Force-load it after FreePBX has generated the config files.
+    asterisk -rx "module load pbx_config.so" 2>/dev/null || true
 
     track_install "freepbx-config"
     success "FreePBX configured"
@@ -2914,15 +3021,58 @@ install_hylafax() {
         chown "$(id -u uucp 2>/dev/null || echo 3)":"$(id -g uucp 2>/dev/null || echo 4)" \
               /var/spool/hylafax/ 2>/dev/null || true
     chmod 755 /var/spool/hylafax/
-    # Run faxsetup with 30s timeout piping newlines (accept all defaults, no modem config)
-    if command_exists faxsetup; then
-        timeout 30 bash -c 'yes "" | faxsetup -server -nomodem' 2>/dev/null || \
-        timeout 30 bash -c 'yes "" | faxsetup -server'          2>/dev/null || true
+    # Write HylaFAX server config directly — we use IAXmodem (software modems),
+    # so there are no hardware serial modems to detect. faxsetup -server is
+    # interactive and its -nomodem flag is unreliable across versions.
+    # Writing setup.cache + config ourselves is both faster and more predictable.
+    local hf_etc="/var/spool/hylafax/etc"
+    if [ ! -f "${hf_etc}/setup.cache" ]; then
+        mkdir -p "${hf_etc}"
+        cat > "${hf_etc}/setup.cache" <<'EOF'
+SPOOL=/var/spool/hylafax
+LIBDATA=/usr/lib/fax
+LIBEXEC=/usr/sbin
+ETC=/var/spool/hylafax/etc
+SENDMAIL=/usr/sbin/sendmail
+UUCP_LOCKS=/var/lock
+SERVERBIN=/usr/sbin
+FAXUID=uucp
+FAXGID=uucp
+EOF
+    fi
+    if [ ! -f "${hf_etc}/config" ]; then
+        cat > "${hf_etc}/config" <<'EOF'
+CountryCode:            1
+AreaCode:               800
+FAXNumber:              +18005551234
+LongDistancePrefix:     1
+InternationalPrefix:    011
+DialStringRules:        etc/dialrules
+ServerTracing:          1
+SessionTracing:         11
+RecvFileMode:           0600
+LogFileMode:            0600
+DeviceMode:             0600
+RingsBeforeAnswer:      1
+SpeakerVolume:          off
+GettyArgs:              "-h %l dx_%s"
+LocalIdentifier:        "Anonymous"
+TagLineFont:            etc/lutRS18.pcf
+TagLineFormat:          "From %%l|%c|Page %%P of %%T"
+MaxRecvPages:           25
+EOF
+    fi
+    # If faxsetup is available and config is missing, run it non-interactively
+    # by explicitly declining modem setup (answer "no" to faxaddmodem question)
+    if command_exists faxsetup && [ ! -f "${hf_etc}/config.dyn" ]; then
+        printf '\n\nno\n' | timeout 60 faxsetup -server 2>/dev/null || true
     fi
 
     create_hylafax_service
-    svc_enable hylafax 2>/dev/null || svc_enable hfaxd 2>/dev/null || true
-    svc_start  hylafax 2>/dev/null || svc_start  hfaxd 2>/dev/null || true
+    svc_enable hylafax 2>/dev/null || true
+    svc_start  hylafax 2>/dev/null || true
+    svc_enable hfaxd   2>/dev/null || true
+    svc_start  hfaxd   2>/dev/null || true
 
     mark_done hylafax
     success "HylaFAX installed"
@@ -2974,13 +3124,10 @@ _compile_hylafax_source() {
 install_iaxmodem() {
     step "📠 Installing IAXmodem..."
 
-    if command_exists iaxmodem; then
-        info "IAXmodem already installed, skipping"
-        return 0
+    # Try package first (available on Debian/Ubuntu)
+    if ! command_exists iaxmodem; then
+        pkg_install_one_by_one iaxmodem 2>/dev/null || true
     fi
-
-    # Try package first (available on Debian)
-    pkg_install_one_by_one iaxmodem 2>/dev/null || true
 
     # On RHEL/Fedora, iaxmodem has no package — compile from source
     if ! command_exists iaxmodem && [ "${DISTRO_FAMILY}" = "rhel" -o "${DISTRO_FAMILY}" = "fedora" ]; then
@@ -2992,6 +3139,10 @@ install_iaxmodem() {
         warn "IAXmodem not installed — fax modems unavailable"
         return 0
     fi
+
+    # Disable the sysvinit iaxmodem service — we use per-instance systemd units instead
+    svc_disable iaxmodem 2>/dev/null || true
+    svc_stop iaxmodem 2>/dev/null || true
 
     local i=1
     while [ "${i}" -le "${NUMBER_OF_MODEMS}" ]; do
@@ -3010,6 +3161,35 @@ cidnumber       s
 codec           ulaw
 MODEMEOF
         create_iaxmodem_services "${i}"
+
+        # Create HylaFAX per-modem config (required for hfaxd to manage each virtual modem)
+        mkdir -p /var/spool/hylafax/etc
+        # Ensure hosts.hfaxd exists to allow localhost faxstat without password
+        if [ ! -f /var/spool/hylafax/etc/hosts.hfaxd ]; then
+            printf 'localhost\n127.0.0.1\n' > /var/spool/hylafax/etc/hosts.hfaxd
+            chown uucp:uucp /var/spool/hylafax/etc/hosts.hfaxd 2>/dev/null || true
+        fi
+        cat > "/var/spool/hylafax/etc/config.ttyIAX${i}" << HFMODEMCFG
+CountryCode:            1
+AreaCode:               800
+FAXNumber:              +18005550${i}00
+LocalIdentifier:        "PBX FAX ${i}"
+MaxRecvPages:           25
+ModemType:              Class2.0
+ModemRate:              9600
+ModemFlowControl:       xonxoff
+ModemWaitForConnect:    150
+ModemDialCmd:           ATD%s
+ModemAnswerCmd:         ATA
+ModemResetDelay:        0
+SessionTracing:         0x0001
+RingsBeforeAnswer:      1
+SpeakerVolume:          off
+TagLineFont:            etc/lutRS18.pcf
+TagLineFormat:          "From %%l|%c|Page %%P of %%T"
+HFMODEMCFG
+        chown uucp:uucp "/var/spool/hylafax/etc/config.ttyIAX${i}" 2>/dev/null || true
+
         svc_enable "iaxmodem-ttyIAX${i}" 2>/dev/null || true
         svc_start  "iaxmodem-ttyIAX${i}" 2>/dev/null || true
         i=$((i + 1))
@@ -3037,9 +3217,18 @@ _compile_iaxmodem_source() {
     [ -d "${src_dir:-}" ] || return 1
 
     cd "${src_dir}"
-    make -j"$(nproc)" 2>/dev/null || make 2>/dev/null || return 1
-    install -m 755 iaxmodem /usr/sbin/iaxmodem 2>/dev/null || \
-        cp iaxmodem /usr/sbin/iaxmodem && chmod 755 /usr/sbin/iaxmodem
+    ./configure || return 1
+    make -j"$(nproc)" || make || return 1
+
+    # Verify binary was built
+    [ -x "./iaxmodem" ] || return 1
+
+    # Install binary — try make install first (uses PREFIX), fallback to cp
+    if ! make install PREFIX=/usr 2>/dev/null; then
+        cp "./iaxmodem" /usr/sbin/iaxmodem || return 1
+        chmod 755 /usr/sbin/iaxmodem || return 1
+    fi
+
     cd "${WORK_DIR}"
     return 0
 }
@@ -3837,10 +4026,25 @@ install_webmin() {
 
     case "${PKG_WEBMIN_REPO_TYPE}" in
         deb)
-            curl -fsSL https://webmin.com/jcameron-key.asc \
-                | gpg --dearmor -o /usr/share/keyrings/jcameron-key.gpg 2>/dev/null || true
-            echo "deb [signed-by=/usr/share/keyrings/jcameron-key.gpg] https://download.webmin.com/download/repository sarge contrib" \
-                > /etc/apt/sources.list.d/webmin.list
+            # Use Webmin's official setup-repos.sh (handles GPG key properly on all Debian/Ubuntu versions)
+            if curl -fsSL https://raw.githubusercontent.com/webmin/webmin/master/setup-repos.sh \
+                    -o /tmp/webmin-setup-repos.sh 2>/dev/null; then
+                sh /tmp/webmin-setup-repos.sh --force 2>/dev/null || true
+                rm -f /tmp/webmin-setup-repos.sh
+            else
+                # Fallback: manual key + new stable repo
+                curl -fsSL https://webmin.com/jcameron-key.asc \
+                    | gpg --yes --dearmor -o /usr/share/keyrings/jcameron-key.gpg 2>/dev/null || true
+            fi
+            # Remove old "sarge" repo if present (uses deprecated DSA1024 key, rejected by apt 2.x+)
+            rm -f /etc/apt/sources.list.d/webmin.list
+            # Ensure the new stable repo is present if setup-repos.sh didn't create it
+            if [ ! -f /etc/apt/sources.list.d/webmin-stable.list ]; then
+                curl -fsSL https://webmin.com/jcameron-key.asc \
+                    | gpg --yes --dearmor -o /usr/share/keyrings/webmin-key.gpg 2>/dev/null || true
+                echo "deb [signed-by=/usr/share/keyrings/webmin-key.gpg] https://download.webmin.com/download/newkey/repository stable contrib" \
+                    > /etc/apt/sources.list.d/webmin-stable.list
+            fi
             apt-get update -y 2>/dev/null || true
             ;;
         rpm)
@@ -3860,10 +4064,11 @@ WEBMINREPOEOF
     if [ -f /etc/webmin/miniserv.conf ]; then
         backup_config /etc/webmin/miniserv.conf
         sed -i 's/^port=.*/port=9001/' /etc/webmin/miniserv.conf
+        # Stop + start (not just restart) so the new port is always applied
+        svc_stop  webmin 2>/dev/null || true
+        sleep 1
+        svc_start webmin 2>/dev/null || true
     fi
-
-    svc_enable  webmin 2>/dev/null || true
-    svc_restart webmin 2>/dev/null || true
 
     mark_done webmin
     success "Webmin installed (port 9001)"
@@ -4061,6 +4266,10 @@ BKPEOF
     # Cron entry
     if ! grep -q "pbx-backup-run" /etc/crontab 2>/dev/null; then
         echo "30 02 * * * root /usr/local/bin/pbx-backup-run >> /var/log/pbx-backup.log 2>&1" \
+            >> /etc/crontab
+    fi
+    if ! grep -q "pbx-cleanup" /etc/crontab 2>/dev/null; then
+        echo "0 03 * * 0 root /usr/local/bin/pbx-cleanup >> /var/log/pbx-backup.log 2>&1" \
             >> /etc/crontab
     fi
 
@@ -4838,8 +5047,9 @@ setup_ntp() {
         svc_restart chronyd 2>/dev/null || true
         chronyc makestep 2>/dev/null || true
     elif command -v ntpd >/dev/null 2>&1; then
-        svc_enable ntp 2>/dev/null || true
-        svc_restart ntp 2>/dev/null || true
+        # CentOS 6 fallback
+        svc_enable ntpd 2>/dev/null || svc_enable ntp 2>/dev/null || true
+        svc_restart ntpd 2>/dev/null || svc_restart ntp 2>/dev/null || true
     fi
     success "NTP configured"
 }
@@ -4912,11 +5122,22 @@ QOSEOF
 configure_webrtc() {
     step "Configuring WebRTC and STUN..."
 
-    local pjsip_conf="/etc/asterisk/pjsip.conf"
+    # FreePBX regenerates pjsip.conf on reload — WSS transport must go in pjsip_custom.conf
+    local pjsip_conf="/etc/asterisk/pjsip_custom.conf"
     if [ -f "${pjsip_conf}" ] && ! grep -q "transport-wss" "${pjsip_conf}"; then
         backup_config "${pjsip_conf}"
         cat >> "${pjsip_conf}" << 'WSSEOF'
 
+; WebRTC WSS transport — for browser-based SIP clients
+[transport-wss]
+type     = transport
+protocol = wss
+bind     = 0.0.0.0
+
+WSSEOF
+    elif [ ! -f "${pjsip_conf}" ]; then
+        mkdir -p /etc/asterisk
+        cat >> "${pjsip_conf}" << 'WSSEOF'
 ; WebRTC WSS transport — for browser-based SIP clients
 [transport-wss]
 type     = transport
@@ -5072,16 +5293,37 @@ foreach ($services as $svc) {
     }
 }
 
-// Verify Asterisk CLI connectivity
-$ast_ver = trim(shell_exec('asterisk -rx "core show version" 2>/dev/null') ?? '');
+// Verify Asterisk CLI connectivity (check socket file first, then try CLI)
+$ast_socket = '/var/run/asterisk/asterisk.ctl';
+$ast_ver = '';
+if (file_exists($ast_socket)) {
+    $ast_ver = trim(shell_exec('asterisk -rx "core show version" 2>/dev/null') ?? '');
+}
+if (empty($ast_ver)) {
+    // Fall back: Asterisk process running but CLI socket not accessible
+    $ast_pid = trim(shell_exec('pgrep -x asterisk 2>/dev/null') ?? '');
+    if (!empty($ast_pid)) {
+        $ast_ver = trim(shell_exec('asterisk --version 2>/dev/null') ?? '') ?: 'running';
+    }
+}
 $status['asterisk_connected'] = !empty($ast_ver) ? 'true' : 'false';
 if (empty($ast_ver)) $overall = 'degraded';
+
+// Fax system status
+$fax_status = [];
+$hfaxd_running = !empty(trim(shell_exec('pgrep -x hfaxd 2>/dev/null') ?? ''));
+$iaxmodem_count = (int)trim(shell_exec('pgrep -x iaxmodem 2>/dev/null | wc -l') ?? '0');
+$fax_status['hfaxd'] = $hfaxd_running ? 'running' : 'stopped';
+$fax_status['iaxmodem_instances'] = $iaxmodem_count;
+$fax_status['modems'] = (int)trim(shell_exec('ls /dev/ttyIAX* 2>/dev/null | wc -l') ?? '0');
+if (!$hfaxd_running) $overall = 'degraded';
 
 echo json_encode([
     'status'    => $overall,
     'timestamp' => date('c'),
     'hostname'  => gethostname(),
     'services'  => $status,
+    'fax'       => $fax_status,
     'version'   => $ast_ver ?: 'unknown',
     'disk_free_gb' => round(disk_free_space('/') / 1073741824, 1),
 ], JSON_PRETTY_PRINT);
@@ -5294,6 +5536,17 @@ finalize_installation() {
     done
     fwconsole chown  2>/dev/null || true
     fwconsole reload --skip-registry-checks 2>/dev/null || true
+    # Ensure pbx_config.so (dialplan) is loaded after FreePBX generates configs
+    asterisk -rx "module load pbx_config.so" 2>/dev/null || true
+
+    # Add systemd override so pbx_config.so loads on every Asterisk start
+    # (needed when preload fails because extensions.conf doesn't exist yet at boot)
+    mkdir -p /etc/systemd/system/asterisk.service.d 2>/dev/null || true
+    cat > /etc/systemd/system/asterisk.service.d/pbx_config_load.conf << 'SVCEOF'
+[Service]
+ExecStartPost=/bin/bash -c "sleep 3 && asterisk -rx 'module load pbx_config.so' 2>/dev/null || true"
+SVCEOF
+    systemctl daemon-reload 2>/dev/null || true
 
     # Start/restart all core services via their canonical service units
     # freepbx.service (oneshot, RemainAfterExit=yes) manages Asterisk via fwconsole
@@ -5436,11 +5689,14 @@ verify_installation() {
 
     # Check Webmin (warn only)
     if [ -f /etc/webmin/miniserv.conf ]; then
-        if ss -tlnp 2>/dev/null | grep -q ':9001\b' || \
-           netstat -tlnp 2>/dev/null | grep -q ':9001 '; then
-            success "Webmin running (port 9001)"
+        local wm_port
+        wm_port=$(grep "^port=" /etc/webmin/miniserv.conf 2>/dev/null | cut -d= -f2 | tr -d '[:space:]')
+        wm_port="${wm_port:-9001}"
+        if ss -tlnp 2>/dev/null | grep -q ":${wm_port}\b" || \
+           netstat -tlnp 2>/dev/null | grep -q ":${wm_port} "; then
+            success "Webmin running (port ${wm_port})"
         else
-            warn "Webmin installed but not listening on port 9001"
+            warn "Webmin installed but not listening on port ${wm_port}"
         fi
     fi
 

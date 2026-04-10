@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 setup_output() {
     if [ -n "${NO_COLOR+x}" ] || [ ! -t 1 ] || [ "${TERM:-}" = "dumb" ] || [ "${CI:-}" = "true" ]; then
         RED=""; GREEN=""; YELLOW=""; BLUE=""; CYAN=""; BOLD=""; NC=""
@@ -30,7 +31,7 @@ usage() {
     printf "  --show-banned   Show fail2ban banned IPs\n  --help/-h       Show help\n"; exit 0
 }
 
-SSH_PORT=$(grep -E '^Port ' /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}' | head -1)
+SSH_PORT=$(grep -E '^Port ' /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}' | head -1 || true)
 SSH_PORT="${SSH_PORT:-22}"
 
 case "${1:-}" in

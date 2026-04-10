@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 setup_output() {
     if [ -n "${NO_COLOR+x}" ] || [ ! -t 1 ] || [ "${TERM:-}" = "dumb" ] || [ "${CI:-}" = "true" ]; then
         RED=""; GREEN=""; YELLOW=""; BLUE=""; CYAN=""; BOLD=""; NC=""
@@ -19,8 +20,9 @@ err()  { printf "%s${RED}%s${NC}\n" "$(e ❌)" "$*" >&2; }
 hdr()  { printf "\n${BOLD}%s%s${NC}\n" "$(e 🔧)" "$*"; }
 
 [ -f /etc/pbx/.env ] && . /etc/pbx/.env
+[ "$(id -u)" -ne 0 ] && { err "Must run as root"; exit 1; }
 
-usage() { printf "Usage: pbx-network\nNetwork diagnostics for PBX.\n"; exit 0; }
+usage() { printf "Usage: pbx-network\nNetwork diagnostics for PBX.\n\nOptions:\n  --help/-h  Show help\n"; exit 0; }
 [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ] && usage
 
 hdr "Network Interfaces"

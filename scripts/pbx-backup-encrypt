@@ -1,58 +1,133 @@
 #!/bin/bash
 # PBX Backup Encryption Helper
-# Usage:
-#   pbx-backup-encrypt init          — generate GPG key pair
-#   pbx-backup-encrypt encrypt FILE  — encrypt a backup archive
-
 set -euo pipefail
 
-case "${1:-help}" in
-    init)
-        echo "Generating GPG key for backup encryption..."
-        KEYNAME="PBX Backup $(hostname -f 2>/dev/null || hostname)"
-        BATCH_FILE=$(mktemp)
-        cat > "${BATCH_FILE}" << GPGBATCH
+setup_output() {
+    if [ -n "${NO_COLOR+x}" ] || [ ! -t 1 ] || [ "${TERM:-}" = "dumb" ] || [ "${CI:-}" = "true" ]; then
+        RED=""; GREEN=""; YELLOW=""; BLUE=""; CYAN=""; BOLD=""; NC=""
+        USE_EMOJI=0
+    else
+        RED="$(printf '\033[0;31m')"; GREEN="$(printf '\033[0;32m')"; YELLOW="$(printf '\033[1;33m')"
+        BLUE="$(printf '\033[0;34m')"; CYAN="$(printf '\033[0;36m')"
+        BOLD="$(printf '\033[1m')"; NC="$(printf '\033[0m')"
+        USE_EMOJI=1
+    fi
+}
+setup_output
+e() { [ "$USE_EMOJI" = "1" ] && printf "%s " "$1" || true; }
+ok()   { printf "%s${GREEN}%s${NC}\n" "$(e ✅)" "$*"; }
+info() { printf "%s${BLUE}%s${NC}\n"  "$(e ℹ️ )" "$*"; }
+warn() { printf "%s${YELLOW}%s${NC}\n" "$(e ⚠️ )" "$*"; }
+err()  { printf "%s${RED}%s${NC}\n" "$(e ❌)" "$*" >&2; }
+hdr()  { printf "\n${BOLD}%s%s${NC}\n" "$(e 🔧)" "$*"; }
+
+[ -f /etc/pbx/.env ] && . /etc/pbx/.env
+[ "$(id -u)" -ne 0 ] && { err "Must run as root"; exit 1; }
+
+usage() {
+    printf "Usage: pbx-backup-encrypt <command> [args]\n\n"
+    printf "Manage GPG encryption for PBX backups.\n\n"
+    printf "Commands:\n"
+    printf "  init              Generate a 4096-bit RSA GPG key for backup encryption\n"
+    printf "  encrypt FILE      Encrypt a backup archive with the stored GPG key\n"
+    printf "  status            Show current encryption configuration\n"
+    printf "\nOptions:\n"
+    printf "  --help/-h         Show help\n"
+    printf "\nExamples:\n"
+    printf "  pbx-backup-encrypt init\n"
+    printf "  pbx-backup-encrypt encrypt /mnt/backups/pbx/config/pbx-config-20250101.tar.gz\n"
+    printf "  BACKUP_ENCRYPT=yes in /etc/pbx/.env to auto-encrypt on backup\n"
+    exit 0
+}
+
+cmd_init() {
+    command -v gpg >/dev/null 2>&1 || { err "gpg not found — install gnupg"; exit 1; }
+    hdr "Generating GPG key for backup encryption"
+    KEYNAME="PBX Backup $(hostname -f 2>/dev/null || hostname)"
+    KEYEMAIL="backup@$(hostname -f 2>/dev/null || hostname)"
+    # Write batch file to /root (never /tmp)
+    BATCH_FILE="/root/.pbx-gpg-batch"
+    cat > "${BATCH_FILE}" << GPGBATCH
 %no-protection
 Key-Type: RSA
 Key-Length: 4096
 Subkey-Type: RSA
 Subkey-Length: 4096
 Name-Real: ${KEYNAME}
-Name-Email: backup@$(hostname -f 2>/dev/null || hostname)
+Name-Email: ${KEYEMAIL}
 Expire-Date: 0
 %commit
 GPGBATCH
-        gpg --batch --gen-key "${BATCH_FILE}" 2>/dev/null
+    if gpg --batch --gen-key "${BATCH_FILE}" 2>/dev/null; then
+        ok "GPG key generated"
+    else
         rm -f "${BATCH_FILE}"
-        KEY_ID=$(gpg --list-keys --with-colons 2>/dev/null \
-            | grep "^pub" | tail -1 | cut -d: -f5)
-        gpg --armor --export "${KEY_ID}" > /root/pbx-backup-key.pub 2>/dev/null
-        # Store key ID in /etc/pbx/.env
-        if [ -f /etc/pbx/.env ]; then
-            grep -v "^BACKUP_GPG_KEY=" /etc/pbx/.env > /etc/pbx/.env.tmp 2>/dev/null \
-                && mv /etc/pbx/.env.tmp /etc/pbx/.env || true
+        err "GPG key generation failed"
+        exit 1
+    fi
+    rm -f "${BATCH_FILE}"
+    KEY_ID=$(gpg --list-keys --with-colons 2>/dev/null \
+        | grep "^pub" | tail -1 | cut -d: -f5)
+    if [ -z "$KEY_ID" ]; then
+        err "Could not retrieve generated key ID"
+        exit 1
+    fi
+    gpg --armor --export "${KEY_ID}" > /root/pbx-backup-key.pub 2>/dev/null
+    ok "Public key exported: /root/pbx-backup-key.pub"
+    # Store key ID in /etc/pbx/.env
+    mkdir -p /etc/pbx
+    if [ -f /etc/pbx/.env ]; then
+        grep -v "^BACKUP_GPG_KEY=" /etc/pbx/.env > /etc/pbx/.env.new 2>/dev/null \
+            && mv /etc/pbx/.env.new /etc/pbx/.env || true
+    fi
+    printf "BACKUP_GPG_KEY=%s\n" "${KEY_ID}" >> /etc/pbx/.env
+    grep -q "^BACKUP_ENCRYPT=" /etc/pbx/.env 2>/dev/null || \
+        printf "BACKUP_ENCRYPT=no\n" >> /etc/pbx/.env
+    ok "Key ID ${KEY_ID} saved to /etc/pbx/.env"
+    info "Set BACKUP_ENCRYPT=yes in /etc/pbx/.env to enable auto-encryption"
+}
+
+cmd_encrypt() {
+    ARCHIVE="${1:-}"
+    [ -z "${ARCHIVE}" ] && { err "Usage: pbx-backup-encrypt encrypt <file>"; exit 1; }
+    [ -f "${ARCHIVE}" ]  || { err "File not found: ${ARCHIVE}"; exit 1; }
+    command -v gpg >/dev/null 2>&1 || { err "gpg not found — install gnupg"; exit 1; }
+    [ -z "${BACKUP_GPG_KEY:-}" ] && {
+        err "BACKUP_GPG_KEY not set — run: pbx-backup-encrypt init"
+        exit 1
+    }
+    hdr "Encrypting ${ARCHIVE}"
+    if gpg --batch --yes --encrypt --recipient "${BACKUP_GPG_KEY}" \
+            --output "${ARCHIVE}.gpg" "${ARCHIVE}"; then
+        rm -f "${ARCHIVE}"
+        ok "Encrypted: ${ARCHIVE}.gpg"
+    else
+        err "Encryption failed"
+        exit 1
+    fi
+}
+
+cmd_status() {
+    hdr "Backup Encryption Status"
+    printf "  BACKUP_ENCRYPT  : %s\n" "${BACKUP_ENCRYPT:-no}"
+    printf "  BACKUP_GPG_KEY  : %s\n" "${BACKUP_GPG_KEY:-(not set)}"
+    if [ -n "${BACKUP_GPG_KEY:-}" ] && command -v gpg >/dev/null 2>&1; then
+        if gpg --list-keys "${BACKUP_GPG_KEY}" >/dev/null 2>&1; then
+            ok "  GPG key ${BACKUP_GPG_KEY} found in keyring"
+        else
+            err "  GPG key ${BACKUP_GPG_KEY} NOT found in keyring"
         fi
-        echo "BACKUP_GPG_KEY=${KEY_ID}" >> /etc/pbx/.env
-        if ! grep -q "^BACKUP_ENCRYPT=" /etc/pbx/.env 2>/dev/null; then
-            echo "BACKUP_ENCRYPT=no" >> /etc/pbx/.env
-        fi
-        echo "GPG key generated: ${KEY_ID}"
-        echo "Public key exported: /root/pbx-backup-key.pub"
-        echo "Set BACKUP_ENCRYPT=yes in /etc/pbx/.env to enable auto-encryption"
-        ;;
-    encrypt)
-        ARCHIVE="${2:-}"
-        [ -z "${ARCHIVE}" ] && { echo "Usage: pbx-backup-encrypt encrypt <file>"; exit 1; }
-        [ -f "${ARCHIVE}" ] || { echo "File not found: ${ARCHIVE}"; exit 1; }
-        # shellcheck disable=SC1091
-        source /etc/pbx/.env 2>/dev/null || true
-        [ -z "${BACKUP_GPG_KEY:-}" ] && { echo "BACKUP_GPG_KEY not set — run: pbx-backup-encrypt init"; exit 1; }
-        gpg --batch --yes --encrypt --recipient "${BACKUP_GPG_KEY}" \
-            --output "${ARCHIVE}.gpg" "${ARCHIVE}" \
-            && rm -f "${ARCHIVE}" \
-            && echo "Encrypted: ${ARCHIVE}.gpg"
-        ;;
+    fi
+}
+
+case "${1:-}" in
+    --help|-h) usage ;;
+    init)      cmd_init ;;
+    encrypt)   shift; cmd_encrypt "$@" ;;
+    status)    cmd_status ;;
     *)
-        echo "Usage: pbx-backup-encrypt [init|encrypt <file>]"
+        err "Unknown command: ${1:-}"
+        printf "Run 'pbx-backup-encrypt --help' for usage.\n" >&2
+        exit 1
         ;;
 esac

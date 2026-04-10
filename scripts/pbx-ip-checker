@@ -1,59 +1,56 @@
 #!/bin/bash
 # pbx-ip-checker - Public IP change detector
-# Run via cron: */10 5-22 * * * /usr/local/bin/pbx-ip-checker
+# Cron example: */10 5-22 * * * /usr/local/bin/pbx-ip-checker
 set -euo pipefail
 
 setup_output() {
-    if [ -n "${NO_COLOR+x}" ] || [ ! -t 1 ] || \
-       [ "${TERM:-}" = "dumb" ] || [ "${CI:-}" = "true" ]; then
-        USE_COLOR=0; USE_EMOJI=0
-        RED=""; GREEN=""; YELLOW=""; BLUE=""; CYAN=""; BOLD=""; DIM=""; NC=""
+    if [ -n "${NO_COLOR+x}" ] || [ ! -t 1 ] || [ "${TERM:-}" = "dumb" ] || [ "${CI:-}" = "true" ]; then
+        RED=""; GREEN=""; YELLOW=""; BLUE=""; CYAN=""; BOLD=""; NC=""
+        USE_EMOJI=0
     else
-        USE_COLOR=1; USE_EMOJI=1
-        RED="\033[0;31m"; GREEN="\033[0;32m"; YELLOW="\033[1;33m"
-        BLUE="\033[0;34m"; CYAN="\033[0;36m"; BOLD="\033[1m"; DIM="\033[2m"; NC="\033[0m"
+        RED="$(printf '\033[0;31m')"; GREEN="$(printf '\033[0;32m')"; YELLOW="$(printf '\033[1;33m')"
+        BLUE="$(printf '\033[0;34m')"; CYAN="$(printf '\033[0;36m')"
+        BOLD="$(printf '\033[1m')"; NC="$(printf '\033[0m')"
+        USE_EMOJI=1
     fi
 }
 setup_output
+e() { [ "$USE_EMOJI" = "1" ] && printf "%s " "$1" || true; }
+ok()   { printf "%s${GREEN}%s${NC}\n" "$(e ✅)" "$*"; }
+info() { printf "%s${BLUE}%s${NC}\n"  "$(e ℹ️ )" "$*"; }
+warn() { printf "%s${YELLOW}%s${NC}\n" "$(e ⚠️ )" "$*"; }
+err()  { printf "%s${RED}%s${NC}\n" "$(e ❌)" "$*" >&2; }
+hdr()  { printf "\n${BOLD}%s%s${NC}\n" "$(e 🔧)" "$*"; }
+
 [ -f /etc/pbx/.env ] && . /etc/pbx/.env
-_e() { [ "${USE_EMOJI:-1}" = "1" ] && echo "$1" || echo ""; }
-info()    { printf "${BLUE}$(_e ℹ️)  %s${NC}\n" "$*"; }
-success() { printf "${GREEN}$(_e ✅) %s${NC}\n" "$*"; }
-warn()    { printf "${YELLOW}$(_e ⚠️)  %s${NC}\n" "$*" >&2; }
-error()   { printf "${RED}$(_e ❌) %s${NC}\n" "$*" >&2; }
-
-show_help() {
-    cat <<'EOF'
-Usage: pbx-ip-checker
-
-Detects public IP address changes and updates the firewall whitelist.
-
-Storage:
-  /etc/pbx/public-ip          Stores the last known public IP
-  /var/log/pbx-install.log    Change events logged here
-
-Cron example:
-  */10 5-22 * * * /usr/local/bin/pbx-ip-checker
-
-Behavior:
-  1. Detect current public IP via ipify.org or ifconfig.me
-  2. Compare with stored IP in /etc/pbx/public-ip
-  3. If changed: update iptables ACCEPT rule, log the change
-  4. If unchanged: exit silently
-
-Options:
-  --help    Show this help
-  --show    Show current stored IP
-EOF
-}
+[ "$(id -u)" -ne 0 ] && { err "Must run as root"; exit 1; }
 
 IP_FILE="/etc/pbx/public-ip"
-LOG_FILE="/var/log/pbx-install.log"
+LOG_FILE="/var/log/pbx/ip-checker.log"
 WHITELIST_FILE="/etc/pbx/whitelist.txt"
 SSH_PORT_FILE="/etc/pbx/ssh-port"
 
-log_event() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] [pbx-ip-checker] $*" >> "$LOG_FILE" 2>/dev/null || true
+mkdir -p "$(dirname "$LOG_FILE")"
+
+log_raw() { printf "%s\n" "$*" | sed 's/\x1b\[[0-9;]*m//g' >> "${LOG_FILE}"; }
+
+usage() {
+    printf "Usage: pbx-ip-checker [--show]\n\n"
+    printf "Detects public IP address changes and updates the firewall whitelist.\n\n"
+    printf "Storage:\n"
+    printf "  /etc/pbx/public-ip         Stores the last known public IP\n"
+    printf "  /var/log/pbx/ip-checker.log  Change events logged here\n\n"
+    printf "Cron example:\n"
+    printf "  */10 5-22 * * * /usr/local/bin/pbx-ip-checker\n\n"
+    printf "Behavior:\n"
+    printf "  1. Detect current public IP via multiple providers\n"
+    printf "  2. Compare with stored IP in /etc/pbx/public-ip\n"
+    printf "  3. If changed: update iptables ACCEPT rule, log the change\n"
+    printf "  4. If unchanged: exit silently\n\n"
+    printf "Options:\n"
+    printf "  --show     Show current stored IP\n"
+    printf "  --help/-h  Show help\n"
+    exit 0
 }
 
 get_public_ip() {
@@ -61,33 +58,32 @@ get_public_ip() {
     for url in "https://api.ipify.org" "https://ifconfig.me" \
                "https://icanhazip.com" "https://ident.me"; do
         ip=$(curl -s --max-time 8 "$url" 2>/dev/null | tr -d '[:space:]')
-        if echo "$ip" | grep -qP '^\d+\.\d+\.\d+\.\d+$'; then
-            echo "$ip"
-            return 0
-        fi
+        case "$ip" in
+            [0-9]*.[0-9]*.[0-9]*.[0-9]*)
+                printf '%s' "$ip"
+                return 0
+                ;;
+        esac
     done
     return 1
 }
 
 update_iptables() {
     local old_ip="$1" new_ip="$2"
-
-    # Remove old IP rule if it was a dynamic rule
+    # Remove old dynamic rule if present
     if [ -n "$old_ip" ] && iptables -C INPUT -s "$old_ip" -j ACCEPT \
-       -m comment --comment "pbx-dynamic-ip" &>/dev/null; then
+           -m comment --comment "pbx-dynamic-ip" 2>/dev/null; then
         iptables -D INPUT -s "$old_ip" -j ACCEPT \
             -m comment --comment "pbx-dynamic-ip" 2>/dev/null || true
-        log_event "Removed iptables rule for old IP: $old_ip"
+        log_raw "Removed iptables rule for old IP: $old_ip"
     fi
-
-    # Add new IP rule at position 1 (before other rules)
-    iptables -I INPUT 1 -s "$new_ip" -j ACCEPT \
-        -m comment --comment "pbx-dynamic-ip" 2>/dev/null && \
-        log_event "Added iptables ACCEPT for new IP: $new_ip" || true
-
-    # Also ensure SSH port is still open (safety)
-    local ssh_port
-    ssh_port=$(cat "$SSH_PORT_FILE" 2>/dev/null || echo "22")
+    # Add new IP rule at position 1
+    if iptables -I INPUT 1 -s "$new_ip" -j ACCEPT \
+            -m comment --comment "pbx-dynamic-ip" 2>/dev/null; then
+        log_raw "Added iptables ACCEPT for new IP: $new_ip"
+    fi
+    # Ensure SSH port remains open
+    ssh_port=$(cat "$SSH_PORT_FILE" 2>/dev/null || printf '22')
     iptables -I INPUT 2 -p tcp --dport "$ssh_port" -j ACCEPT \
         -m comment --comment "ssh-safety" 2>/dev/null || true
 }
@@ -95,58 +91,44 @@ update_iptables() {
 update_whitelist() {
     local old_ip="$1" new_ip="$2"
     mkdir -p "$(dirname "$WHITELIST_FILE")"
-
     if [ -f "$WHITELIST_FILE" ] && [ -n "$old_ip" ]; then
-        # Remove old dynamic IP entry
         sed -i "/^${old_ip}[[:space:]]*pbx-dynamic-ip/d" "$WHITELIST_FILE" 2>/dev/null || true
     fi
-    echo "${new_ip}  pbx-dynamic-ip" >> "$WHITELIST_FILE"
+    printf "%s  pbx-dynamic-ip\n" "$new_ip" >> "$WHITELIST_FILE"
 }
 
-main() {
-    case "${1:-}" in
-        --help) show_help; exit 0 ;;
-        --show)
-            if [ -f "$IP_FILE" ]; then
-                printf "Stored public IP: %s\n" "$(cat "$IP_FILE")"
-            else
-                echo "No stored IP found"
-            fi
-            exit 0
-            ;;
-    esac
-
-    mkdir -p "$(dirname "$IP_FILE")"
-
-    local current_ip old_ip
-    current_ip=$(get_public_ip) || {
-        log_event "ERROR: Could not determine public IP"
-        exit 0  # Don't fail cron job on network error
-    }
-
-    old_ip=$(cat "$IP_FILE" 2>/dev/null || echo "")
-
-    if [ "$current_ip" = "$old_ip" ]; then
-        # No change — silent exit
+case "${1:-}" in
+    --help|-h) usage ;;
+    --show)
+        if [ -f "$IP_FILE" ]; then
+            printf "Stored public IP: %s\n" "$(cat "$IP_FILE")"
+        else
+            info "No stored IP found"
+        fi
         exit 0
-    fi
+        ;;
+esac
 
-    # IP changed
-    log_event "IP changed: ${old_ip:-none} -> ${current_ip}"
-    warn "Public IP changed: ${old_ip:-none} → ${current_ip}"
+mkdir -p "$(dirname "$IP_FILE")"
 
-    # Update stored IP
-    echo "$current_ip" > "$IP_FILE"
-
-    # Update firewall
-    if command -v iptables &>/dev/null; then
-        update_iptables "$old_ip" "$current_ip"
-    fi
-
-    # Update whitelist file
-    update_whitelist "$old_ip" "$current_ip"
-
-    success "IP updated to $current_ip"
+current_ip=$(get_public_ip) || {
+    log_raw "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: Could not determine public IP"
+    exit 0  # Don't fail cron on transient network error
 }
 
-main "$@"
+old_ip=$(cat "$IP_FILE" 2>/dev/null || true)
+
+if [ "$current_ip" = "$old_ip" ]; then
+    exit 0
+fi
+
+# IP changed
+log_raw "[$(date '+%Y-%m-%d %H:%M:%S')] IP changed: ${old_ip:-none} -> ${current_ip}"
+warn "Public IP changed: ${old_ip:-none} -> ${current_ip}"
+
+printf '%s' "$current_ip" > "$IP_FILE"
+
+command -v iptables >/dev/null 2>&1 && update_iptables "${old_ip:-}" "$current_ip"
+update_whitelist "${old_ip:-}" "$current_ip"
+
+ok "IP updated to $current_ip"
