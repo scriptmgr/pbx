@@ -94,7 +94,8 @@ DISTRO_GEN=""
 INIT_SYSTEM=""
 MYSQL_ROOT_PASSWORD=""
 FREEPBX_ADMIN_USERNAME=""
-FREEPBX_ADMIN_PASSWORD=""
+ADMIN_PASSWORD=""          # Unified admin UI password (FreePBX, AvantFax, Reminder, CallCenter)
+FREEPBX_ADMIN_PASSWORD=""  # Derived from ADMIN_PASSWORD — kept for internal use
 FREEPBX_DB_PASSWORD=""
 AVANTFAX_DB_PASSWORD=""
 INSTALL_INVENTORY="/var/lib/pbx/install_inventory"
@@ -711,7 +712,7 @@ save_pbx_env() {
 # --- Credentials ---
 MYSQL_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD:-}"
 FREEPBX_ADMIN_USERNAME="${FREEPBX_ADMIN_USERNAME:-}"
-FREEPBX_ADMIN_PASSWORD="${FREEPBX_ADMIN_PASSWORD:-}"
+ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 FREEPBX_DB_PASSWORD="${FREEPBX_DB_PASSWORD:-}"
 AVANTFAX_DB_PASSWORD="${AVANTFAX_DB_PASSWORD:-}"
 
@@ -1102,9 +1103,12 @@ prepare_system() {
     touch "${INSTALL_INVENTORY}"
 
     # Generate passwords if not already loaded from env
-    [ -z "${MYSQL_ROOT_PASSWORD}" ]    && MYSQL_ROOT_PASSWORD=$(generate_password 32)
-    [ -z "${FREEPBX_ADMIN_PASSWORD}" ] && FREEPBX_ADMIN_PASSWORD=$(generate_password 24)
+    # ADMIN_PASSWORD: unified admin UI password — alphanumeric only (no special chars, avoids shell/form issues)
+    [ -z "${ADMIN_PASSWORD}" ]         && ADMIN_PASSWORD=$(tr -dc 'A-Za-z0-9' < /dev/urandom 2>/dev/null | head -c 16; echo)
+    # FreePBX admin password always mirrors ADMIN_PASSWORD
+    FREEPBX_ADMIN_PASSWORD="${ADMIN_PASSWORD}"
     [ -z "${FREEPBX_ADMIN_USERNAME}" ] && FREEPBX_ADMIN_USERNAME="admin"
+    [ -z "${MYSQL_ROOT_PASSWORD}" ]    && MYSQL_ROOT_PASSWORD=$(generate_password 32)
     [ -z "${FREEPBX_DB_PASSWORD}" ]    && FREEPBX_DB_PASSWORD=$(generate_password 24)
     [ -z "${AVANTFAX_DB_PASSWORD}" ]   && AVANTFAX_DB_PASSWORD=$(generate_password 24)
     [ -z "${EMAIL_TO_FAX_ALIAS}" ]     && generate_fax_alias
@@ -1115,9 +1119,9 @@ prepare_system() {
         cat > "${AUTO_PASSWORDS_FILE}" << PWEOF
 # PBX Installation Passwords - Generated $(date '+%Y-%m-%d %H:%M:%S')
 # KEEP THIS FILE SECURE - chmod 600
+ADMIN_PASSWORD=${ADMIN_PASSWORD}
 MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
 FREEPBX_ADMIN_USERNAME=${FREEPBX_ADMIN_USERNAME}
-FREEPBX_ADMIN_PASSWORD=${FREEPBX_ADMIN_PASSWORD}
 FREEPBX_DB_PASSWORD=${FREEPBX_DB_PASSWORD}
 AVANTFAX_DB_PASSWORD=${AVANTFAX_DB_PASSWORD}
 EMAIL_TO_FAX_ALIAS=${EMAIL_TO_FAX_ALIAS}
@@ -1178,7 +1182,7 @@ PWEOF
 
 MySQL Root Password:    ${MYSQL_ROOT_PASSWORD}
 FreePBX Admin User:     ${FREEPBX_ADMIN_USERNAME}
-FreePBX Admin Password: ${FREEPBX_ADMIN_PASSWORD}
+Admin Password:         ${ADMIN_PASSWORD}
 FreePBX DB Password:    ${FREEPBX_DB_PASSWORD}
 AvantFax DB Password:   ${AVANTFAX_DB_PASSWORD}
 
@@ -3289,13 +3293,31 @@ AVFAXSQLEOF
             < "${avantfax_dir}create_tables.sql" 2>/dev/null || true
     fi
 
+    # Set admin user password to FREEPBX_ADMIN_PASSWORD (MD5 hashed — AvantFax uses MD5)
+    local af_admin_md5
+    af_admin_md5=$(printf '%s' "${FREEPBX_ADMIN_PASSWORD}" | md5sum | cut -c1-32)
+    mysql -u root -p"${MYSQL_ROOT_PASSWORD}" avantfax 2>/dev/null << AFADMINSQL || true
+UPDATE UserAccount SET password='${af_admin_md5}', wasreset=0
+WHERE username='admin';
+AFADMINSQL
+    info "AvantFax admin password synced"
+
+    # Patch config.php with correct DB credentials — works whether copied from .default or already present
     if [ -f "${AVANTFAX_WEB_DIR}/includes/config.php.default" ]; then
         cp "${AVANTFAX_WEB_DIR}/includes/config.php.default" \
            "${AVANTFAX_WEB_DIR}/includes/config.php"
-        sed -i "s/define('DB_PASS', '.*')/define('DB_PASS', '${AVANTFAX_DB_PASSWORD}')/" \
+    fi
+    if [ -f "${AVANTFAX_WEB_DIR}/includes/config.php" ]; then
+        # AvantFax uses AFDB_PASS / AFDB_USER / AFDB_NAME / AFDB_HOST constants
+        sed -i "s/define('AFDB_PASS',\s*'[^']*')/define('AFDB_PASS',\t'${AVANTFAX_DB_PASSWORD}')/" \
             "${AVANTFAX_WEB_DIR}/includes/config.php" 2>/dev/null || true
-        sed -i "s/define('DB_USER', '.*')/define('DB_USER', 'avantfax')/" \
+        sed -i "s/define('AFDB_USER',\s*'[^']*')/define('AFDB_USER',\t'avantfax')/" \
             "${AVANTFAX_WEB_DIR}/includes/config.php" 2>/dev/null || true
+        sed -i "s/define('AFDB_NAME',\s*'[^']*')/define('AFDB_NAME',\t'avantfax')/" \
+            "${AVANTFAX_WEB_DIR}/includes/config.php" 2>/dev/null || true
+        sed -i "s/define('AFDB_HOST',\s*'[^']*')/define('AFDB_HOST',\t'localhost')/" \
+            "${AVANTFAX_WEB_DIR}/includes/config.php" 2>/dev/null || true
+        info "AvantFax config.php updated with database credentials"
     fi
 
     svc_reload "${APACHE_SERVICE}" 2>/dev/null || true
@@ -5439,8 +5461,14 @@ REMINDEREOF
     chmod 755 /usr/local/bin/pbx-reminder-process
     echo "* * * * * asterisk /usr/local/bin/pbx-reminder-process" > /etc/cron.d/pbx-reminders
 
-    # Apache alias
-    local rem_conf
+    # Apache alias with Basic Auth using ADMIN_PASSWORD
+    local rem_conf htpasswd_file="/etc/pbx/.htpasswd-pbx"
+    # Create/update shared htpasswd file for pbx web apps (reminder, callcenter)
+    if command -v htpasswd >/dev/null 2>&1; then
+        htpasswd -bc "${htpasswd_file}" admin "${ADMIN_PASSWORD}" 2>/dev/null || true
+        chmod 640 "${htpasswd_file}"
+        chown root:"${APACHE_GROUP:-www-data}" "${htpasswd_file}" 2>/dev/null || true
+    fi
     case "${DISTRO_FAMILY}" in
         debian) rem_conf="/etc/apache2/conf-available/reminder.conf" ;;
         *) rem_conf="/etc/httpd/conf.d/reminder.conf" ;;
@@ -5450,7 +5478,10 @@ Alias /reminder ${WEB_ROOT}/reminder
 <Directory ${WEB_ROOT}/reminder>
     Options -Indexes
     AllowOverride None
-    Require all granted
+    AuthType Basic
+    AuthName "PBX Reminder"
+    AuthUserFile /etc/pbx/.htpasswd-pbx
+    Require valid-user
 </Directory>
 REMCEOF
     [ "${DISTRO_FAMILY}" = "debian" ] && a2enconf reminder 2>/dev/null || true
@@ -5486,7 +5517,13 @@ install_asternic() {
 CCEOF
     fi
 
-    local cc_conf
+    local cc_conf htpasswd_file="/etc/pbx/.htpasswd-pbx"
+    # Ensure htpasswd file exists (reminder may have created it; create here if not)
+    if command -v htpasswd >/dev/null 2>&1 && [ ! -f "${htpasswd_file}" ]; then
+        htpasswd -bc "${htpasswd_file}" admin "${ADMIN_PASSWORD}" 2>/dev/null || true
+        chmod 640 "${htpasswd_file}"
+        chown root:"${APACHE_GROUP:-www-data}" "${htpasswd_file}" 2>/dev/null || true
+    fi
     case "${DISTRO_FAMILY}" in
         debian) cc_conf="/etc/apache2/conf-available/callcenter.conf" ;;
         *) cc_conf="/etc/httpd/conf.d/callcenter.conf" ;;
@@ -5495,8 +5532,11 @@ CCEOF
 Alias /callcenter ${asternic_dir}
 <Directory ${asternic_dir}>
     Options -Indexes
-    AllowOverride All
-    Require all granted
+    AllowOverride None
+    AuthType Basic
+    AuthName "PBX Call Center"
+    AuthUserFile /etc/pbx/.htpasswd-pbx
+    Require valid-user
 </Directory>
 CCAEOF
     [ "${DISTRO_FAMILY}" = "debian" ] && a2enconf callcenter 2>/dev/null || true
@@ -5791,7 +5831,9 @@ show_completion_message() {
     echo "    Webmin      : https://${PUBLIC_IP}:9001"
     echo ""
     echo "${CYAN}  Credentials (also saved in /etc/pbx/pbx_passwords):${NC}"
-    echo "    FreePBX Admin : ${FREEPBX_ADMIN_USERNAME} / ${FREEPBX_ADMIN_PASSWORD}"
+    echo "    Admin Password: ${ADMIN_PASSWORD}  (FreePBX, AvantFax, Reminder, CallCenter)"
+    echo "    Webmin (port 9001): uses system root password — set with 'passwd root'"
+    echo "    Admin Username: ${FREEPBX_ADMIN_USERNAME}"
     echo "    MySQL Root    : ${MYSQL_ROOT_PASSWORD}"
     echo ""
     echo "${CYAN}  Installed Components:${NC}"
@@ -6035,7 +6077,7 @@ ENVIRONMENT VARIABLES:
   INSTALL_FOP2           yes/no — Flash Operator Panel 2 (advanced only)
   INSTALL_SNGREP         yes/no — SIP traffic monitor (advanced only)
   MYSQL_ROOT_PASSWORD    Pre-set MySQL root password (auto-generated if empty)
-  FREEPBX_ADMIN_PASSWORD Pre-set FreePBX admin password (auto-generated if empty)
+  ADMIN_PASSWORD         Unified admin UI password for all web apps (auto-generated if empty)
   GITHUB_REPO            GitHub repo for management scripts (default: scriptmgr/pbx)
   SCRIPTS_REF            Branch/tag for scripts (default: main)
   GITHUB_TOKEN           Token for private forks (optional)
