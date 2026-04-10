@@ -33,9 +33,9 @@ ${BOLD}%s%s${NC}
 
 SSHD_CONFIG="/etc/ssh/sshd_config"
 AUTH_KEYS="/root/.ssh/authorized_keys"
-SSH_PORT=$(grep -E '^Port ' "$SSHD_CONFIG" 2>/dev/null | awk '{print $2}' | head -1)
+SSH_PORT=$(grep -E '^Port ' "$SSHD_CONFIG" 2>/dev/null | awk '{print $2}' | head -1 || true)
 SSH_PORT="${SSH_PORT:-22}"
-SESSION_IP=$(echo "${SSH_CLIENT:-}" | awk '{print $1}')
+SESSION_IP=$(echo "${SSH_CLIENT:-}" | awk '{print $1}' || true)
 
 usage() {
     printf "Usage: pbx-ssh [options]\n\nSSH security management.\n\nOptions:\n"
@@ -98,5 +98,5 @@ case "${1:-}" in
             "$(grep -E '^PubkeyAuthentication' "$SSHD_CONFIG" 2>/dev/null | awk '{print $2}' || echo 'default')"
         printf "  PasswordAuth    : %s\n" \
             "$(grep -E '^PasswordAuthentication' "$SSHD_CONFIG" 2>/dev/null | awk '{print $2}' || echo 'default')"
-        [ -n "$SESSION_IP" ] && printf "  Session IP      : %s\n" "$SESSION_IP" ;;
+        [ -n "$SESSION_IP" ] && printf "  Session IP      : %s\n" "$SESSION_IP" || true ;;
 esac

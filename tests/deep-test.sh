@@ -61,7 +61,7 @@ HOST_IP=${HOST_IP:-127.0.0.1}
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 db_q() {
-    mysql -u root ${MYSQL_PASS:+-p"${MYSQL_PASS}"} -sNe "$1" 2>/dev/null
+    mysql -u root ${MYSQL_PASS:+-p"${MYSQL_PASS}"} -Dasterisk -sNe "$1" 2>/dev/null
 }
 
 db_qdb() {
@@ -133,7 +133,8 @@ _run_mgmt() {
         return
     fi
     local out ec
-    out=$(NO_COLOR=1 timeout 30 $cmd $args 2>&1)
+    # eval is required so that shell operators in $args (like 2>&1 and ||) are interpreted
+    out=$(eval "NO_COLOR=1 timeout 30 $cmd $args" 2>&1)
     ec=$?
     if [ -z "$out" ] && [ "$ec" -eq 127 ]; then
         skip "SCRIPT $label: command not found"
@@ -191,8 +192,8 @@ _run_mgmt "pbx-diag"                   pbx-diag     "2>&1 || true"          "dia
 _run_mgmt "pbx-docs"                   pbx-docs     "2>&1 || true"          "doc|generate|manual|html"
 # pbx-firewall
 _run_mgmt "pbx-firewall status"        pbx-firewall "status 2>&1 || true"   "firewall|iptables|nft|rule|zone"
-# pbx-ip-checker
-_run_mgmt "pbx-ip-checker"             pbx-ip-checker "2>&1 || true"        "ip|public|wan|check"
+# pbx-ip-checker (cron daemon; use --show to get current status without network)
+_run_mgmt "pbx-ip-checker --show"      pbx-ip-checker "--show 2>&1 || true"  "ip|public|wan|check|stored|found"
 # pbx-logs --help
 _run_mgmt "pbx-logs --help"            pbx-logs     "--help 2>&1 || true"   "help|log|usage|tail|view"
 # pbx-moh
@@ -342,45 +343,48 @@ else
     warn "CONTEXT from-trunk/from-pstn: not found (no trunks configured yet)"
 fi
 
-# Check extensions in pbx-demo or from-internal
+# Check extensions in from-internal-custom, from-internal, or any context
+# Asterisk's 'dialplan show' wraps extensions in single quotes: '*43' => ...
 _check_ext() {
-    local ext="$1" ctx_pattern="${2:-pbx-demo|from-internal}"
+    local ext="$1"
     local out
-    # Try exact match in dialplan show
-    out=$(ast "dialplan show ${ext}@pbx-demo" 2>/dev/null)
-    if [ -z "$out" ] || echo "$out" | grep -qiE "no match|no context|error"; then
-        out=$(ast "dialplan show ${ext}@from-internal" 2>/dev/null)
-    fi
-    if echo "$out" | grep -qE "^ *${ext}\b|exten.*${ext}"; then
+    out=$(ast "dialplan show ${ext}@from-internal" 2>/dev/null)
+    # Use fixed-string match to avoid regex escaping issues with * and other special chars
+    if echo "$out" | grep -qF "'${ext}' =>"; then
         ok "EXTENSION ${ext}: present in dialplan"
+        return
+    fi
+    # Fallback: search full dialplan dump
+    if echo "$DIALPLAN_ALL" | grep -qF "'${ext}' =>"; then
+        ok "EXTENSION ${ext}: found in full dialplan dump"
     else
-        # Fallback: search full dialplan dump
-        if echo "$DIALPLAN_ALL" | grep -qE "^\s+${ext}\s*=>|^\s+${ext}@"; then
-            ok "EXTENSION ${ext}: found in full dialplan dump"
-        else
-            warn "EXTENSION ${ext}: not found (demo may not be loaded)"
-        fi
+        warn "EXTENSION ${ext}: not found (demo may not be loaded)"
     fi
 }
 
 _check_ext "123"
-_check_ext "947"
-_check_ext "951"
 _check_ext "*43"
 _check_ext "*610"
+_check_ext "*97"
+
+# 947/951 are optional demo extensions (not always installed)
+if echo "$DIALPLAN_ALL" | grep -qE "'947'"; then
+    ok "EXTENSION 947: present"
+else
+    warn "EXTENSION 947: not found (optional demo)"
+fi
+if echo "$DIALPLAN_ALL" | grep -qE "'951'"; then
+    ok "EXTENSION 951: present"
+else
+    warn "EXTENSION 951: not found (optional demo)"
+fi
 
 # LENNY / 4747
-if ast "dialplan show 4747@pbx-demo" 2>/dev/null | grep -qE "4747"; then
-    ok "EXTENSION 4747 (LENNY): present"
-elif ast "dialplan show LENNY@pbx-demo" 2>/dev/null | grep -qE "LENNY"; then
-    ok "EXTENSION LENNY: present"
-elif echo "$DIALPLAN_ALL" | grep -qiE "lenny|4747"; then
+if echo "$DIALPLAN_ALL" | grep -qiE "'4747'|lenny"; then
     ok "EXTENSION LENNY/4747: found in dialplan"
 else
     warn "EXTENSION LENNY/4747: not found (optional demo)"
 fi
-
-_check_ext "*97"
 
 # Feature codes
 for feat in "*72" "*73"; do
@@ -403,9 +407,9 @@ for room in "*469" "*470"; do
     fi
 done
 
-# Total dialplan entries
-DIALPLAN_LINES=$(echo "$DIALPLAN_ALL" | grep -c "exten =>" 2>/dev/null || echo 0)
-info "Total dialplan 'exten =>' entries: $DIALPLAN_LINES"
+# Total dialplan entries — 'dialplan show' output uses "'ext' =>" format (not "exten =>")
+DIALPLAN_LINES=$(echo "$DIALPLAN_ALL" | grep -cF "' =>" 2>/dev/null || echo 0)
+info "Total dialplan extension entries: $DIALPLAN_LINES"
 [ "${DIALPLAN_LINES:-0}" -ge 10 ] && ok "Dialplan entries: $DIALPLAN_LINES" \
     || warn "Dialplan looks sparse: $DIALPLAN_LINES entries"
 
@@ -437,10 +441,10 @@ fi
 CHAN_BEFORE=$(ast "core show channels" | tail -1)
 info "Channels before originate: $CHAN_BEFORE"
 
-# Originate a Local call to Echo application (non-blocking, async)
-if echo "$DIALPLAN_ALL" | grep -qiE "\*43|echo"; then
+# Originate a Local call to Echo application via from-internal-custom (*43 → pbx-echo)
+if echo "$DIALPLAN_ALL" | grep -qiE "'?\*43'?"; then
     ORIG_RESP=$(ami_session \
-        "Action: Originate\r\nChannel: Local/s@pbx-demo\r\nApplication: Echo\r\nAsync: yes\r\nCallerId: DeepTest <5555>")
+        "Action: Originate\r\nChannel: Local/*43@from-internal\r\nApplication: Echo\r\nAsync: yes\r\nCallerId: DeepTest <5555>")
     if echo "$ORIG_RESP" | grep -qiE "Response: Success|Queued"; then
         ok "AMI Originate: Echo call queued successfully"
     else
@@ -464,11 +468,11 @@ else
 fi
 
 # Confirm speaking clock dialplan entry via direct ast command
-DP_CLOCK=$(ast "dialplan show 123@pbx-demo" 2>/dev/null)
-if echo "$DP_CLOCK" | grep -qE "123|sayunixtime|SayUnixTime|clock"; then
-    ok "DIALPLAN 123@pbx-demo: speaking clock entries present"
+DP_CLOCK=$(ast "dialplan show 123@from-internal" 2>/dev/null)
+if echo "$DP_CLOCK" | grep -qE "123|sayunixtime|SayUnixTime|clock|pbx-clock"; then
+    ok "DIALPLAN 123: speaking clock entries present"
 else
-    warn "DIALPLAN 123@pbx-demo: not found or empty"
+    warn "DIALPLAN 123: not found or empty"
 fi
 
 # =============================================================================
@@ -512,10 +516,16 @@ else
     warn "pjsip_wizard.conf: not found (using inline pjsip.conf config)"
 fi
 
-# Check pjsip.conf has actual transport/endpoint definitions
-grep -qiE "^\[transport-" /etc/asterisk/pjsip.conf 2>/dev/null \
-    && ok "pjsip.conf: [transport-*] section present" \
-    || warn "pjsip.conf: no [transport-*] section found"
+# Check pjsip transport config — use live Asterisk data (already in PJSIP_TRANSPORTS)
+# FreePBX stores transports in pjsip.transports.conf with sections like [0.0.0.0-udp]
+TRANSPORT_COUNT=$(echo "$PJSIP_TRANSPORTS" | grep -c "^Transport:" 2>/dev/null || echo 0)
+if [ "${TRANSPORT_COUNT:-0}" -ge 1 ]; then
+    ok "pjsip: $TRANSPORT_COUNT transport(s) active (from pjsip show transports)"
+elif grep -qiE "type\s*=\s*transport" /etc/asterisk/pjsip.transports.conf 2>/dev/null; then
+    ok "pjsip: transport config found in pjsip.transports.conf"
+else
+    warn "pjsip: no active transports found (pjsip show transports returned no results)"
+fi
 
 # =============================================================================
 sep "6. DATABASE INTEGRITY"
@@ -539,7 +549,7 @@ done
 
 # sip_buddies or pjsip tables
 SIP_TBL=$(db_q "SHOW TABLES LIKE 'sip_buddies';" 2>/dev/null)
-PJSIP_TBL=$(db_q "SHOW TABLES LIKE 'pjsip_%';" 2>/dev/null | head -1)
+PJSIP_TBL=$(db_q "SHOW TABLES LIKE 'pjsip';" 2>/dev/null | head -1)
 if [ -n "$SIP_TBL" ]; then
     ok "TABLE asterisk.sip_buddies: exists"
 elif [ -n "$PJSIP_TBL" ]; then
@@ -549,7 +559,7 @@ else
 fi
 
 # voicemail table
-VM_TBL=$(db_q "SHOW TABLES LIKE 'voicemail';" 2>/dev/null)
+VM_TBL=$(db_q "SHOW TABLES LIKE 'voicemail%';" 2>/dev/null | head -1)
 [ -n "$VM_TBL" ] && ok "TABLE asterisk.voicemail: exists" \
     || warn "TABLE asterisk.voicemail: not found (file-based VM?)"
 
@@ -640,7 +650,7 @@ else
 fi
 
 MOH_FILES_AST=$(ast "moh show files")
-if echo "$MOH_FILES_AST" | grep -qE "\.(mp3|wav|ulaw|alaw|gsm)"; then
+if echo "$MOH_FILES_AST" | grep -qE "File:|\.mp3|\.wav|\.ulaw|\.alaw|\.gsm"; then
     ok "MOH files (Asterisk): files listed by 'moh show files'"
 else
     warn "MOH files (Asterisk): 'moh show files' returned no file list"
@@ -907,15 +917,22 @@ if [ -n "$PHP_INI" ] && [ -f "$PHP_INI" ]; then
         && ok "PHP memory_limit: $MEM_LIMIT (>= 128M)" \
         || warn "PHP memory_limit: $MEM_LIMIT (expected >= 128M)"
 
-    [ "${MAX_EXEC:-0}" -ge 30 ] \
-        && ok "PHP max_execution_time: ${MAX_EXEC}s (>= 30s)" \
-        || warn "PHP max_execution_time: ${MAX_EXEC}s (expected >= 30s)"
+    # 0 = unlimited (CLI default); accept 0 or >= 30
+    [ "${MAX_EXEC:-0}" -eq 0 ] || [ "${MAX_EXEC:-0}" -ge 30 ] \
+        && ok "PHP max_execution_time: ${MAX_EXEC}s ($([ "${MAX_EXEC:-0}" -eq 0 ] && echo 'unlimited' || echo '>= 30s'))" \
+        || warn "PHP max_execution_time: ${MAX_EXEC}s (expected >= 30s or 0 for unlimited)"
 else
     warn "php.ini: not found or path could not be determined"
 fi
 
-# PHP 7.4 for AvantFax
-PHP74=$(php7.4 -v 2>/dev/null | head -1 || php74 -v 2>/dev/null | head -1 || true)
+# PHP 7.4 for AvantFax — Remi/RHEL names it php74, Debian/Ubuntu names it php7.4
+if command -v php7.4 >/dev/null 2>&1; then
+    PHP74=$(php7.4 -v 2>/dev/null | head -1)
+elif command -v php74 >/dev/null 2>&1; then
+    PHP74=$(php74 -v 2>/dev/null | head -1)
+else
+    PHP74=""
+fi
 if echo "$PHP74" | grep -q "7.4"; then
     ok "PHP 7.4: available ($PHP74)"
 else
@@ -1082,8 +1099,8 @@ info "AGI scripts total: $AGI_COUNT"
     && ok "AGI scripts: $AGI_COUNT file(s) found" \
     || warn "AGI scripts: none found in $AGI_DIR"
 
-# Check for key AGI scripts
-for agi_script in call_logger.agi validate_caller.agi business_hours.agi; do
+# Check for key AGI scripts (using actual filenames with dashes, as installed)
+for agi_script in call-logger.agi cid-validate.agi business-hours.agi; do
     if [ -f "$AGI_DIR/$agi_script" ]; then
         # Executable check
         [ -x "$AGI_DIR/$agi_script" ] \
@@ -1193,7 +1210,7 @@ _check_tcp_port() {
 }
 
 _check_udp_port 5060  "SIP"
-_check_udp_port 5061  "SIP/TLS"      "warn"
+_check_tcp_port 5061  "SIP/TLS"      "warn"
 _check_tcp_port 8088  "Asterisk HTTP"
 _check_udp_port 4569  "IAX2"
 _check_tcp_port 80    "HTTP"
@@ -1406,15 +1423,15 @@ if [ -n "$FWCONSOLE_LIST" ]; then
         && ok "FreePBX modules: $MOD_INSTALLED enabled (>= 20)" \
         || warn "FreePBX modules: only $MOD_INSTALLED enabled (expected 20+)"
 
-    # Core modules
-    for coremod in framework core voicemail pjsip; do
+    # Core modules — FreePBX 17 uses 'sipsettings' (not 'pjsip') for PJSIP management
+    for coremod in framework core voicemail sipsettings; do
         echo "$FWCONSOLE_LIST" | grep -qiE "^\| *${coremod} " \
             && ok "FreePBX module ${coremod}: in module list" \
             || warn "FreePBX module ${coremod}: NOT in module list"
     done
 
-    # Routing modules
-    for routemod in inbound_routes outbound_routes; do
+    # Routing modules — in FreePBX 17 routing is part of core; check for related modules
+    for routemod in ivr ringgroups queues timeconditions; do
         echo "$FWCONSOLE_LIST" | grep -qiE "^\| *${routemod} " \
             && ok "FreePBX routing module ${routemod}: in module list" \
             || warn "FreePBX routing module ${routemod}: not in module list"
