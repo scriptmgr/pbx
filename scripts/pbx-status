@@ -41,7 +41,7 @@ usage() { printf "Usage: pbx-status\nShow full PBX system status.\n"; exit 0; }
 svc_check() {
     local svc="$1" state
     if command -v systemctl >/dev/null 2>&1; then
-        state=$(systemctl is-active "$svc" 2>/dev/null)
+        state=$(systemctl is-active "$svc" 2>/dev/null || true)
     else
         service "$svc" status >/dev/null 2>&1 && state="active" || state="inactive"
     fi

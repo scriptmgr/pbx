@@ -32,11 +32,22 @@ ${BOLD}%s%s${NC}
 [ "$(id -u)" -ne 0 ] && { err "Must run as root"; exit 1; }
 
 usage() {
-    printf "Usage: pbx-restart [--force]\n\nSafely restart PBX services.\n\nOptions:\n"
-    printf "  --force    Skip confirmation\n  --help/-h  Show help\n"; exit 0
+    printf "Usage: pbx-restart [--force] [--dry-run]\n\nSafely restart PBX services.\n\nOptions:\n"
+    printf "  --force     Skip confirmation\n  --dry-run   Show what would be done without doing it\n  --help/-h   Show help\n"; exit 0
 }
-FORCE=0
-case "${1:-}" in --help|-h) usage ;; --force) FORCE=1 ;; esac
+FORCE=0; DRY=0
+case "${1:-}" in --help|-h) usage ;; --force) FORCE=1 ;; --dry-run) DRY=1 ;; esac
+
+if [ "$DRY" -eq 1 ]; then
+    hdr "Dry Run — actions that would be performed"
+    info "1. asterisk -rx 'core stop gracefully' (30s timeout)"
+    info "2. fwconsole stop"
+    info "3. sleep 3"
+    info "4. fwconsole start"
+    info "5. systemctl restart httpd/apache2 php-fpm"
+    ok "Dry run complete — no changes made"
+    exit 0
+fi
 
 if [ "$FORCE" -eq 0 ]; then
     printf "Restart PBX? This will drop active calls. [y/N] "

@@ -50,7 +50,7 @@ usage() {
 svc_state() {
     local svc="$1"
     if command -v systemctl >/dev/null 2>&1; then
-        systemctl is-active "$svc" 2>/dev/null
+        systemctl is-active "$svc" 2>/dev/null || true
     else
         service "$svc" status >/dev/null 2>&1 && echo "active" || echo "inactive"
     fi

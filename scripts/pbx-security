@@ -106,6 +106,7 @@ fi
 
 hdr "Security Summary"
 printf "  PASS: %s | WARN: %s | FAIL: %s\n" "$P" "$W" "$F"
-[ "$F" -gt 0 ] && err "Action required: ${F} security issue(s) found"
-[ "$W" -gt 0 ] && warn "Review ${W} warning(s)"
-[ "$F" -eq 0 ] && [ "$W" -eq 0 ] && ok "All security checks passed"
+[ "$F" -gt 0 ] && err "Action required: ${F} security issue(s) found" || true
+[ "$W" -gt 0 ] && warn "Review ${W} warning(s)" || true
+[ "$F" -eq 0 ] && [ "$W" -eq 0 ] && ok "All security checks passed" || true
+[ "$F" -gt 0 ] && exit 2 || exit 0
