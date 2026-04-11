@@ -81,11 +81,26 @@ http_body() {
 }
 
 # Send raw AMI action and return first 20 lines of response
-send_ami() {
+# Uses bash /dev/tcp as fallback when nc is not available
+_ami_raw() {
     local payload="$1"
-    printf "%s\r\n\r\n" "$payload" \
-        | timeout 5 nc -q 2 127.0.0.1 5038 2>/dev/null \
-        | head -20
+    if command -v nc >/dev/null 2>&1; then
+        printf "%s\r\n\r\n" "$payload" \
+            | timeout 5 nc -q 2 127.0.0.1 5038 2>/dev/null \
+            | head -20
+    else
+        timeout 6 bash -c '
+            exec 3<>/dev/tcp/127.0.0.1/5038
+            printf "%s\r\n\r\n" "$1" >&3
+            sleep 2
+            head -20 <&3
+            exec 3>&-
+        ' _ "$payload" 2>/dev/null
+    fi
+}
+
+send_ami() {
+    _ami_raw "$1"
 }
 
 ami_login_payload() {
@@ -95,13 +110,25 @@ ami_login_payload() {
 # Full AMI session: login then send action
 ami_session() {
     local action="$1"
-    {
-        printf "Action: Login\r\nUsername: %s\r\nSecret: %s\r\n\r\n" \
-            "$AMI_USER" "$AMI_SECRET"
-        sleep 0.5
-        printf "%s\r\n\r\n" "$action"
-        sleep 0.5
-    } | timeout 5 nc -q 2 127.0.0.1 5038 2>/dev/null | head -40
+    if command -v nc >/dev/null 2>&1; then
+        {
+            printf "Action: Login\r\nUsername: %s\r\nSecret: %s\r\n\r\n" \
+                "$AMI_USER" "$AMI_SECRET"
+            sleep 0.5
+            printf "%s\r\n\r\n" "$action"
+            sleep 0.5
+        } | timeout 5 nc -q 2 127.0.0.1 5038 2>/dev/null | head -40
+    else
+        timeout 10 bash -c '
+            exec 3<>/dev/tcp/127.0.0.1/5038
+            printf "Action: Login\r\nUsername: %s\r\nSecret: %s\r\n\r\n" "$1" "$2" >&3
+            sleep 0.5
+            printf "%s\r\n\r\n" "$3" >&3
+            sleep 2
+            head -40 <&3
+            exec 3>&-
+        ' _ "$AMI_USER" "$AMI_SECRET" "$action" 2>/dev/null
+    fi
 }
 
 svc_active() {
@@ -417,10 +444,24 @@ info "Total dialplan extension entries: $DIALPLAN_LINES"
 sep "4. LIVE CALL ORIGINATION VIA AMI"
 # =============================================================================
 
-# AMI connectivity test
-AMI_BANNER=$(printf "Action: Login\r\nUsername: %s\r\nSecret: %s\r\n\r\n" \
-    "$AMI_USER" "$AMI_SECRET" \
-    | timeout 5 nc -q 2 127.0.0.1 5038 2>/dev/null | head -10)
+# AMI login — avoids command substitution stripping \r\n\r\n terminator
+# Accepts user and secret directly; builds payload internally
+_ami_login() {
+    local user="$1" secret="$2"
+    if command -v nc >/dev/null 2>&1; then
+        { printf "Action: Login\r\nUsername: %s\r\nSecret: %s\r\n\r\n" "$user" "$secret"; sleep 1; } \
+            | timeout 5 nc -q 2 127.0.0.1 5038 2>/dev/null | head -10
+    else
+        timeout 6 bash -c '
+            exec 3<>/dev/tcp/127.0.0.1/5038
+            printf "Action: Login\r\nUsername: %s\r\nSecret: %s\r\n\r\n" "$1" "$2" >&3
+            sleep 2
+            head -10 <&3
+            exec 3>&-
+        ' _ "$user" "$secret" 2>/dev/null
+    fi
+}
+AMI_BANNER=$(_ami_login "$AMI_USER" "$AMI_SECRET")
 
 if echo "$AMI_BANNER" | grep -q "Asterisk Call Manager"; then
     ok "AMI: banner received (Asterisk Call Manager)"
@@ -706,13 +747,18 @@ IAXMODEM_CFGS=$(ls /etc/iaxmodem/ttyIAX* 2>/dev/null | wc -l)
     && ok "iaxmodem config files: $IAXMODEM_CFGS (ttyIAX*)" \
     || warn "iaxmodem config files: none found (ttyIAX0-3 expected)"
 
-# faxstat
+# faxstat — hfaxd IS running; faxstat may not return output without auth
 if command -v faxstat >/dev/null 2>&1; then
     FAXSTAT_OUT=$(timeout 5 faxstat -s 2>/dev/null || timeout 5 faxstat 2>/dev/null || true)
     if [ -n "$FAXSTAT_OUT" ]; then
         ok "faxstat: returns output"
     else
-        warn "faxstat -s: no output (HylaFAX may not be running)"
+        # hfaxd port is more reliable indicator — faxstat may require auth
+        if ss -tlnp 2>/dev/null | grep -q ":4559"; then
+            ok "faxstat: hfaxd listening on port 4559 (faxstat may require auth for -s output)"
+        else
+            warn "faxstat -s: no output and hfaxd not on port 4559"
+        fi
     fi
 else
     warn "faxstat: command not found"
@@ -1448,8 +1494,8 @@ else
 fi
 
 # fwconsole status / info
-FWSTATUS=$(timeout 15 fwconsole sa 2>/dev/null || timeout 15 fwconsole info 2>/dev/null || true)
-[ -n "$FWSTATUS" ] && ok "fwconsole sa/info: responds" || warn "fwconsole sa/info: no output"
+FWVER=$(fwconsole --version 2>/dev/null | head -1 || true)
+[ -n "$FWVER" ] && ok "fwconsole: $FWVER" || warn "fwconsole: --version returned no output"
 
 # =============================================================================
 sep "23. IDEMPOTENCY SPOT-CHECK"

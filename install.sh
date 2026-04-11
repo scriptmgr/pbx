@@ -998,6 +998,9 @@ detect_ssh_safety() {
     SSH_PORT=$(grep -E "^Port " /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}' | head -1 || true)
     SSH_PORT="${SSH_PORT:-22}"
     mkdir -p /etc/pbx /var/lib/pbx /var/log/pbx 2>/dev/null || true
+    # /etc/pbx must be traversable by the web server user (for htpasswd-pbx)
+    chmod 750 /etc/pbx
+    chown root:"${APACHE_GROUP:-www-data}" /etc/pbx 2>/dev/null || true
     echo "${SSH_PORT}" > /etc/pbx/ssh-port 2>/dev/null || true
 
     # Detect current connecting client IP
@@ -2818,13 +2821,20 @@ ADMINEOF
         cat > /etc/systemd/system/freepbx.service << 'FPBXSVCEOF'
 [Unit]
 Description=FreePBX VoIP Server
-After=network.target mariadb.service
+After=network.target mariadb.service mysqld.service mysql.service
+Wants=mariadb.service
+StartLimitIntervalSec=60
+StartLimitBurst=3
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+# Wait for MariaDB to be fully ready before starting
+ExecStartPre=/bin/bash -c 'for i in $(seq 1 30); do mysqladmin ping --silent 2>/dev/null && break || sleep 2; done'
 ExecStart=/usr/sbin/fwconsole start --quiet
 ExecStop=/usr/sbin/fwconsole stop --quiet
+Restart=on-failure
+RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
