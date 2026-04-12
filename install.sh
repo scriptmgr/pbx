@@ -14,12 +14,20 @@ set -euo pipefail
 # Temporary files / dirs created during the run — cleaned on any exit.
 _CLEANUP_TMPFILES=()
 _INSTALL_INTERRUPTED=0
+_spinner_pid=""
+_spinner_label=""
 
 # Register a temp path for automatic cleanup.
 register_tmpfile() { _CLEANUP_TMPFILES+=("$@"); }
 
 _cleanup() {
     local exit_code=$?
+    # Kill any running spinner
+    if [ -n "${_spinner_pid:-}" ]; then
+        kill "${_spinner_pid}" 2>/dev/null; wait "${_spinner_pid}" 2>/dev/null || true
+        printf "\r\033[2K" >&2
+        _spinner_pid=""
+    fi
     # Restore terminal in case a child left it raw
     stty sane 2>/dev/null || true
     # Remove temporary files/dirs registered during the run
@@ -135,18 +143,21 @@ SYSTEM_FQDN=""
 SYSTEM_DOMAIN=""
 PRIVATE_IP=""
 PUBLIC_IP=""
+PRIVATE_IP6=""   # IPv6 address (optional, used when host has dual-stack)
 DETECTED_OS=""
 DETECTED_VERSION=""
 DETECTED_OS_LIKE=""
 DISTRO_FAMILY=""
 DISTRO_GEN=""
 INIT_SYSTEM=""
-MYSQL_ROOT_PASSWORD=""
-FREEPBX_ADMIN_USERNAME=""
-ADMIN_PASSWORD=""          # Unified admin UI password (FreePBX, AvantFax, Reminder, CallCenter)
-FREEPBX_ADMIN_PASSWORD=""  # Derived from ADMIN_PASSWORD — kept for internal use
-FREEPBX_DB_PASSWORD=""
-AVANTFAX_DB_PASSWORD=""
+MYSQL_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD:-}"
+FREEPBX_ADMIN_USERNAME="${FREEPBX_ADMIN_USERNAME:-}"
+ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"          # Unified admin UI password (FreePBX, AvantFax, Reminder, CallCenter)
+FREEPBX_ADMIN_PASSWORD="${FREEPBX_ADMIN_PASSWORD:-}"  # Derived from ADMIN_PASSWORD — kept for internal use
+FREEPBX_DB_PASSWORD="${FREEPBX_DB_PASSWORD:-}"
+AVANTFAX_DB_PASSWORD="${AVANTFAX_DB_PASSWORD:-}"
+AVANTFAX_ADMIN_USERNAME="${AVANTFAX_ADMIN_USERNAME:-}"  # AvantFax web UI admin user (default: admin)
+AVANTFAX_ADMIN_PASSWORD="${AVANTFAX_ADMIN_PASSWORD:-}"  # AvantFax web UI password (default: ADMIN_PASSWORD)
 INSTALL_INVENTORY="/var/lib/pbx/install_inventory"
 INSTALLED_COMPONENTS=""
 INSTALL_FAILURES=""
@@ -156,6 +167,8 @@ PBX_ENV_FILE="/etc/pbx/.env"
 PBX_ENV_DIR="/etc/pbx"
 EMAIL_TO_FAX_ALIAS=""
 FAX_TO_EMAIL_ADDRESS=""
+FAX_FROM_EMAIL=""           # From address for fax notifications (default: FROM_EMAIL)
+FAX_FROM_NAME=""            # From name for fax notifications (default: FROM_NAME)
 FROM_EMAIL=""           # Default: no-reply@<fqdn> — set via env var
 FROM_NAME=""            # Default: PBX System — set via env var
 
@@ -246,6 +259,73 @@ step()    {
     log_raw "STEP " "[${STEP_CURRENT}/${STEP_TOTAL}] ${m}"
 }
 header()  { local m; m=$(_strip_e "$*"); printf "\n${BOLD}%s%s%s${NC}\n" "$(_emoji 🚀)" "" "${m}"; log_raw "===  " "${m}"; }
+
+# ---------------------------------------------------------------------------
+# run_logged LABEL CMD [ARGS...]
+#   Runs a command with all output redirected to LOG_FILE.
+#   Shows a live spinner + label on the console.
+#   On success: replaces spinner line with a green checkmark.
+#   On failure: replaces spinner line with a red cross and tails the log.
+#   Never fatal — returns the command's exit code.
+# ---------------------------------------------------------------------------
+_spinner_start() {
+    _spinner_label="$1"
+    if [ "${USE_EMOJI:-0}" = "1" ] && [ -t 1 ]; then
+        local frames='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+        ( i=0
+          while true; do
+              f="${frames:$((i % 10)):1}"
+              printf "\r  ${CYAN}%s${NC}  %s " "${f}" "${_spinner_label}" >&2
+              i=$(( i + 1 ))
+              sleep 0.1
+          done ) &
+        _spinner_pid=$!
+    else
+        printf "  ... %s\n" "${_spinner_label}" >&2
+        _spinner_pid=""
+    fi
+}
+_spinner_stop() {
+    local rc="$1" label="$2"
+    if [ -n "${_spinner_pid}" ]; then
+        kill "${_spinner_pid}" 2>/dev/null; wait "${_spinner_pid}" 2>/dev/null || true
+        _spinner_pid=""
+        printf "\r\033[2K" >&2  # clear spinner line
+    fi
+    local m; m=$(_strip_e "${label}")
+    if [ "${rc}" -eq 0 ]; then
+        printf "  %s${GREEN}%s${NC}\n" "$(_emoji ✅)" "${m}" >&2
+        log_raw "OK   " "${m}"
+    else
+        printf "  %s${RED}%s (exit %d — see %s)${NC}\n" \
+            "$(_emoji ❌)" "${m}" "${rc}" "${LOG_FILE}" >&2
+        log_raw "ERROR" "${m} (exit=${rc})"
+        # Tail last 15 lines of log to show what failed
+        printf "%s${RED}--- Last output (exit=%d) ---%s\n" "${RED}" "${rc}" "${NC}" >&2
+        tail -15 "${LOG_FILE}" | sed 's/^/    /' >&2
+        printf "%s---${NC}\n" "${RED}" >&2
+    fi
+}
+
+run_logged() {
+    local label="$1"; shift
+    printf "\n=== [%s] %s: %s ===\n" "$(date '+%H:%M:%S')" "${label}" "$*" >> "${LOG_FILE}"
+    _spinner_start "${label}"
+    local rc=0
+    "$@" >> "${LOG_FILE}" 2>&1 || rc=$?
+    _spinner_stop "${rc}" "${label}"
+    return "${rc}"
+}
+
+# Like run_logged but fatal on failure (exits installer)
+run_required() {
+    local label="$1"; shift
+    if ! run_logged "${label}" "$@"; then
+        local rc=$?
+        error "FATAL: ${label} failed — cannot continue. Check ${LOG_FILE}"
+        exit "${rc}"
+    fi
+}
 
 # =============================================================================
 # SECTION 3: SERVICE MANAGEMENT WRAPPERS
@@ -413,13 +493,40 @@ detect_system() {
         INIT_SYSTEM="sysv"
     fi
 
-    # Network information
-    PRIVATE_IP=$(ip route get 8.8.8.8 2>/dev/null | awk '{print $7; exit}' \
-        || hostname -I 2>/dev/null | awk '{print $1}' \
-        || echo "127.0.0.1")
-    PUBLIC_IP=$(curl -s --max-time 15 https://ifconfig.me 2>/dev/null \
-        || curl -s --max-time 15 https://api.ipify.org 2>/dev/null \
-        || echo "${PRIVATE_IP}")
+    # Network information — smart IPv4/IPv6 detection
+    # Private IPv4: use the source IP that would route to Google DNS (avoids loopback/docker bridges)
+    PRIVATE_IP=$(ip -4 route get 8.8.8.8 2>/dev/null \
+        | awk '/src/{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}' \
+        | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+    # Fallback: first non-loopback IPv4 from ip addr
+    if [ -z "${PRIVATE_IP}" ]; then
+        PRIVATE_IP=$(ip -4 addr show scope global 2>/dev/null \
+            | awk '/inet /{split($2,a,"/"); print a[1]}' | head -1)
+    fi
+    # Final fallback
+    [ -z "${PRIVATE_IP}" ] && PRIVATE_IP=$(hostname -I 2>/dev/null | tr ' ' '\n' \
+        | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | grep -v '^127\.' | head -1)
+    [ -z "${PRIVATE_IP}" ] && PRIVATE_IP="127.0.0.1"
+
+    # Private IPv6 (optional, stored separately for SIP/web config use)
+    PRIVATE_IP6=$(ip -6 route get 2001:4860:4860::8888 2>/dev/null \
+        | awk '/src/{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}' \
+        | grep -v '^::1$' | head -1) || PRIVATE_IP6=""
+
+    # Public IP: try IPv4 first via multiple services (fast 5s timeout each)
+    PUBLIC_IP=$(curl -s4 --max-time 5 https://ifconfig.me 2>/dev/null \
+        || curl -s4 --max-time 5 https://api.ipify.org 2>/dev/null \
+        || curl -s4 --max-time 5 https://icanhazip.com 2>/dev/null) || true
+    # If no IPv4 public IP (pure IPv6 host), fall back to IPv6 detection
+    if [ -z "${PUBLIC_IP}" ] && [ -n "${PRIVATE_IP6}" ]; then
+        PUBLIC_IP=$(curl -s6 --max-time 5 https://ifconfig.me 2>/dev/null \
+            || curl -s6 --max-time 5 https://icanhazip.com 2>/dev/null) || true
+    fi
+    # If still empty, use private IP (LAN-only setup)
+    [ -z "${PUBLIC_IP}" ] && PUBLIC_IP="${PRIVATE_IP}"
+    # Strip trailing whitespace from curl output
+    PUBLIC_IP=$(printf '%s' "${PUBLIC_IP}" | tr -d '[:space:]')
+
     SYSTEM_FQDN=$(hostname -f 2>/dev/null || hostname 2>/dev/null || echo "pbx.local")
     SYSTEM_DOMAIN=$(echo "${SYSTEM_FQDN}" | cut -d. -f2- 2>/dev/null || echo "local")
 
@@ -605,11 +712,9 @@ verify_download() {
 
 safe_execute() {
     local cmd="$1"
-    local msg="${2:-Command failed}"
-    log "Executing: ${cmd}"
-    if ! eval "${cmd}" >> "${LOG_FILE}" 2>&1; then
-        error "${msg}: ${cmd}"
-    fi
+    local msg="${2:-Running command}"
+    run_logged "${msg}" bash -c "${cmd}" || \
+        error "${msg} failed — check ${LOG_FILE}"
 }
 
 track_install() {
@@ -724,14 +829,16 @@ pkg_install() {
     [ -z "${pkgs// }" ] && return 0
     [ "${DISTRO_FAMILY}" = "debian" ] && export DEBIAN_FRONTEND=noninteractive
     # shellcheck disable=SC2086
-    $PACKAGE_MGR_BIN $PACKAGE_MGR_ARG $pkgs 2>/dev/null || true
+    run_logged "Installing packages: ${pkgs}" \
+        ${PACKAGE_MGR_BIN} ${PACKAGE_MGR_ARG} ${pkgs} || true
 }
 
 pkg_install_one_by_one() {
     [ "${DISTRO_FAMILY}" = "debian" ] && export DEBIAN_FRONTEND=noninteractive
     for pkg in "$@"; do
         [ -n "$pkg" ] || continue
-        $PACKAGE_MGR_BIN $PACKAGE_MGR_ARG "$pkg" 2>/dev/null || true
+        run_logged "Installing: ${pkg}" \
+            ${PACKAGE_MGR_BIN} ${PACKAGE_MGR_ARG} "${pkg}" || true
     done
 }
 
@@ -778,10 +885,13 @@ FREEPBX_ADMIN_USERNAME="${FREEPBX_ADMIN_USERNAME:-}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 FREEPBX_DB_PASSWORD="${FREEPBX_DB_PASSWORD:-}"
 AVANTFAX_DB_PASSWORD="${AVANTFAX_DB_PASSWORD:-}"
+AVANTFAX_ADMIN_USERNAME="${AVANTFAX_ADMIN_USERNAME:-}"
+AVANTFAX_ADMIN_PASSWORD="${AVANTFAX_ADMIN_PASSWORD:-}"
 
 # --- Network ---
 PRIVATE_IP="${PRIVATE_IP:-}"
 PUBLIC_IP="${PUBLIC_IP:-}"
+PRIVATE_IP6="${PRIVATE_IP6:-}"
 SYSTEM_FQDN="${SYSTEM_FQDN:-}"
 SYSTEM_DOMAIN="${SYSTEM_DOMAIN:-}"
 
@@ -793,6 +903,8 @@ FROM_NAME="${FROM_NAME:-}"
 # --- Fax ---
 EMAIL_TO_FAX_ALIAS="${EMAIL_TO_FAX_ALIAS:-}"
 FAX_TO_EMAIL_ADDRESS="${FAX_TO_EMAIL_ADDRESS:-}"
+FAX_FROM_EMAIL="${FAX_FROM_EMAIL:-}"
+FAX_FROM_NAME="${FAX_FROM_NAME:-}"
 NUMBER_OF_MODEMS="${NUMBER_OF_MODEMS:-4}"
 
 # --- Versions & Services (used by management scripts) ---
@@ -995,7 +1107,15 @@ resolve_install_profile() {
 
 detect_ssh_safety() {
     # Detect real SSH port (may not be 22)
+    # Check primary config first, then drop-in directory (modern distros like Ubuntu 22+)
     SSH_PORT=$(grep -E "^Port " /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}' | head -1 || true)
+    if [ -z "${SSH_PORT}" ] && [ -d /etc/ssh/sshd_config.d ]; then
+        SSH_PORT=$(grep -rE "^Port " /etc/ssh/sshd_config.d/*.conf 2>/dev/null | awk -F: '{print $2}' | awk '{print $2}' | head -1 || true)
+    fi
+    # Final fallback: detect via ss what sshd is actually listening on
+    if [ -z "${SSH_PORT}" ] && command_exists ss; then
+        SSH_PORT=$(ss -tlnp 2>/dev/null | awk '/sshd/{match($4, /:([0-9]+)$/, a); if(a[1]) print a[1]}' | head -1 || true)
+    fi
     SSH_PORT="${SSH_PORT:-22}"
     mkdir -p /etc/pbx /var/lib/pbx /var/log/pbx 2>/dev/null || true
     # /etc/pbx must be traversable by the web server user (for htpasswd-pbx)
@@ -1174,13 +1294,19 @@ prepare_system() {
     # FreePBX admin password always mirrors ADMIN_PASSWORD
     FREEPBX_ADMIN_PASSWORD="${ADMIN_PASSWORD}"
     [ -z "${FREEPBX_ADMIN_USERNAME}" ] && FREEPBX_ADMIN_USERNAME="admin"
+    # AvantFax admin defaults to same username/password as ADMIN
+    [ -z "${AVANTFAX_ADMIN_USERNAME}" ] && AVANTFAX_ADMIN_USERNAME="admin"
+    [ -z "${AVANTFAX_ADMIN_PASSWORD}" ] && AVANTFAX_ADMIN_PASSWORD="${ADMIN_PASSWORD}"
     [ -z "${MYSQL_ROOT_PASSWORD}" ]    && MYSQL_ROOT_PASSWORD=$(generate_password 32)
     [ -z "${FREEPBX_DB_PASSWORD}" ]    && FREEPBX_DB_PASSWORD=$(generate_password 24)
     [ -z "${AVANTFAX_DB_PASSWORD}" ]   && AVANTFAX_DB_PASSWORD=$(generate_password 24)
     [ -z "${EMAIL_TO_FAX_ALIAS}" ]     && generate_fax_alias
     [ -z "${FAX_TO_EMAIL_ADDRESS}" ]   && FAX_TO_EMAIL_ADDRESS="${ADMIN_EMAIL:-admin@localhost}"
+    # FAX_FROM_EMAIL/NAME default to FROM_EMAIL/NAME if not explicitly set
+    [ -z "${FAX_FROM_EMAIL}" ]         && FAX_FROM_EMAIL="${FROM_EMAIL:-}"
+    [ -z "${FAX_FROM_NAME}" ]          && FAX_FROM_NAME="${FROM_NAME:-PBX Fax System}"
 
-    # Only write passwords file if it doesn't already exist (preserves passwords across re-runs)
+    # Write passwords file (create fresh or update ADMIN_PASSWORD if user provided via env)
     if [ ! -f "${AUTO_PASSWORDS_FILE}" ]; then
         cat > "${AUTO_PASSWORDS_FILE}" << PWEOF
 # PBX Installation Passwords - Generated $(date '+%Y-%m-%d %H:%M:%S')
@@ -1190,12 +1316,22 @@ MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
 FREEPBX_ADMIN_USERNAME=${FREEPBX_ADMIN_USERNAME}
 FREEPBX_DB_PASSWORD=${FREEPBX_DB_PASSWORD}
 AVANTFAX_DB_PASSWORD=${AVANTFAX_DB_PASSWORD}
+AVANTFAX_ADMIN_USERNAME=${AVANTFAX_ADMIN_USERNAME}
+AVANTFAX_ADMIN_PASSWORD=${AVANTFAX_ADMIN_PASSWORD}
 EMAIL_TO_FAX_ALIAS=${EMAIL_TO_FAX_ALIAS}
 FAX_TO_EMAIL_ADDRESS=${FAX_TO_EMAIL_ADDRESS}
+FAX_FROM_EMAIL=${FAX_FROM_EMAIL}
+FAX_FROM_NAME=${FAX_FROM_NAME}
 FROM_EMAIL=${FROM_EMAIL}
 FROM_NAME=${FROM_NAME}
 PWEOF
         chmod 600 "${AUTO_PASSWORDS_FILE}"
+    else
+        # File exists (re-run): always update ADMIN_PASSWORD so an env-provided password takes effect
+        sed -i "s|^ADMIN_PASSWORD=.*|ADMIN_PASSWORD=${ADMIN_PASSWORD}|" "${AUTO_PASSWORDS_FILE}" 2>/dev/null || true
+        # Load remaining vars from the existing file so they're not regenerated
+        # shellcheck source=/dev/null
+        source "${AUTO_PASSWORDS_FILE}" 2>/dev/null || true
     fi
 
     # Set timezone
@@ -1219,22 +1355,24 @@ PWEOF
     # Fresh minimal containers (AlmaLinux, Rocky, etc.) may not have these.
     if ! command -v tar >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
         case "${PACKAGE_MGR_BIN}" in
-            dnf|yum) ${PACKAGE_MGR_BIN} install -y tar curl ;;
-            apt-get) apt-get install -y tar curl ;;
+            dnf|yum) run_logged "Bootstrap: tar curl" ${PACKAGE_MGR_BIN} install -y tar curl || true ;;
+            apt-get) run_logged "Bootstrap: tar curl" apt-get install -y tar curl || true ;;
         esac
     fi
 
     # System update
     if [ "${DISTRO_FAMILY}" = "debian" ]; then
         export DEBIAN_FRONTEND=noninteractive
-        apt-get update -y
-        apt-get upgrade -y -o Dpkg::Options::="--force-confold" || \
-            apt-get upgrade -y -o Dpkg::Options::="--force-confold" --fix-broken 2>/dev/null || true
+        run_logged "apt-get update" apt-get update -y || true
+        run_logged "apt-get upgrade" \
+            apt-get upgrade -y -o Dpkg::Options::="--force-confold" || \
+            run_logged "apt-get upgrade (fix-broken)" \
+                apt-get upgrade -y -o Dpkg::Options::="--force-confold" --fix-broken || true
     else
-        # --setopt=tsflags=noscripts avoids scriptlet failures in containers
-        # (e.g. systemd triggers during EPEL upgrade in a container environment)
-        ${PACKAGE_MGR_BIN} update -y --setopt=tsflags=noscripts 2>/dev/null || \
-            ${PACKAGE_MGR_BIN} update -y --skip-broken 2>/dev/null || true
+        run_logged "${PACKAGE_MGR_BIN} update" \
+            ${PACKAGE_MGR_BIN} update -y --setopt=tsflags=noscripts || \
+            run_logged "${PACKAGE_MGR_BIN} update (skip-broken)" \
+                ${PACKAGE_MGR_BIN} update -y --skip-broken || true
     fi
 
     success "System prepared"
@@ -1290,8 +1428,9 @@ setup_repositories() {
     case "${DISTRO_FAMILY}" in
         debian)
             export DEBIAN_FRONTEND=noninteractive
-            apt-get install -y curl wget gnupg2 software-properties-common \
-                apt-transport-https lsb-release ca-certificates 2>/dev/null || true
+            run_logged "Installing repo prerequisites" \
+                apt-get install -y curl wget gnupg2 software-properties-common \
+                    apt-transport-https lsb-release ca-certificates || true
 
             # PHP repository
             case "${DETECTED_OS}" in
@@ -1318,7 +1457,7 @@ setup_repositories() {
                 info "Added NodeSource repository"
             fi
 
-            apt-get update -y
+            apt-get update -y >> "${LOG_FILE}" 2>&1 || true
             ;;
 
         rhel)
@@ -1546,15 +1685,11 @@ ok = sum([
 print(f"Patched tls-openssl.c for OpenSSL 3.x ({ok}/5 key changes verified)")
 sys.exit(0)
 PYEOF
-            autoreconf -fi 2>/dev/null || true
-            if ./configure --prefix=/usr --disable-python 2>/dev/null; then
-                # Build only src/ — doc/ requires makeinfo which may not be installed
-                timeout 300 make -j"$(nproc)" -C src 2>/dev/null \
-                    || error "iksemel build failed"
-                make -C src install 2>/dev/null \
-                    && make -C include install 2>/dev/null \
-                    || error "iksemel install failed"
-                ldconfig 2>/dev/null || true
+            autoreconf -fi >> "${LOG_FILE}" 2>&1 || true
+            if run_logged "iksemel: configure" ./configure --prefix=/usr --disable-python; then
+                run_logged "iksemel: build" bash -c "make -j$(nproc) -C src" || error "iksemel build failed"
+                run_logged "iksemel: install" bash -c "make -C src install && make -C include install" || error "iksemel install failed"
+                ldconfig >> "${LOG_FILE}" 2>&1 || true
                 success "iksemel compiled and installed with OpenSSL 3.x support"
             else
                 error "iksemel configure failed"
@@ -2582,11 +2717,29 @@ install_asterisk() {
     cd "${WORK_DIR}"
     local asterisk_tar="asterisk-${ASTERISK_VERSION}-current.tar.gz"
     local asterisk_url="https://downloads.asterisk.org/pub/telephony/asterisk/${asterisk_tar}"
+    # Fallback mirrors tried in order if primary fails
+    local asterisk_mirrors=(
+        "https://downloads.asterisk.org/pub/telephony/asterisk/${asterisk_tar}"
+        "https://downloads.asterisk.org/pub/telephony/asterisk/releases/asterisk-${ASTERISK_VERSION}-current.tar.gz"
+    )
 
     if [ ! -f "${asterisk_tar}" ]; then
         info "Downloading Asterisk ${ASTERISK_VERSION}..."
-        download_file "${asterisk_url}" "${asterisk_tar}" 300 \
-            || { error "Failed to download Asterisk from ${asterisk_url}"; return 1; }
+        local dl_ok=0
+        for mirror_url in "${asterisk_mirrors[@]}"; do
+            info "  Trying: ${mirror_url}"
+            if download_file "${mirror_url}" "${asterisk_tar}" 300; then
+                asterisk_url="${mirror_url}"
+                dl_ok=1
+                break
+            fi
+            warn "  Failed: ${mirror_url}"
+            rm -f "${asterisk_tar}"
+        done
+        if [ "${dl_ok}" -eq 0 ]; then
+            error "Failed to download Asterisk from all mirrors — check network connectivity"
+            return 1
+        fi
         # Feature: download-integrity — verify sha256 from Asterisk's published checksum file
         local sha256_url="${asterisk_url}.sha256"
         local sha256_file="${asterisk_tar}.sha256"
@@ -2606,19 +2759,19 @@ install_asterisk() {
     [ -d "${asterisk_dir:-}" ] || error "Asterisk source not found after extraction"
 
     cd "${asterisk_dir}"
-    [ -f contrib/scripts/install_prereq ] \
-        && bash contrib/scripts/install_prereq install 2>/dev/null || true
+    [ -f contrib/scripts/install_prereq ] && \
+        run_logged "Asterisk prereqs" bash contrib/scripts/install_prereq install || true
 
     export CFLAGS="-DENABLE_SRTP_AES_256 -DENABLE_SRTP_AES_GCM"
-    ./configure \
-        --with-pjproject-bundled \
-        --with-jansson-bundled \
-        --prefix=/usr \
-        --sysconfdir=/etc \
-        --localstatedir=/var \
-        2>&1 | tee -a "${LOG_FILE}" | tail -5
+    run_logged "Asterisk: configure" \
+        ./configure \
+            --with-pjproject-bundled \
+            --with-jansson-bundled \
+            --prefix=/usr \
+            --sysconfdir=/etc \
+            --localstatedir=/var || { error "Asterisk configure failed"; return 1; }
 
-    make menuselect.makeopts 2>/dev/null || true
+    run_logged "Asterisk: menuselect" make menuselect.makeopts || true
     menuselect/menuselect \
         --enable ADDONS \
         --enable chan_mobile \
@@ -2632,13 +2785,20 @@ install_asterisk() {
         --enable codec_g729a \
         --enable EXTRA-SOUNDS-EN-GSM \
         --enable EXTRA-SOUNDS-EN-ULAW \
-        menuselect.makeopts 2>/dev/null || true
+        menuselect.makeopts >> "${LOG_FILE}" 2>&1 || true
 
-    info "Compiling Asterisk (this may take several minutes)..."
-    make -j"$(nproc)" 2>&1 | tee -a "${LOG_FILE}" | tail -3 || { error "Asterisk compile failed"; return 1; }
-    make install           2>&1 | tee -a "${LOG_FILE}" | tail -3 || { error "Asterisk install failed"; return 1; }
-    make config            2>/dev/null || true
-    make install-logrotate 2>/dev/null || true
+    # Disable DAHDI driver if kernel module is not loaded (avoids compile errors / load failures)
+    if ! lsmod 2>/dev/null | grep -q "^dahdi"; then
+        menuselect/menuselect --disable chan_dahdi menuselect.makeopts >> "${LOG_FILE}" 2>&1 || true
+        info "chan_dahdi disabled: DAHDI kernel module not present"
+    fi
+
+    run_logged "Asterisk: compile (this takes several minutes)" \
+        make -j"$(nproc)" || { error "Asterisk compile failed — see ${LOG_FILE}"; return 1; }
+    run_logged "Asterisk: install" \
+        make install || { error "Asterisk install failed — see ${LOG_FILE}"; return 1; }
+    make config            >> "${LOG_FILE}" 2>&1 || true
+    make install-logrotate >> "${LOG_FILE}" 2>&1 || true
     ldconfig
 
     mkdir -p /etc/asterisk /var/lib/asterisk /var/log/asterisk /var/spool/asterisk
@@ -2859,11 +3019,23 @@ FPBXSVCEOF
 configure_freepbx() {
     step "⚙️  Configuring FreePBX settings..."
 
-    local retries=30
-    while ! asterisk -rx "core show version" >/dev/null 2>&1 \
-        && [ "${retries}" -gt 0 ]; do
-        sleep 3; retries=$((retries - 1))
+    # Wait for Asterisk to be ready (up to 2 minutes)
+    local retries=40
+    local waited=0
+    while ! asterisk -rx "core show version" >/dev/null 2>&1; do
+        if [ "${retries}" -le 0 ]; then
+            warn "Asterisk not responding after ${waited}s — attempting restart"
+            safe_restart_asterisk 2>/dev/null || true
+            sleep 10
+            break
+        fi
+        sleep 3; retries=$((retries - 1)); waited=$((waited + 3))
     done
+    if asterisk -rx "core show version" >/dev/null 2>&1; then
+        info "Asterisk is ready (waited ${waited}s)"
+    else
+        warn "Asterisk still not running — FreePBX config may be incomplete"
+    fi
 
     # Write PJSIP transports directly to /etc/asterisk/pjsip_custom.conf
     # Do NOT insert into the pjsip DB table — FreePBX joins it with trunks
@@ -2940,6 +3112,13 @@ NATEOF
     # Enable CDR and queue logging
     fwconsole setting ASTRUNDIR /var/run/asterisk 2>/dev/null || true
 
+    # Disable module signature checking — prevents security warnings for community/unsigned modules
+    fwconsole setting SIGNATURECHECK 0 2>/dev/null || true
+    mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk 2>/dev/null << 'NOSIGEOF' || true
+INSERT INTO admin (variable, value) VALUES ('SIGNATURECHECK', '0')
+ON DUPLICATE KEY UPDATE value='0';
+NOSIGEOF
+
     # Patch Config.class.php to cast null to string before str_replace (PHP 8.1+ deprecation)
     # This affects Fedora 42+ and any distro with strict PHP deprecation handling
     local cfg_class
@@ -2976,6 +3155,27 @@ CFGPATCH
     # pbx_config.so (dialplan loader) can fail to preload if extensions.conf didn't exist yet.
     # Force-load it after FreePBX has generated the config files.
     asterisk -rx "module load pbx_config.so" 2>/dev/null || true
+
+    # Set admin password via fwconsole userman (more reliable than direct SQL in FreePBX 17)
+    # This ensures the user exists with admin flag AND correct hashed password
+    if fwconsole userman --list 2>/dev/null | grep -q "${FREEPBX_ADMIN_USERNAME}"; then
+        fwconsole userman --update --username="${FREEPBX_ADMIN_USERNAME}" \
+            --password="${FREEPBX_ADMIN_PASSWORD}" 2>/dev/null || true
+    else
+        fwconsole userman --create --username="${FREEPBX_ADMIN_USERNAME}" \
+            --password="${FREEPBX_ADMIN_PASSWORD}" \
+            --email="admin@localhost" 2>/dev/null || true
+    fi
+    # Also ensure ampusers row has correct hash and full admin sections
+    # In FreePBX 17, ampusers sections='all' grants full admin access to the GUI
+    local pass_hash_new
+    pass_hash_new=$(echo -n "${FREEPBX_ADMIN_PASSWORD}" | sha1sum | cut -d' ' -f1)
+    mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk 2>/dev/null << ADMINEOF2 || true
+INSERT INTO ampusers (username, email, password_sha1, extension_low, extension_high, deptname, sections)
+VALUES ('${FREEPBX_ADMIN_USERNAME}', 'admin@localhost', '${pass_hash_new}', '', '', '', 'all')
+ON DUPLICATE KEY UPDATE password_sha1='${pass_hash_new}', sections='all', email='admin@localhost';
+ADMINEOF2
+    info "FreePBX admin user '${FREEPBX_ADMIN_USERNAME}' permissions set"
 
     track_install "freepbx-config"
     success "FreePBX configured"
@@ -3192,13 +3392,10 @@ _compile_hylafax_source() {
     [ -d "${src_dir:-}" ] || return 1
 
     cd "${src_dir}"
-    ./configure --nointeractive --quiet 2>/dev/null || return 1
-
-    # Build in dependency order: port → util → rest
-    # man page generation may fail (non-fatal); binaries are what matter
-    ( cd port && make ) 2>/dev/null || return 1
-    ( cd util && make ) 2>/dev/null || return 1
-    make -j"$(nproc)" 2>/dev/null; make install 2>/dev/null || return 1
+    run_logged "HylaFAX+: configure" ./configure --nointeractive --quiet || return 1
+    run_logged "HylaFAX+: build port"  bash -c "cd port && make" || return 1
+    run_logged "HylaFAX+: build util"  bash -c "cd util && make" || return 1
+    run_logged "HylaFAX+: build+install" bash -c "make -j$(nproc) && make install" || return 1
     # Verify at least one key binary was installed
     command -v faxstat >/dev/null 2>&1 || return 1
     cd "${WORK_DIR}"
@@ -3305,14 +3502,12 @@ _compile_iaxmodem_source() {
     [ -d "${src_dir:-}" ] || return 1
 
     cd "${src_dir}"
-    ./configure || return 1
-    make -j"$(nproc)" || make || return 1
+    run_logged "IAXmodem: configure" ./configure || return 1
+    run_logged "IAXmodem: compile" bash -c "make -j$(nproc) || make" || return 1
 
-    # Verify binary was built
     [ -x "./iaxmodem" ] || return 1
 
-    # Install binary — try make install first (uses PREFIX), fallback to cp
-    if ! make install PREFIX=/usr 2>/dev/null; then
+    if ! run_logged "IAXmodem: install" make install PREFIX=/usr; then
         cp "./iaxmodem" /usr/sbin/iaxmodem || return 1
         chmod 755 /usr/sbin/iaxmodem || return 1
     fi
@@ -3377,14 +3572,16 @@ AVFAXSQLEOF
             < "${avantfax_dir}create_tables.sql" 2>/dev/null || true
     fi
 
-    # Set admin user password to FREEPBX_ADMIN_PASSWORD (MD5 hashed — AvantFax uses MD5)
+    # Set AvantFax admin user with AVANTFAX_ADMIN_USERNAME/PASSWORD (MD5 hashed — AvantFax uses MD5)
     local af_admin_md5
-    af_admin_md5=$(printf '%s' "${FREEPBX_ADMIN_PASSWORD}" | md5sum | cut -c1-32)
+    af_admin_md5=$(printf '%s' "${AVANTFAX_ADMIN_PASSWORD}" | md5sum | cut -c1-32)
     mysql -u root -p"${MYSQL_ROOT_PASSWORD}" avantfax 2>/dev/null << AFADMINSQL || true
-UPDATE UserAccount SET password='${af_admin_md5}', wasreset=0
-WHERE username='admin';
+-- Insert admin user if not exists, then update password regardless
+INSERT INTO UserAccount (username, password, email, admin, active, wasreset)
+VALUES ('${AVANTFAX_ADMIN_USERNAME}', '${af_admin_md5}', 'admin@localhost', 1, 1, 0)
+ON DUPLICATE KEY UPDATE password='${af_admin_md5}', admin=1, active=1, wasreset=0;
 AFADMINSQL
-    info "AvantFax admin password synced"
+    info "AvantFax admin user '${AVANTFAX_ADMIN_USERNAME}' configured"
 
     # Patch config.php with correct DB credentials — works whether copied from .default or already present
     if [ -f "${AVANTFAX_WEB_DIR}/includes/config.php.default" ]; then
@@ -3438,6 +3635,8 @@ ETFEOF
 configure_fax_to_email() {
     step "📨 Configuring fax-to-email..."
     [ -z "${FAX_TO_EMAIL_ADDRESS}" ] && FAX_TO_EMAIL_ADDRESS="${ADMIN_EMAIL:-root@localhost}"
+    [ -z "${FAX_FROM_EMAIL}" ]       && FAX_FROM_EMAIL="${FROM_EMAIL:-no-reply@localhost}"
+    [ -z "${FAX_FROM_NAME}" ]        && FAX_FROM_NAME="${FROM_NAME:-PBX Fax System}"
 
     cat > /usr/local/bin/fax-to-email.sh << FTEEOF
 #!/bin/bash
@@ -3446,13 +3645,17 @@ FAX_FILE="\$1"
 FAX_FROM="\$2"
 FAX_PAGES="\$3"
 TO="${FAX_TO_EMAIL_ADDRESS}"
+MAIL_FROM="${FAX_FROM_EMAIL}"
+MAIL_FROM_NAME="${FAX_FROM_NAME}"
 [ -z "\${FAX_FILE}" ] && exit 1
 SUBJECT="Incoming Fax from \${FAX_FROM} (\${FAX_PAGES} pages)"
 BODY="You have received a fax from \${FAX_FROM}. See attachment."
 if command -v uuencode >/dev/null 2>&1; then
-    (echo "\${BODY}"; uuencode "\${FAX_FILE}" fax.pdf) | mail -s "\${SUBJECT}" "\${TO}" 2>/dev/null || true
+    (echo "\${BODY}"; uuencode "\${FAX_FILE}" fax.pdf) | mail -s "\${SUBJECT}" \
+        -a "From: \${MAIL_FROM_NAME} <\${MAIL_FROM}>" "\${TO}" 2>/dev/null || true
 elif command -v mutt >/dev/null 2>&1; then
-    echo "\${BODY}" | mutt -s "\${SUBJECT}" -a "\${FAX_FILE}" -- "\${TO}" 2>/dev/null || true
+    echo "\${BODY}" | mutt -s "\${SUBJECT}" -e "my_hdr From: \${MAIL_FROM_NAME} <\${MAIL_FROM}>" \
+        -a "\${FAX_FILE}" -- "\${TO}" 2>/dev/null || true
 fi
 FTEEOF
     chmod +x /usr/local/bin/fax-to-email.sh
@@ -3503,6 +3706,156 @@ install_asterisk_sounds() {
 }
 
 # =============================================================================
+# SECTION 24b: MUSIC ON HOLD
+# =============================================================================
+
+install_moh() {
+    step "🎵 Installing Music on Hold..."
+    skip_if_done "moh" && return 0
+
+    local moh_dir="/var/lib/asterisk/moh"
+    mkdir -p "${moh_dir}"/{default,jazz,classical,holiday,ringback}
+
+    # musiconhold.conf — multi-class MOH
+    cat > /etc/asterisk/musiconhold.conf << 'MOHEOF'
+; musiconhold.conf — Music on Hold classes
+; managed by pbx-moh
+
+[default]
+mode=files
+directory=/var/lib/asterisk/moh/default
+random=yes
+digit=#
+
+[jazz]
+mode=files
+directory=/var/lib/asterisk/moh/jazz
+random=yes
+digit=2
+
+[classical]
+mode=files
+directory=/var/lib/asterisk/moh/classical
+random=yes
+digit=3
+
+[holiday]
+mode=files
+directory=/var/lib/asterisk/moh/holiday
+random=yes
+digit=4
+
+[ringback]
+mode=files
+directory=/var/lib/asterisk/moh/ringback
+digit=5
+MOHEOF
+
+    # Download royalty-free CC0 audio if sox is available for conversion
+    # We'll use Asterisk's built-in sample audio as a base, then supplement
+    # with freely downloadable public domain tracks from archive.org / freemusicarchive
+
+    local have_sox=0; command -v sox >/dev/null 2>&1 && have_sox=1
+    local have_curl=0; command -v curl >/dev/null 2>&1 && have_curl=1
+
+    # ------------------------------------------------------------------
+    # MOH source: Asterisk's own on-hold sample (already on disk)
+    # Copy to each class as a starter track
+    # ------------------------------------------------------------------
+    local sample_moh=""
+    for f in /var/lib/asterisk/sounds/en/macroform-cold_day.gsm \
+              /var/lib/asterisk/sounds/en/macroform-robot_dity.gsm \
+              /var/lib/asterisk/sounds/en/macroform-the_simplicity.gsm \
+              /var/lib/asterisk/sounds/macroform-cold_day.gsm; do
+        [ -f "${f}" ] && sample_moh="${f}" && break
+    done
+
+    # Install Asterisk MOH sample package if not already present
+    if [ -z "${sample_moh}" ]; then
+        case "${DISTRO_FAMILY}" in
+            rhel|fedora) pkg_install_quiet asterisk-moh-opsound-wav asterisk-moh-opsound-gsm 2>/dev/null || true ;;
+            debian)      pkg_install_quiet asterisk-moh-opsound-wav asterisk-moh-opsound-gsm 2>/dev/null || true ;;
+        esac
+        # Re-check
+        for f in /var/lib/asterisk/sounds/en/macroform-cold_day.gsm \
+                  /var/lib/asterisk/sounds/macroform-cold_day.gsm; do
+            [ -f "${f}" ] && sample_moh="${f}" && break
+        done
+    fi
+
+    # Copy sample tracks into MOH class dirs
+    if [ -n "${sample_moh}" ]; then
+        local sample_dir
+        sample_dir=$(dirname "${sample_moh}")
+        for f in "${sample_dir}"/macroform-*.gsm; do
+            [ -f "${f}" ] && cp -n "${f}" "${moh_dir}/default/" 2>/dev/null || true
+        done
+    fi
+
+    # ------------------------------------------------------------------
+    # Download additional CC0/public-domain MOH tracks
+    # From Asterisk's own music sample repository (legally clear)
+    # ------------------------------------------------------------------
+    if [ "${have_curl}" = "1" ]; then
+        local base_url="https://www.asterisksounds.org/sites/asterisksounds.org/files"
+        local moh_tracks=(
+            "fpm-calm-river.mp3"
+            "fpm-sunshine.mp3"
+        )
+        # Fallback to archive.org public domain music clips (CC0)
+        local archive_base="https://archive.org/download/FreedomMusicCollection"
+        for track in "${moh_tracks[@]}"; do
+            local dest="${moh_dir}/default/${track%.mp3}.gsm"
+            if [ ! -f "${dest}" ] && [ "${have_sox}" = "1" ]; then
+                local tmpmp3
+                tmpmp3=$(mktemp /tmp/moh-XXXXXX.mp3)
+                if curl -fsSL --connect-timeout 10 --max-time 60 \
+                    "${base_url}/${track}" -o "${tmpmp3}" 2>/dev/null; then
+                    sox "${tmpmp3}" -r 8000 -c 1 -t gsm "${dest}" 2>/dev/null || true
+                fi
+                rm -f "${tmpmp3}"
+            fi
+        done
+    fi
+
+    # ------------------------------------------------------------------
+    # Generate simple synthetic ringback tone as WAV (if sox available)
+    # ------------------------------------------------------------------
+    if [ "${have_sox}" = "1" ]; then
+        local rb="${moh_dir}/ringback/ringback.wav"
+        if [ ! -f "${rb}" ]; then
+            # UK-style ringback: 400+450Hz, 0.4s on / 0.2s off / 0.4s on / 2s off
+            sox -n -r 8000 -c 1 "${rb}" \
+                synth 0.4 sine 400 sine 450 \
+                synth 0.2 sine 0   \
+                synth 0.4 sine 400 sine 450 \
+                synth 2.0 sine 0 2>/dev/null || true
+        fi
+    fi
+
+    # ------------------------------------------------------------------
+    # Ensure every MOH directory has at least a placeholder so Asterisk
+    # doesn't warn about empty directories
+    # ------------------------------------------------------------------
+    for class in default jazz classical holiday ringback; do
+        local d="${moh_dir}/${class}"
+        if [ -z "$(ls -A "${d}" 2>/dev/null)" ]; then
+            if [ "${have_sox}" = "1" ]; then
+                # Generate a 5-second 1kHz tone as placeholder
+                sox -n -r 8000 -c 1 "${d}/placeholder.wav" \
+                    synth 5 sine 1000 2>/dev/null || true
+            fi
+        fi
+    done
+
+    chown -R asterisk:asterisk "${moh_dir}" /etc/asterisk/musiconhold.conf
+    chmod -R 755 "${moh_dir}"
+
+    track_install "moh"
+    success "Music on Hold installed (${moh_dir}) with classes: default, jazz, classical, holiday, ringback"
+}
+
+# =============================================================================
 # SECTION 25: TTS ENGINE (FLITE)
 # =============================================================================
 
@@ -3539,11 +3892,12 @@ install_gtts() {
     pkg_install_one_by_one python3-pip jq libsox-fmt-all
 
     # Debian 12+ uses PEP 668 (externally-managed-environment); need --break-system-packages
-    pip3 install gTTS --break-system-packages 2>/dev/null \
-        || pip3 install gTTS 2>/dev/null \
-        || pip install gTTS --break-system-packages 2>/dev/null \
-        || pip install gTTS 2>/dev/null \
-        || warn "gTTS install failed"
+    run_logged "pip: install gTTS" bash -c '
+        pip3 install gTTS --break-system-packages 2>/dev/null ||
+        pip3 install gTTS 2>/dev/null ||
+        pip install gTTS --break-system-packages 2>/dev/null ||
+        pip install gTTS 2>/dev/null
+    ' || warn "gTTS install failed"
     ln -sf /usr/bin/pip3 /usr/bin/pip 2>/dev/null || true
 
     # nv-today script
@@ -3696,6 +4050,401 @@ CIDEOF
 }
 
 # =============================================================================
+# SECTION 27b: ADDITIONAL AGI SCRIPTS (IVR, TTS, utilities)
+# =============================================================================
+
+install_agi_scripts_extended() {
+    step "Installing extended AGI scripts..."
+    local agi_dir="/var/lib/asterisk/agi-bin"
+    mkdir -p "${agi_dir}"
+
+    # ------------------------------------------------------------------
+    # Speaking clock AGI (bash, uses flite or festival)
+    # ------------------------------------------------------------------
+    cat > "${agi_dir}/speaking-clock.agi" << 'SCLKEOF'
+#!/bin/bash
+# speaking-clock.agi — Speak current time/date via TTS
+# Usage: AGI(speaking-clock.agi[,format])
+# Reads AGI vars, speaks time using flite/festival, falls back to Asterisk SayTime
+
+set -euo pipefail
+
+# Read AGI handshake
+while IFS= read -r line; do
+    [ -z "${line}" ] && break
+    case "${line}" in
+        agi_channel:*) CHANNEL="${line#*: }" ;;
+    esac
+done
+
+# Get format arg if passed
+read -r args_line || true
+FORMAT="${args_line:-time}"  # time|date|datetime
+
+NOW_H=$(date +%H); NOW_M=$(date +%M)
+NOW_DATE=$(date '+%A, %B %-d, %Y')
+HOUR12=$(date +%-I); AMPM=$(date +%p | tr '[:upper:]' '[:lower:]')
+
+case "${FORMAT}" in
+    date)     TEXT="Today is ${NOW_DATE}" ;;
+    datetime) TEXT="The time is ${HOUR12}:$(printf '%02d' "${NOW_M}") ${AMPM} on ${NOW_DATE}" ;;
+    *)        TEXT="The time is ${HOUR12}:$(printf '%02d' "${NOW_M}") ${AMPM}" ;;
+esac
+
+TMPF=$(mktemp /tmp/clock-XXXXXX.wav)
+trap 'rm -f "${TMPF}"' EXIT
+
+if command -v flite >/dev/null 2>&1; then
+    flite -t "${TEXT}" -o "${TMPF}" 2>/dev/null && \
+        printf 'EXEC Playback "%s"\n' "${TMPF%.*}" && \
+        read -r _ || true
+elif command -v festival >/dev/null 2>&1; then
+    echo "${TEXT}" | festival --tts 2>/dev/null || true
+else
+    # Fallback to Asterisk built-in
+    printf 'SAY TIME %s ""\n' "$(date +%s)"
+    read -r _ || true
+fi
+SCLKEOF
+    chmod +x "${agi_dir}/speaking-clock.agi"
+
+    # ------------------------------------------------------------------
+    # DTMF-driven IVR menu AGI (bash)
+    # ------------------------------------------------------------------
+    cat > "${agi_dir}/ivr-menu.agi" << 'IVRMEOF'
+#!/bin/bash
+# ivr-menu.agi — Generic DTMF IVR menu helper
+# Sets AGI variable IVR_CHOICE with what the caller pressed.
+# Args: <prompt_file> <valid_digits> <timeout_secs> <max_attempts>
+# Example: AGI(ivr-menu.agi,ivr/main-menu,123456789*0,10,3)
+
+set -euo pipefail
+
+# Read AGI handshake
+declare -A AGI
+while IFS= read -r line; do
+    [ -z "${line}" ] && break
+    [[ "${line}" =~ ^agi_([^:]+):[[:space:]](.*)$ ]] && AGI["${BASH_REMATCH[1]}"]="${BASH_REMATCH[2]}"
+done
+ARGS="${AGI[arg_1]:-}"  # comma-separated args after script name
+
+agi_send()  { printf '%s\n' "$*"; }
+agi_recv()  { IFS= read -r REPLY; echo "${REPLY}"; }
+agi_digit() {
+    local prompt="$1" valid="$2" timeout="${3:-10}"
+    agi_send "STREAM FILE ${prompt} \"${valid}\" $((timeout * 1000))"
+    agi_recv
+    # Extract digit from "200 result=X (digit)"
+    echo "${REPLY}" | grep -oP 'result=\K[0-9]+' | head -1 || echo ""
+}
+
+# Parse args (pipe-separated for simplicity)
+IFS=',' read -r PROMPT VALID TIMEOUT ATTEMPTS <<< "${ARGS:-ivr/main-menu,1234567890*0,10,3}"
+TIMEOUT="${TIMEOUT:-10}"; ATTEMPTS="${ATTEMPTS:-3}"
+
+for attempt in $(seq 1 "${ATTEMPTS}"); do
+    DIGIT=$(agi_digit "${PROMPT}" "${VALID}" "${TIMEOUT}" || echo "")
+    if [ -n "${DIGIT}" ] && [ "${DIGIT}" != "0" ]; then
+        # Convert ASCII code to character
+        CHAR=$(printf "\\$(printf '%03o' "${DIGIT}")" 2>/dev/null || echo "${DIGIT}")
+        agi_send "SET VARIABLE IVR_CHOICE \"${CHAR}\""
+        agi_recv
+        exit 0
+    fi
+done
+
+agi_send 'SET VARIABLE IVR_CHOICE "timeout"'
+agi_recv
+IVRMEOF
+    chmod +x "${agi_dir}/ivr-menu.agi"
+
+    # ------------------------------------------------------------------
+    # DND toggle AGI (bash)
+    # ------------------------------------------------------------------
+    cat > "${agi_dir}/dnd-toggle.agi" << 'DNDEOF'
+#!/bin/bash
+# dnd-toggle.agi — Toggle Do Not Disturb for the calling extension
+# Sets DND_STATUS to "on" or "off" after toggling.
+set -euo pipefail
+
+declare -A AGI
+while IFS= read -r line; do
+    [ -z "${line}" ] && break
+    [[ "${line}" =~ ^agi_([^:]+):[[:space:]](.*)$ ]] && AGI["${BASH_REMATCH[1]}"]="${BASH_REMATCH[2]}"
+done
+
+EXT="${AGI[agi_callerid]:-}"
+[ -z "${EXT}" ] && EXT="${AGI[agi_dnid]:-unknown}"
+
+DB_FILE="/var/lib/asterisk/dnd.db"
+touch "${DB_FILE}" 2>/dev/null || true
+
+if grep -qxF "${EXT}" "${DB_FILE}" 2>/dev/null; then
+    sed -i "/^${EXT}$/d" "${DB_FILE}" 2>/dev/null || true
+    STATUS="off"
+else
+    echo "${EXT}" >> "${DB_FILE}"
+    STATUS="on"
+fi
+
+printf 'SET VARIABLE DND_STATUS "%s"\n' "${STATUS}"
+read -r _ || true
+DNDEOF
+    chmod +x "${agi_dir}/dnd-toggle.agi"
+
+    # ------------------------------------------------------------------
+    # Call recording toggle AGI (bash)
+    # ------------------------------------------------------------------
+    cat > "${agi_dir}/recording-toggle.agi" << 'RECEOF'
+#!/bin/bash
+# recording-toggle.agi — Start or stop call recording mid-call.
+# Sets RECORDING_STATE to "started" or "stopped".
+set -euo pipefail
+
+declare -A AGI
+while IFS= read -r line; do
+    [ -z "${line}" ] && break
+    [[ "${line}" =~ ^agi_([^:]+):[[:space:]](.*)$ ]] && AGI["${BASH_REMATCH[1]}"]="${BASH_REMATCH[2]}"
+done
+
+CHANNEL="${AGI[agi_channel]:-}"
+UNIQUEID="${AGI[agi_uniqueid]:-$(date +%s)}"
+REC_DIR="/var/spool/asterisk/monitor"
+mkdir -p "${REC_DIR}"
+LOCK_FILE="/tmp/pbx-rec-${UNIQUEID}"
+
+if [ -f "${LOCK_FILE}" ]; then
+    # Already recording — stop
+    printf 'EXEC StopMixMonitor ""\n'; read -r _ || true
+    rm -f "${LOCK_FILE}"
+    printf 'SET VARIABLE RECORDING_STATE "stopped"\n'; read -r _ || true
+else
+    # Start recording
+    REC_FILE="${REC_DIR}/${UNIQUEID}-$(date +%Y%m%d-%H%M%S)"
+    printf 'EXEC MixMonitor "%s.wav,b"\n' "${REC_FILE}"; read -r _ || true
+    touch "${LOCK_FILE}"
+    printf 'SET VARIABLE RECORDING_STATE "started"\n'; read -r _ || true
+fi
+RECEOF
+    chmod +x "${agi_dir}/recording-toggle.agi"
+
+    # ------------------------------------------------------------------
+    # Echo test AGI (bash — simple loopback)
+    # ------------------------------------------------------------------
+    cat > "${agi_dir}/echo-test.agi" << 'ECHOEOF'
+#!/bin/bash
+# echo-test.agi — Simple echo / loopback test with intro message
+set -euo pipefail
+while IFS= read -r line; do [ -z "${line}" ] && break; done
+printf 'STREAM FILE demo-echotest ""\n'; read -r _ || true
+printf 'EXEC Echo ""\n'; read -r _ || true
+printf 'STREAM FILE demo-echodone ""\n'; read -r _ || true
+ECHOEOF
+    chmod +x "${agi_dir}/echo-test.agi"
+
+    # ------------------------------------------------------------------
+    # Blacklist check AGI (bash)
+    # ------------------------------------------------------------------
+    cat > "${agi_dir}/blacklist-check.agi" << 'BLEOF'
+#!/bin/bash
+# blacklist-check.agi — Check if calling number is on blacklist
+# Sets BLACKLISTED=1 if blocked, 0 otherwise.
+# Blacklist file: /etc/asterisk/blacklist.txt (one number per line)
+set -euo pipefail
+
+declare -A AGI
+while IFS= read -r line; do
+    [ -z "${line}" ] && break
+    [[ "${line}" =~ ^agi_([^:]+):[[:space:]](.*)$ ]] && AGI["${BASH_REMATCH[1]}"]="${BASH_REMATCH[2]}"
+done
+
+CALLERID="${AGI[agi_callerid]:-}"
+BL_FILE="/etc/asterisk/blacklist.txt"
+RESULT=0
+
+if [ -f "${BL_FILE}" ] && [ -n "${CALLERID}" ]; then
+    # Strip non-digits for comparison
+    NUM=$(printf '%s' "${CALLERID}" | tr -dc '0-9')
+    while IFS= read -r entry; do
+        entry=$(printf '%s' "${entry}" | tr -dc '0-9')
+        [ "${entry}" = "${NUM}" ] && RESULT=1 && break
+    done < "${BL_FILE}"
+fi
+
+printf 'SET VARIABLE BLACKLISTED "%s"\n' "${RESULT}"
+read -r _ || true
+BLEOF
+    chmod +x "${agi_dir}/blacklist-check.agi"
+
+    # ------------------------------------------------------------------
+    # Directory lookup AGI (bash — looks up extension by name)
+    # ------------------------------------------------------------------
+    cat > "${agi_dir}/directory-lookup.agi" << 'DIREOF'
+#!/bin/bash
+# directory-lookup.agi — Collect DTMF digits and look up extension by name
+# Sets DIR_EXT to the matched extension, or "notfound"
+# Directory file: /etc/asterisk/directory.csv  (name,extension)
+set -euo pipefail
+
+declare -A AGI
+while IFS= read -r line; do
+    [ -z "${line}" ] && break
+    [[ "${line}" =~ ^agi_([^:]+):[[:space:]](.*)$ ]] && AGI["${BASH_REMATCH[1]}"]="${BASH_REMATCH[2]}"
+done
+
+DIR_FILE="/etc/asterisk/directory.csv"
+RESULT="notfound"
+
+# Collect up to 4 DTMF digits (T9-style first letters of last name)
+printf 'GET DATA dir-intro 5000 4\n'; read -r DTMF_LINE || true
+DIGITS=$(printf '%s' "${DTMF_LINE}" | grep -oP 'result=\K[0-9]+' || echo "")
+
+if [ -n "${DIGITS}" ] && [ -f "${DIR_FILE}" ]; then
+    # Simple first-letter matching: convert digits to possible letters
+    # digit 2=ABC 3=DEF 4=GHI 5=JKL 6=MNO 7=PRS 8=TUV 9=WXY
+    while IFS=',' read -r name ext _; do
+        first_letter=$(printf '%s' "${name}" | cut -c1 | tr '[:lower:]' '[:upper:]')
+        first_digit=""
+        case "${first_letter}" in
+            A|B|C) first_digit="2" ;; D|E|F) first_digit="3" ;;
+            G|H|I) first_digit="4" ;; J|K|L) first_digit="5" ;;
+            M|N|O) first_digit="6" ;; P|R|S) first_digit="7" ;;
+            T|U|V) first_digit="8" ;; W|X|Y) first_digit="9" ;;
+        esac
+        if [ "$(printf '%s' "${DIGITS}" | cut -c1)" = "${first_digit}" ]; then
+            RESULT="${ext}"
+            break
+        fi
+    done < "${DIR_FILE}"
+fi
+
+printf 'SET VARIABLE DIR_EXT "%s"\n' "${RESULT}"
+read -r _ || true
+DIREOF
+    chmod +x "${agi_dir}/directory-lookup.agi"
+
+    # ------------------------------------------------------------------
+    # Queue stats AGI (bash)
+    # ------------------------------------------------------------------
+    cat > "${agi_dir}/queue-stats.agi" << 'QSEOF'
+#!/bin/bash
+# queue-stats.agi — Set AGI vars with live queue statistics
+# Sets: QUEUE_CALLS, QUEUE_AGENTS, QUEUE_WAIT_AVG
+set -euo pipefail
+while IFS= read -r line; do [ -z "${line}" ] && break; done
+declare -A AGI
+QUEUE_NAME="${1:-default}"
+
+# Query Asterisk for queue info
+QINFO=$(timeout 5 asterisk -rx "queue show ${QUEUE_NAME}" 2>/dev/null || echo "")
+CALLS=$(printf '%s' "${QINFO}"  | grep -oP '^\s+\K[0-9]+(?= callers)' || echo "0")
+AGENTS=$(printf '%s' "${QINFO}" | grep -oP '^\s+\K[0-9]+(?= of .* agents)' || echo "0")
+
+printf 'SET VARIABLE QUEUE_CALLS "%s"\n' "${CALLS:-0}"; read -r _ || true
+printf 'SET VARIABLE QUEUE_AGENTS "%s"\n' "${AGENTS:-0}"; read -r _ || true
+QSEOF
+    chmod +x "${agi_dir}/queue-stats.agi"
+
+    # ------------------------------------------------------------------
+    # TTS wrapper AGI (picks best available engine: flite > festival > espeak)
+    # ------------------------------------------------------------------
+    cat > "${agi_dir}/tts-speak.agi" << 'TTSEOF'
+#!/bin/bash
+# tts-speak.agi — Speak text using best available TTS engine
+# Arg 1: text to speak (required)
+# Arg 2: voice/speed hint (optional, engine-specific)
+# Sets TTS_RESULT=ok|error
+set -euo pipefail
+
+declare -A AGI
+while IFS= read -r line; do
+    [ -z "${line}" ] && break
+    [[ "${line}" =~ ^agi_([^:]+):[[:space:]](.*)$ ]] && AGI["${BASH_REMATCH[1]}"]="${BASH_REMATCH[2]}"
+done
+
+TEXT="${AGI[agi_arg_1]:-}"
+[ -z "${TEXT}" ] && { printf 'SET VARIABLE TTS_RESULT "error"\n'; read -r _ || true; exit 0; }
+
+TMPF=$(mktemp /tmp/tts-XXXXXX)
+trap 'rm -f "${TMPF}" "${TMPF}.wav" "${TMPF}.ulaw"' EXIT
+
+RESULT="error"
+if command -v flite >/dev/null 2>&1; then
+    flite -t "${TEXT}" -o "${TMPF}.wav" 2>/dev/null && RESULT="ok"
+elif command -v festival >/dev/null 2>&1; then
+    echo "${TEXT}" | festival --tts --pipe 2>/dev/null > "${TMPF}.wav" && RESULT="ok"
+elif command -v espeak >/dev/null 2>&1; then
+    espeak -w "${TMPF}.wav" "${TEXT}" 2>/dev/null && RESULT="ok"
+fi
+
+if [ "${RESULT}" = "ok" ] && [ -f "${TMPF}.wav" ]; then
+    # Convert to ulaw for Asterisk if sox is available
+    if command -v sox >/dev/null 2>&1; then
+        sox "${TMPF}.wav" -r 8000 -c 1 -e a-law "${TMPF}.ulaw" 2>/dev/null && \
+            printf 'EXEC Playback "%s"\n' "${TMPF%.*}" || \
+            printf 'EXEC Playback "%s"\n' "${TMPF}.wav"
+    else
+        printf 'EXEC Playback "%s"\n' "${TMPF}.wav"
+    fi
+    read -r _ || true
+fi
+
+printf 'SET VARIABLE TTS_RESULT "%s"\n' "${RESULT}"
+read -r _ || true
+TTSEOF
+    chmod +x "${agi_dir}/tts-speak.agi"
+
+    # ------------------------------------------------------------------
+    # Wakeup call scheduler AGI (bash)
+    # ------------------------------------------------------------------
+    cat > "${agi_dir}/wakeup-call.agi" << 'WKEOF'
+#!/bin/bash
+# wakeup-call.agi — Schedule a wakeup call for this extension
+# Prompts caller to enter time (HHMM), schedules via at/cron
+# Sets WAKEUP_RESULT=scheduled|error|cancelled
+set -euo pipefail
+
+declare -A AGI
+while IFS= read -r line; do
+    [ -z "${line}" ] && break
+    [[ "${line}" =~ ^agi_([^:]+):[[:space:]](.*)$ ]] && AGI["${BASH_REMATCH[1]}"]="${BASH_REMATCH[2]}"
+done
+
+EXT="${AGI[agi_dnid]:-${AGI[agi_callerid]:-}}"
+
+printf 'STREAM FILE pbx/enter-wakeup-time ""\n'; read -r _ || true
+printf 'GET DATA "" 10000 4\n'; read -r RESP || true
+DIGITS=$(printf '%s' "${RESP}" | grep -oP 'result=\K[0-9]+' || echo "")
+
+if [ -z "${DIGITS}" ] || [ "${#DIGITS}" -ne 4 ]; then
+    printf 'STREAM FILE pbx/invalid-time ""\n'; read -r _ || true
+    printf 'SET VARIABLE WAKEUP_RESULT "cancelled"\n'; read -r _ || true
+    exit 0
+fi
+
+HOUR="${DIGITS:0:2}"; MIN="${DIGITS:2:2}"
+if [ "${HOUR}" -gt 23 ] || [ "${MIN}" -gt 59 ]; then
+    printf 'SET VARIABLE WAKEUP_RESULT "error"\n'; read -r _ || true
+    exit 0
+fi
+
+# Schedule the wakeup call via at (if available) or cron entry
+if command -v at >/dev/null 2>&1; then
+    printf 'asterisk -rx "originate Local/%s@pbx-wakeup extension %s@pbx-wakeup"\n' \
+        "${EXT}" "${EXT}" | at "${HOUR}:${MIN}" 2>/dev/null && \
+        printf 'SET VARIABLE WAKEUP_RESULT "scheduled"\n' || \
+        printf 'SET VARIABLE WAKEUP_RESULT "error"\n'
+else
+    printf 'SET VARIABLE WAKEUP_RESULT "error"\n'
+fi
+read -r _ || true
+WKEOF
+    chmod +x "${agi_dir}/wakeup-call.agi"
+
+    chmod +x "${agi_dir}"/*.agi 2>/dev/null || true
+    chown -R asterisk:asterisk "${agi_dir}"
+    success "Extended AGI scripts installed (IVR, TTS, DND, recording, blacklist, directory, queue, wakeup)"
+}
 # SECTION 28: DEMO DIALPLAN APPLICATIONS
 # =============================================================================
 
@@ -3882,6 +4631,10 @@ configure_firewall() {
             firewall-cmd --permanent --add-port="${port}" 2>/dev/null || true
         done
         firewall-cmd --permanent --add-port=10000-20000/udp 2>/dev/null || true
+        # Allow ICMP (ping) for monitoring
+        firewall-cmd --permanent --add-icmp-block-inversion 2>/dev/null || true
+        firewall-cmd --permanent --remove-icmp-block=echo-request 2>/dev/null || true
+        firewall-cmd --permanent --add-rich-rule='rule protocol value="icmp" accept' 2>/dev/null || true
         firewall-cmd --reload 2>/dev/null || true
         success "firewalld configured"
     elif command_exists ufw; then
@@ -3893,6 +4646,8 @@ configure_firewall() {
         ufw allow 5061/tcp 2>/dev/null || true
         ufw allow 4569/udp 2>/dev/null || true
         ufw allow 10000:20000/udp 2>/dev/null || true
+        # Allow ICMP (ping) for monitoring — ufw blocks ping by default when INPUT is DROP
+        ufw allow proto icmp 2>/dev/null || true
         ufw reload 2>/dev/null || true
         success "ufw configured"
     else
@@ -3909,10 +4664,13 @@ configure_iptables() {
     [ "${FIREWALL_ENABLED}" -ne 1 ] && return 0
 
     local server_ip user_ip public_ip
-    server_ip=$(ip route get 8.8.8.8 2>/dev/null | awk '{print $7; exit}' || echo "")
+    server_ip="${PRIVATE_IP:-}"
+    [ -z "${server_ip}" ] && server_ip=$(ip -4 route get 8.8.8.8 2>/dev/null \
+        | awk '/src/{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}') || true
     user_ip=$(echo "${SSH_CONNECTION:-}" | cut -f1 -d" " 2>/dev/null || echo "")
-    public_ip=$(curl -s --max-time 10 https://ifconfig.me 2>/dev/null \
-        || curl -s --max-time 10 https://api.ipify.org 2>/dev/null || echo "")
+    public_ip="${PUBLIC_IP:-}"
+    [ -z "${public_ip}" ] && public_ip=$(curl -s4 --max-time 5 https://ifconfig.me 2>/dev/null \
+        || curl -s4 --max-time 5 https://api.ipify.org 2>/dev/null || echo "") || true
 
     pkg_install_one_by_one $PKG_IPTABLES_PERSIST ipset
     svc_enable iptables 2>/dev/null || true
@@ -3924,6 +4682,11 @@ configure_iptables() {
 
     iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
     iptables -A INPUT -i lo -j ACCEPT
+    # Allow ICMP (ping) for monitoring — must be explicit when INPUT policy is DROP
+    iptables -A INPUT -p icmp --icmp-type echo-request -j ACCEPT
+    iptables -A INPUT -p icmp --icmp-type echo-reply   -j ACCEPT
+    iptables -A INPUT -p icmp --icmp-type destination-unreachable -j ACCEPT
+    iptables -A INPUT -p icmp --icmp-type time-exceeded -j ACCEPT
     [ -n "${server_ip}" ] && iptables -A INPUT -s "${server_ip}" -j ACCEPT || true
     [ -n "${user_ip}" ]   && iptables -A INPUT -s "${user_ip}"   -j ACCEPT || true
     [ -n "${public_ip}" ] && iptables -A INPUT -s "${public_ip}" -j ACCEPT || true
@@ -4002,20 +4765,40 @@ install_fail2ban() {
     touch /var/log/asterisk/security
     chown asterisk:asterisk /var/log/asterisk/security 2>/dev/null || true
 
-    # Detect whether sshd is running and has a log — disable sshd jail if not.
-    # Debian ships defaults-debian.conf with sshd enabled; we write our own
-    # pbx-sshd.conf (sorts after defaults-debian.conf) to override it.
-    local sshd_enabled="true"
-    local sshd_log=""
-    for f in /var/log/auth.log /var/log/secure /var/log/messages; do
-        [ -f "$f" ] && sshd_log="$f" && break
-    done
+    # Detect whether sshd is actually running (try all common service names)
     local sshd_running=0
-    systemctl is-active ssh  >/dev/null 2>&1 && sshd_running=1
-    systemctl is-active sshd >/dev/null 2>&1 && sshd_running=1
-    if [ -z "$sshd_log" ] || [ "$sshd_running" -eq 0 ]; then
+    for svc_name in ssh sshd openssh-server; do
+        if systemctl is-active "${svc_name}" >/dev/null 2>&1; then
+            sshd_running=1; break
+        fi
+    done
+
+    # Determine the best backend and logfile for the sshd jail.
+    # On modern systemd-only systems (no syslog files), use journald backend.
+    local sshd_enabled="true"
+    local sshd_backend="auto"
+    local sshd_logpath_line=""
+
+    if [ "${sshd_running}" -eq 0 ]; then
         sshd_enabled="false"
-        warn "sshd jail disabled: no auth log or sshd not running (container mode?)"
+        warn "sshd jail disabled: sshd is not running (container mode?)"
+    else
+        # Check for traditional log files first
+        local sshd_log=""
+        for f in /var/log/auth.log /var/log/secure /var/log/messages; do
+            [ -f "$f" ] && sshd_log="$f" && break
+        done
+
+        if [ -n "${sshd_log}" ]; then
+            # Traditional syslog: specify path and let fail2ban auto-detect backend
+            sshd_logpath_line="logpath  = ${sshd_log}"
+            sshd_backend="auto"
+        else
+            # Journald-only (systemd without rsyslog) — use systemd backend
+            # fail2ban reads directly from journald; no logpath needed
+            sshd_backend="systemd"
+            info "sshd jail: using systemd/journald backend (no syslog files found)"
+        fi
     fi
 
     # Global defaults — safe settings that won't lock anyone out
@@ -4029,14 +4812,16 @@ F2BGEOF
 
     # Write sshd jail override AFTER defaults-debian.conf alphabetically
     # ("pbx-sshd.conf" > "defaults-debian.conf")
-    cat > /etc/fail2ban/jail.d/pbx-sshd.conf << F2BSSHDEOF
-[sshd]
-enabled  = ${sshd_enabled}
-port     = ${SSH_PORT:-22}
-maxretry = 10
-bantime  = 3600
-findtime = 600
-F2BSSHDEOF
+    {
+        echo "[sshd]"
+        echo "enabled  = ${sshd_enabled}"
+        echo "port     = ${SSH_PORT:-22}"
+        echo "maxretry = 10"
+        echo "bantime  = 3600"
+        echo "findtime = 600"
+        echo "backend  = ${sshd_backend}"
+        [ -n "${sshd_logpath_line}" ] && echo "${sshd_logpath_line}"
+    } > /etc/fail2ban/jail.d/pbx-sshd.conf
 
     # Asterisk jails
     cat > /etc/fail2ban/jail.d/asterisk.conf << 'F2BEOF'
@@ -4151,7 +4936,7 @@ install_webmin() {
                 echo "deb [signed-by=/usr/share/keyrings/webmin-key.gpg] https://download.webmin.com/download/newkey/repository stable contrib" \
                     > /etc/apt/sources.list.d/webmin-stable.list
             fi
-            apt-get update -y 2>/dev/null || true
+            apt-get update -y >> "${LOG_FILE}" 2>&1 || true
             ;;
         rpm)
             cat > /etc/yum.repos.d/webmin.repo << 'WEBMINREPOEOF'
@@ -4237,14 +5022,15 @@ install_sngrep() {
                     "https://github.com/irontec/sngrep/releases/download/v1.8.1/sngrep-1.8.1.tar.gz" \
                     sngrep.tar.gz 60 2>/dev/null || true
                 if [ -f sngrep.tar.gz ]; then
-                    tar -xzf sngrep.tar.gz
+                    tar -xzf sngrep.tar.gz >> "${LOG_FILE}" 2>&1
                     local sdir
                     sdir=$(ls -d "${WORK_DIR}"/sngrep-*/ 2>/dev/null | head -1 || true)
-                    [ -d "${sdir:-}" ] && cd "${sdir}" \
-                        && ./configure 2>/dev/null \
-                        && make -j"$(nproc)" 2>/dev/null \
-                        && make install 2>/dev/null \
-                        || warn "sngrep build failed"
+                    if [ -d "${sdir:-}" ]; then
+                        cd "${sdir}"
+                        run_logged "sngrep: configure" ./configure || true
+                        run_logged "sngrep: build+install" bash -c "make -j$(nproc) && make install" || \
+                            warn "sngrep build failed"
+                    fi
                 fi
                 cd /
                 ;;
@@ -4481,74 +5267,132 @@ install_fop2() {
 # =============================================================================
 
 install_phone_provisioning() {
-    step "📱 Setting up phone auto-provisioning..."
+    step "📱 Setting up phone auto-provisioning (HTTP)..."
     [ "${INSTALL_PHONE_PROV:-no}" = "no" ] && return 0
     skip_if_done phone-provisioning && return 0
-
-    # Install TFTP server
-    case "${DISTRO_FAMILY}" in
-        debian) pkg_install tftpd-hpa ;;
-        rhel|fedora) pkg_install tftp-server ;;
-    esac
-
-    # Configure TFTP root
-    local tftp_root="/var/lib/tftpboot"
-    mkdir -p "${tftp_root}"
-
-    case "${DISTRO_FAMILY}" in
-        debian)
-            if [ -f /etc/default/tftpd-hpa ]; then
-                backup_config /etc/default/tftpd-hpa
-                sed -i "s|TFTP_DIRECTORY=.*|TFTP_DIRECTORY=\"${tftp_root}\"|" /etc/default/tftpd-hpa
-                sed -i 's|TFTP_OPTIONS=.*|TFTP_OPTIONS="--secure --create"|' /etc/default/tftpd-hpa
-            fi
-            svc_enable tftpd-hpa 2>/dev/null || true
-            svc_start  tftpd-hpa 2>/dev/null || true
-            ;;
-        rhel|fedora)
-            if [ -f /etc/xinetd.d/tftp ]; then
-                sed -i 's/disable.*=.*yes/disable = no/' /etc/xinetd.d/tftp
-                sed -i "s|server_args.*=.*|server_args = -s ${tftp_root} -c|" /etc/xinetd.d/tftp
-                svc_enable xinetd 2>/dev/null || true
-                svc_start  xinetd 2>/dev/null || true
-            else
-                # systemd socket unit for tftp
-                svc_enable tftp.socket 2>/dev/null || true
-                svc_start  tftp.socket 2>/dev/null || true
-            fi
-            ;;
-    esac
 
     # HTTP provisioning root
     local prov_dir="${WEB_ROOT}/provisioning"
     mkdir -p "${prov_dir}"
     chown -R "${APACHE_USER}:${APACHE_GROUP}" "${prov_dir}" 2>/dev/null || true
 
-    # Create Yealink provisioning template
-    mkdir -p "${tftp_root}/yealink"
-    cat > "${tftp_root}/yealink/y000000000000.cfg" << 'YLEOF'
+    mark_done phone-provisioning
+    success "Phone provisioning (HTTP) configured"
+}
+
+# =============================================================================
+# SECTION 38e2: TFTP SERVER (always installed — needed for phone provisioning)
+# =============================================================================
+
+install_tftp() {
+    step "📡 Installing TFTP server for phone provisioning..."
+    skip_if_done tftp && return 0
+
+    local tftp_root="/var/lib/tftpboot"
+    local tftp_svc=""
+
+    case "${DISTRO_FAMILY}" in
+        debian)
+            pkg_install tftpd-hpa
+            tftp_svc="tftpd-hpa"
+            if [ -f /etc/default/tftpd-hpa ]; then
+                backup_config /etc/default/tftpd-hpa
+                cat > /etc/default/tftpd-hpa << TFTPEOF
+TFTP_USERNAME="tftp"
+TFTP_DIRECTORY="${tftp_root}"
+TFTP_ADDRESS=":69"
+TFTP_OPTIONS="--secure --create"
+TFTPEOF
+            fi
+            svc_enable tftpd-hpa 2>/dev/null || true
+            svc_start  tftpd-hpa 2>/dev/null || true
+            ;;
+        rhel|fedora)
+            pkg_install tftp-server
+            tftp_svc="tftp"
+            # RHEL/Fedora use tftp.socket (systemd socket activation)
+            if [ -f /usr/lib/systemd/system/tftp.service ]; then
+                # Override to use our tftp_root and allow file creation
+                mkdir -p /etc/systemd/system/tftp.service.d
+                cat > /etc/systemd/system/tftp.service.d/override.conf << 'TFTPOVR'
+[Service]
+ExecStart=
+ExecStart=/usr/sbin/in.tftpd -s /var/lib/tftpboot -c -p -u tftp
+TFTPOVR
+                svc_daemon_reload
+            fi
+            svc_enable tftp.socket 2>/dev/null || true
+            svc_start  tftp.socket 2>/dev/null || true
+            tftp_svc="tftp.socket"
+            ;;
+    esac
+
+    mkdir -p "${tftp_root}"/{yealink,polycom,grandstream,cisco,snom}
+    chmod 777 "${tftp_root}"   # TFTP needs world-writable for --create mode
+
+    # Yealink global provisioning template
+    cat > "${tftp_root}/yealink/y000000000000.cfg" << YLEOF
 #!version:1.0.0.1
 ##File header "#!version:1.0.0.1" cannot be edited or deleted##
-
 # Yealink Auto-Provision Base Config
-# Copy this file and rename to match your phone MAC, e.g. 001565123456.cfg
+# Rename to MAC.cfg for per-device config, e.g. 001565aabbcc.cfg
 
 account.1.enable = 1
-account.1.label = Extension 1000
-account.1.display_name = Extension 1000
+account.1.label = PBX Extension
+account.1.display_name = PBX Extension
 account.1.auth_name = 1000
 account.1.user_name = 1000
 account.1.password = CHANGEME
-account.1.sip_server.1.address = PBX_IP
+account.1.sip_server.1.address = ${PRIVATE_IP}
 account.1.sip_server.1.port = 5060
 account.1.transport = 0
+
+# Provisioning server (HTTP fallback)
+auto_provision.server.url = http://${PRIVATE_IP}/provisioning/
 YLEOF
-    sed -i "s|PBX_IP|${PRIVATE_IP}|g" "${tftp_root}/yealink/y000000000000.cfg"
 
-    # pbx-provision is deployed via scripts/ directory (reads PRIVATE_IP from /etc/pbx/.env at runtime)
+    # Polycom placeholder
+    cat > "${tftp_root}/polycom/000000000000.cfg" << 'POLEOF'
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- Polycom base config - rename to MAC.cfg -->
+<PHONE_CONFIG>
+  <ALL
+    reg.1.address="1000"
+    reg.1.auth.userId="1000"
+    reg.1.auth.password="CHANGEME"
+    reg.1.server.1.address="PBX_IP"
+    reg.1.server.1.port="5060"
+  />
+</PHONE_CONFIG>
+POLEOF
+    sed -i "s|PBX_IP|${PRIVATE_IP}|g" "${tftp_root}/polycom/000000000000.cfg"
 
-    mark_done phone-provisioning
-    success "Phone provisioning configured (TFTP + HTTP)"
+    # Open TFTP port in firewall if iptables is active
+    if iptables -L INPUT -n 2>/dev/null | grep -q "^Chain"; then
+        iptables -C INPUT -p udp --dport 69 -j ACCEPT 2>/dev/null \
+            || iptables -A INPUT -p udp --dport 69 -j ACCEPT 2>/dev/null || true
+        case "${DISTRO_FAMILY}" in
+            debian)
+                netfilter-persistent save 2>/dev/null \
+                    || { mkdir -p /etc/iptables; iptables-save > /etc/iptables/rules.v4 2>/dev/null || true; }
+                ;;
+            rhel|fedora)
+                service iptables save 2>/dev/null || true
+                ;;
+        esac
+    fi
+    # firewalld
+    if command_exists firewall-cmd && firewall-cmd --state 2>/dev/null | grep -q running; then
+        firewall-cmd --permanent --add-service=tftp 2>/dev/null || true
+        firewall-cmd --reload 2>/dev/null || true
+    fi
+    # ufw
+    if command_exists ufw && ufw status 2>/dev/null | grep -q "Status: active"; then
+        ufw allow 69/udp 2>/dev/null || true
+    fi
+
+    mark_done tftp
+    success "TFTP server installed (root: ${tftp_root}, service: ${tftp_svc:-tftp})"
 }
 
 # =============================================================================
@@ -4618,11 +5462,19 @@ create_root_scripts() {
     cat > /usr/local/bin/ipchecker << 'IPCEOF'
 #!/bin/bash
 # ipchecker — show current public and private IPs
-PRIV=$(ip route get 8.8.8.8 2>/dev/null | awk '{print $7;exit}')
-PUB=$(curl -s --max-time 10 https://ifconfig.me 2>/dev/null \
-    || curl -s --max-time 10 https://api.ipify.org 2>/dev/null || echo "unknown")
-echo "Private IP: ${PRIV}"
-echo "Public IP : ${PUB}"
+PRIV4=$(ip -4 route get 8.8.8.8 2>/dev/null \
+    | awk '/src/{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}') \
+    || PRIV4=$(ip -4 addr show scope global 2>/dev/null | awk '/inet /{split($2,a,"/"); print a[1]}' | head -1)
+PRIV6=$(ip -6 route get 2001:4860:4860::8888 2>/dev/null \
+    | awk '/src/{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}' | grep -v '^::1$') || PRIV6=""
+PUB=$(curl -s4 --max-time 5 https://ifconfig.me 2>/dev/null \
+    || curl -s4 --max-time 5 https://api.ipify.org 2>/dev/null \
+    || curl -s4 --max-time 5 https://icanhazip.com 2>/dev/null || echo "unknown")
+[ -z "${PUB}" ] || [ "${PUB}" = "unknown" ] && \
+    PUB=$(curl -s6 --max-time 5 https://ifconfig.me 2>/dev/null || echo "unknown")
+printf 'Private IPv4 : %s\n' "${PRIV4:-unknown}"
+[ -n "${PRIV6}" ] && printf 'Private IPv6 : %s\n' "${PRIV6}"
+printf 'Public  IP   : %s\n' "${PUB:-unknown}"
 IPCEOF
     chmod +x /usr/local/bin/ipchecker
 
@@ -4946,92 +5798,270 @@ PORTALEOF
 build_status_page() {
     step "Building /status/ health endpoint..."
     local status_dir="${WEB_ROOT}/status"
-    mkdir -p "${status_dir}"
+    local health_dir="${WEB_ROOT}/health"
+    mkdir -p "${status_dir}" "${health_dir}"
+
+    # Status data is written by a root cron job every minute into a JSON file.
+    # PHP just reads and serves the file — no shell_exec needed, no permission issues.
 
     cat > "${status_dir}/index.php" << 'STATUSEOF'
 <?php
 header('Content-Type: application/json');
-$services = ['asterisk','freepbx','mariadb','mysql','httpd','apache2','fail2ban','postfix','hylafax'];
-$out = ['timestamp' => date('c'), 'hostname' => gethostname(), 'services' => []];
-foreach ($services as $svc) {
-    $state = trim(shell_exec("systemctl is-active " . escapeshellarg($svc) . " 2>/dev/null") ?? '');
-    if ($state === 'active') $out['services'][$svc] = 'ok';
-    elseif ($state !== '') $out['services'][$svc] = $state;
+header('Cache-Control: no-cache, no-store');
+$f = '/var/lib/pbx/status.json';
+if (file_exists($f) && (time() - filemtime($f)) < 120) {
+    readfile($f);
+} else {
+    echo json_encode(['status' => 'unknown', 'error' => 'Status file not yet generated', 'timestamp' => date('c')]);
 }
-$out['disk_free_gb'] = round(disk_free_space('/') / 1073741824, 1);
-$out['load_avg']     = sys_getloadavg();
-$mem = file_get_contents('/proc/meminfo');
-preg_match('/MemAvailable:\s+(\d+)/', $mem, $m);
-$out['mem_free_mb'] = isset($m[1]) ? round($m[1]/1024, 1) : null;
-echo json_encode($out, JSON_PRETTY_PRINT);
 STATUSEOF
 
-    chown -R "${APACHE_USER:-www-data}:${APACHE_GROUP:-www-data}" "${status_dir}" 2>/dev/null || true
-
-    # Feature: health-endpoint — dedicated /health JSON endpoint
-    local health_dir="${WEB_ROOT}/health"
-    mkdir -p "${health_dir}"
-    cat > "${health_dir}/index.php" << 'HEALTHPHPEOF'
+    # /health serves the same data
+    cat > "${health_dir}/index.php" << 'HEALTHEOF'
 <?php
-header('Content-Type: application/json');
-header('Cache-Control: no-cache, no-store');
+// PBX Health Endpoint — public-safe (no private IPs, no credentials)
+header('Content-Type: application/json; charset=utf-8');
+header('Cache-Control: no-cache, no-store, must-revalidate');
+header('Access-Control-Allow-Origin: *');
 header('X-Content-Type-Options: nosniff');
 
-$services = ['asterisk', 'mariadb', 'mysql', 'httpd', 'apache2', 'php-fpm', 'php8.2-fpm', 'fail2ban', 'postfix'];
-$status = [];
-$overall = 'ok';
+$f = '/var/lib/pbx/status.json';
+$stale_secs = 120;
 
-foreach ($services as $svc) {
-    $out = shell_exec("systemctl is-active " . escapeshellarg($svc) . " 2>/dev/null");
-    $state = trim($out ?? '');
-    if ($state === 'active') {
-        $status[$svc] = 'running';
-    } elseif ($state === 'inactive' || $state === '') {
-        // skip services that are not installed
-    } else {
-        $status[$svc] = $state;
-        $overall = 'degraded';
-    }
+if (!file_exists($f)) {
+    http_response_code(503);
+    echo json_encode([
+        'status'    => 'unknown',
+        'error'     => 'Status file not yet generated — cron may not have run yet',
+        'timestamp' => date('c'),
+    ], JSON_PRETTY_PRINT);
+    exit;
 }
 
-// Verify Asterisk CLI connectivity (check socket file first, then try CLI)
-$ast_socket = '/var/run/asterisk/asterisk.ctl';
-$ast_ver = '';
-if (file_exists($ast_socket)) {
-    $ast_ver = trim(shell_exec('asterisk -rx "core show version" 2>/dev/null') ?? '');
+$age = time() - filemtime($f);
+if ($age > $stale_secs) {
+    http_response_code(503);
+    echo json_encode([
+        'status'    => 'stale',
+        'error'     => 'Status data is stale (' . $age . 's old)',
+        'timestamp' => date('c'),
+    ], JSON_PRETTY_PRINT);
+    exit;
 }
-if (empty($ast_ver)) {
-    // Fall back: Asterisk process running but CLI socket not accessible
-    $ast_pid = trim(shell_exec('pgrep -x asterisk 2>/dev/null') ?? '');
-    if (!empty($ast_pid)) {
-        $ast_ver = trim(shell_exec('asterisk --version 2>/dev/null') ?? '') ?: 'running';
-    }
+
+$raw = file_get_contents($f);
+$data = json_decode($raw, true);
+if (!is_array($data)) {
+    http_response_code(500);
+    echo json_encode(['status' => 'error', 'error' => 'Malformed status data', 'timestamp' => date('c')]);
+    exit;
 }
-$status['asterisk_connected'] = !empty($ast_ver) ? 'true' : 'false';
-if (empty($ast_ver)) $overall = 'degraded';
 
-// Fax system status
-$fax_status = [];
-$hfaxd_running = !empty(trim(shell_exec('pgrep -x hfaxd 2>/dev/null') ?? ''));
-$iaxmodem_count = (int)trim(shell_exec('pgrep -x iaxmodem 2>/dev/null | wc -l') ?? '0');
-$fax_status['hfaxd'] = $hfaxd_running ? 'running' : 'stopped';
-$fax_status['iaxmodem_instances'] = $iaxmodem_count;
-$fax_status['modems'] = (int)trim(shell_exec('ls /dev/ttyIAX* 2>/dev/null | wc -l') ?? '0');
-if (!$hfaxd_running) $overall = 'degraded';
+// Strip any private/sensitive fields before serving
+$remove = ['private_ip', 'private_ip6', 'mysql_password', 'admin_password', 'credentials'];
+foreach ($remove as $k) { unset($data[$k]); }
 
-echo json_encode([
-    'status'    => $overall,
-    'timestamp' => date('c'),
-    'hostname'  => gethostname(),
-    'services'  => $status,
-    'fax'       => $fax_status,
-    'version'   => $ast_ver ?: 'unknown',
-    'disk_free_gb' => round(disk_free_space('/') / 1073741824, 1),
-], JSON_PRETTY_PRINT);
-HEALTHPHPEOF
-    chown -R "${APACHE_USER:-www-data}:${APACHE_GROUP:-www-data}" "${health_dir}" 2>/dev/null || true
+// Determine HTTP status code
+$overall = $data['status'] ?? 'unknown';
+if ($overall === 'ok') {
+    http_response_code(200);
+} elseif ($overall === 'degraded') {
+    http_response_code(503);
+} else {
+    http_response_code(503);
+}
 
-    success "Status endpoint built at /status/ and /health/"
+// Add age info for monitoring systems
+$data['data_age_seconds'] = $age;
+$data['_self'] = $_SERVER['REQUEST_URI'] ?? '/health/';
+
+echo json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+HEALTHEOF
+
+    chown -R "${APACHE_USER:-www-data}:${APACHE_GROUP:-www-data}" "${status_dir}" "${health_dir}" 2>/dev/null || true
+
+    # Cron script that runs as root and writes /var/lib/pbx/status.json every minute
+    cat > /usr/local/bin/pbx-status-update << 'STATUSUPDATEOF'
+#!/bin/bash
+# Write PBX status JSON — called by root cron every minute
+# Output is public-safe: no private IPs, no passwords, no credentials
+set -euo pipefail
+
+OUT_FILE="/var/lib/pbx/status.json"
+TMP_FILE="${OUT_FILE}.tmp.$$"
+mkdir -p /var/lib/pbx
+
+# Source env for feature flags (no credentials exposed in output)
+set +u
+[ -f /etc/pbx/.env ] && . /etc/pbx/.env 2>/dev/null || true
+set -u
+
+# ---------------------------------------------------------------------------
+# Service status
+# ---------------------------------------------------------------------------
+CORE_SERVICES=(asterisk mariadb mysql httpd apache2)
+ALL_SERVICES=(asterisk freepbx mariadb mysql httpd apache2 php-fpm php8.2-fpm php7.4-fpm fail2ban postfix hylafax iaxmodem webmin tftp tftpd-hpa)
+declare -A SVC_STATUS
+overall="ok"
+
+for svc in "${ALL_SERVICES[@]}"; do
+    state=$(systemctl is-active "${svc}" 2>/dev/null || echo "inactive")
+    [ "${state}" = "active" ] && SVC_STATUS["${svc}"]="running" || SVC_STATUS["${svc}"]="${state}"
+done
+
+# Mark degraded if any core service is not active
+for svc in "${CORE_SERVICES[@]}"; do
+    st="${SVC_STATUS[$svc]:-inactive}"
+    [ "${st}" != "running" ] && [ "${st}" != "inactive" ] && overall="degraded" && break
+    [ "${st}" = "inactive" ] || true  # inactive = not installed, not degraded
+done
+
+# ---------------------------------------------------------------------------
+# Asterisk info (with timeouts to avoid hanging)
+# ---------------------------------------------------------------------------
+ast_ver=$(timeout 5 asterisk -rx "core show version" 2>/dev/null | head -1 | grep -oE 'Asterisk [0-9.]+' || echo "")
+ast_uptime=$(timeout 5 asterisk -rx "core show uptime" 2>/dev/null | grep "System uptime" | sed 's/System uptime: //' || echo "")
+active_calls=$(timeout 5 asterisk -rx "core show channels count" 2>/dev/null | awk '/active channel/{print $1}' | head -1 || echo "0")
+active_calls="${active_calls:-0}"
+reg_endpoints=$(timeout 5 asterisk -rx "pjsip show endpoints" 2>/dev/null | grep -cE "^[A-Za-z0-9].*Avail" 2>/dev/null || echo "0")
+total_endpoints=$(timeout 5 asterisk -rx "pjsip show endpoints" 2>/dev/null | grep -cE "^[A-Za-z0-9]" 2>/dev/null || echo "0")
+
+# FreePBX version — read from module XML (no PHP class loading)
+fpbx_ver=$(grep -oP '(?<=<version>)[^<]+' /var/www/html/admin/modules/framework/module.xml 2>/dev/null | head -1 || echo "")
+
+# PHP version
+php_ver=$(php -r "echo PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION.'.'.PHP_RELEASE_VERSION;" 2>/dev/null || echo "")
+
+# ---------------------------------------------------------------------------
+# Fax / IAX modems
+# ---------------------------------------------------------------------------
+hfaxd_state="${SVC_STATUS[hylafax]:-inactive}"
+iaxmodem_count=$(pgrep -x iaxmodem 2>/dev/null | wc -l | tr -d ' ' || echo "0")
+
+# ---------------------------------------------------------------------------
+# System metrics (all from /proc — fast, no external commands)
+# ---------------------------------------------------------------------------
+mem_total_kb=$(awk '/MemTotal/{print $2}' /proc/meminfo 2>/dev/null || echo "0")
+mem_avail_kb=$(awk '/MemAvailable/{print $2}' /proc/meminfo 2>/dev/null || echo "0")
+mem_used_kb=$(( mem_total_kb - mem_avail_kb ))
+mem_total_mb=$(( mem_total_kb / 1024 ))
+mem_used_mb=$(( mem_used_kb / 1024 ))
+mem_free_mb=$(( mem_avail_kb / 1024 ))
+
+disk_total_kb=$(df -k / 2>/dev/null | awk 'NR==2{print $2}')
+disk_used_kb=$(df -k / 2>/dev/null | awk 'NR==2{print $3}')
+disk_free_kb=$(df -k / 2>/dev/null | awk 'NR==2{print $4}')
+disk_pct=$(df / 2>/dev/null | awk 'NR==2{print $5}' | tr -d '%')
+disk_total_gb=$(( ${disk_total_kb:-0} / 1048576 ))
+disk_used_gb=$(( ${disk_used_kb:-0} / 1048576 ))
+disk_free_gb=$(( ${disk_free_kb:-0} / 1048576 ))
+
+load_1=$(cut -d' ' -f1 /proc/loadavg 2>/dev/null || echo "0")
+load_5=$(cut -d' ' -f2 /proc/loadavg 2>/dev/null || echo "0")
+load_15=$(cut -d' ' -f3 /proc/loadavg 2>/dev/null || echo "0")
+
+uptime_secs=$(awk '{print int($1)}' /proc/uptime 2>/dev/null || echo "0")
+
+os_name=$(. /etc/os-release 2>/dev/null && echo "${PRETTY_NAME:-}" || echo "")
+kernel=$(uname -r 2>/dev/null || echo "")
+
+# ---------------------------------------------------------------------------
+# Feature flags (from env — which optional components are installed)
+# ---------------------------------------------------------------------------
+feat_fax="false"; systemctl is-active hylafax >/dev/null 2>&1 && feat_fax="true"
+feat_tts="false"; command -v flite >/dev/null 2>&1 && feat_tts="true"
+feat_festival="false"; command -v festival >/dev/null 2>&1 && feat_festival="true"
+feat_webmin="false"; systemctl is-active webmin >/dev/null 2>&1 && feat_webmin="true"
+feat_tftp="false"; { systemctl is-active tftpd-hpa >/dev/null 2>&1 || systemctl is-active tftp.socket >/dev/null 2>&1; } && feat_tftp="true"
+feat_fail2ban="false"; systemctl is-active fail2ban >/dev/null 2>&1 && feat_fail2ban="true"
+
+# ---------------------------------------------------------------------------
+# Build JSON via python3 (or bash heredoc fallback)
+# ---------------------------------------------------------------------------
+python3 - << PEOF 2>/dev/null > "${TMP_FILE}" || true
+import json, datetime
+
+# Build services dict — only include installed (non-inactive) ones
+raw_svcs = {
+$(for svc in "${!SVC_STATUS[@]}"; do
+    st="${SVC_STATUS[$svc]:-inactive}"
+    [ "${st}" != "inactive" ] && printf '    "%s": "%s",\n' "${svc}" "${st}"
+done)
+}
+
+data = {
+    "status": "${overall}",
+    "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+    "hostname": open("/etc/hostname").read().strip(),
+    "os": "${os_name}",
+    "kernel": "${kernel}",
+    "uptime_seconds": int("${uptime_secs}" or 0),
+    "pbx": {
+        "asterisk_version": "${ast_ver}".strip(),
+        "asterisk_uptime": "${ast_uptime}".strip(),
+        "freepbx_version": "${fpbx_ver}",
+        "php_version": "${php_ver}",
+        "active_calls": int("${active_calls}" or 0),
+        "registered_endpoints": int("${reg_endpoints}" or 0),
+        "total_endpoints": int("${total_endpoints}" or 0),
+    },
+    "services": {k: v for k, v in raw_svcs.items()},
+    "fax": {
+        "enabled": ${feat_fax},
+        "hfaxd_state": "${hfaxd_state}",
+        "iaxmodem_count": int("${iaxmodem_count}" or 0),
+    },
+    "features": {
+        "fax":      ${feat_fax},
+        "tts_flite":    ${feat_tts},
+        "tts_festival": ${feat_festival},
+        "webmin":   ${feat_webmin},
+        "tftp":     ${feat_tftp},
+        "fail2ban": ${feat_fail2ban},
+    },
+    "system": {
+        "load_1min":    "${load_1}",
+        "load_5min":    "${load_5}",
+        "load_15min":   "${load_15}",
+        "mem_total_mb": ${mem_total_mb},
+        "mem_used_mb":  ${mem_used_mb},
+        "mem_free_mb":  ${mem_free_mb},
+        "disk_total_gb": ${disk_total_gb},
+        "disk_used_gb":  ${disk_used_gb},
+        "disk_free_gb":  ${disk_free_gb},
+        "disk_used_pct": int("${disk_pct}" or 0),
+    },
+}
+print(json.dumps(data, indent=2))
+PEOF
+
+# Fallback: write minimal valid JSON if python3 failed
+if [ ! -s "${TMP_FILE}" ]; then
+    cat > "${TMP_FILE}" << JEOF
+{
+  "status": "${overall}",
+  "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "hostname": "$(hostname -s 2>/dev/null)",
+  "system": {
+    "load_1min": "${load_1}",
+    "mem_free_mb": ${mem_free_mb},
+    "disk_free_gb": ${disk_free_gb}
+  }
+}
+JEOF
+fi
+
+mv -f "${TMP_FILE}" "${OUT_FILE}"
+chmod 644 "${OUT_FILE}"
+STATUSUPDATEOF
+    chmod 755 /usr/local/bin/pbx-status-update
+
+    # Run immediately to populate the file, then every minute via cron
+    /usr/local/bin/pbx-status-update 2>/dev/null || true
+    echo "* * * * * root /usr/local/bin/pbx-status-update" > /etc/cron.d/pbx-status
+    chmod 644 /etc/cron.d/pbx-status
+
+    success "Status endpoint built at /status/ and /health/ (updated every minute by cron)"
 }
 
 # =============================================================================
@@ -5140,11 +6170,20 @@ REMINDEREOF
     chmod 755 /usr/local/bin/pbx-reminder-process
     echo "* * * * * asterisk /usr/local/bin/pbx-reminder-process" > /etc/cron.d/pbx-reminders
 
+    # Ensure reminders file exists and is writable by both the web server and the asterisk cron job
+    touch /etc/asterisk/reminders.txt
+    chown "asterisk:${APACHE_GROUP:-www-data}" /etc/asterisk/reminders.txt
+    chmod 664 /etc/asterisk/reminders.txt
+
     # Apache alias with Basic Auth using ADMIN_PASSWORD
     local rem_conf htpasswd_file="/etc/pbx/.htpasswd-pbx"
     # Create/update shared htpasswd file for pbx web apps (reminder, callcenter)
     if command -v htpasswd >/dev/null 2>&1; then
-        htpasswd -bc "${htpasswd_file}" admin "${ADMIN_PASSWORD}" 2>/dev/null || true
+        # Create with FREEPBX_ADMIN_USERNAME
+        htpasswd -bc "${htpasswd_file}" "${FREEPBX_ADMIN_USERNAME}" "${ADMIN_PASSWORD}" 2>/dev/null || true
+        # If admin username differs from 'admin', also add 'admin' as alias
+        [ "${FREEPBX_ADMIN_USERNAME}" != "admin" ] && \
+            htpasswd -b "${htpasswd_file}" admin "${ADMIN_PASSWORD}" 2>/dev/null || true
         chmod 640 "${htpasswd_file}"
         chown root:"${APACHE_GROUP:-www-data}" "${htpasswd_file}" 2>/dev/null || true
     fi
@@ -5479,8 +6518,8 @@ show_completion_message() {
         # Reload proxy port from env file
         local _pp
         _pp=$(grep "^PROXY_HTTP_PORT=" "${PBX_ENV_FILE}" 2>/dev/null | cut -d= -f2 | tr -d '"')
-        admin_url="http://YOUR-PROXY-DOMAIN/admin  (proxy → http://127.0.0.1:${_pp:-?}/admin)"
-        avantfax_url="http://YOUR-PROXY-DOMAIN/avantfax  (proxy → http://127.0.0.1:${_pp:-?}/avantfax)"
+        admin_url="http://${SYSTEM_FQDN:-YOUR-PROXY-DOMAIN}/admin  (proxy → http://127.0.0.1:${_pp:-?}/admin)"
+        avantfax_url="http://${SYSTEM_FQDN:-YOUR-PROXY-DOMAIN}/avantfax  (proxy → http://127.0.0.1:${_pp:-?}/avantfax)"
     else
         [ "${SSL_ENABLED:-0}" -eq 0 ] && scheme="http"
         admin_url="${scheme}://${PUBLIC_IP}/admin"
@@ -5510,9 +6549,11 @@ show_completion_message() {
     echo "    Webmin      : https://${PUBLIC_IP}:9001"
     echo ""
     echo "${CYAN}  Credentials (also saved in /etc/pbx/pbx_passwords):${NC}"
-    echo "    Admin Password: ${ADMIN_PASSWORD}  (FreePBX, AvantFax, Reminder, CallCenter)"
-    echo "    Webmin (port 9001): uses system root password — set with 'passwd root'"
-    echo "    Admin Username: ${FREEPBX_ADMIN_USERNAME}"
+    echo "    FreePBX Admin  : user=${FREEPBX_ADMIN_USERNAME}  password=${ADMIN_PASSWORD}"
+    echo "    AvantFax Admin : user=${AVANTFAX_ADMIN_USERNAME}  password=${AVANTFAX_ADMIN_PASSWORD}"
+    echo "    Reminder/CC    : user=${FREEPBX_ADMIN_USERNAME}  password=${ADMIN_PASSWORD}"
+    echo "    MySQL root     : password=${MYSQL_ROOT_PASSWORD}"
+    echo "    Webmin (9001)  : user=root  (set password with: passwd root)"
     echo "    MySQL Root    : ${MYSQL_ROOT_PASSWORD}"
     echo ""
     echo "${CYAN}  Installed Components:${NC}"
@@ -5530,6 +6571,7 @@ show_completion_message() {
     echo "    pbx-security   — Security audit"
     echo "    pbx-passwords  — Show credentials"
     echo "    pbx-docs       — Quick reference"
+    echo "    pbx-tftp       — TFTP phone provisioning"
     echo "    add-ip <IP>    — Whitelist an IP"
     echo ""
     echo "${CYAN}  Demo Extensions (call from any extension):${NC}"
@@ -5572,7 +6614,20 @@ run_installation() {
     preflight_checks
     resolve_install_profile
     detect_ssh_safety
+
+    # Preserve any user-supplied credential env vars BEFORE load_pbx_env sources /etc/pbx/.env,
+    # which would otherwise overwrite them with previously-stored values.
+    local _pre_admin_pw="${ADMIN_PASSWORD:-}"
+    local _pre_mysql_pw="${MYSQL_ROOT_PASSWORD:-}"
+    local _pre_fpbx_user="${FREEPBX_ADMIN_USERNAME:-}"
+
     load_pbx_env
+
+    # Restore user-supplied values so they take priority over stored .env values
+    [ -n "${_pre_admin_pw}" ]   && ADMIN_PASSWORD="${_pre_admin_pw}"
+    [ -n "${_pre_mysql_pw}" ]   && MYSQL_ROOT_PASSWORD="${_pre_mysql_pw}"
+    [ -n "${_pre_fpbx_user}" ]  && FREEPBX_ADMIN_USERNAME="${_pre_fpbx_user}"
+
     setup_dns
     prepare_system
 
@@ -5595,9 +6650,11 @@ run_installation() {
 
     # Phase 5: Media and dialplan
     install_asterisk_sounds
+    install_moh
     install_tts_engine
     install_gtts
     install_agi_scripts
+    install_agi_scripts_extended
     install_demo_applications
 
     # Phase 6: Fax system (required)
@@ -5627,6 +6684,7 @@ run_installation() {
     [ "${INSTALL_SNGREP:-no}"  = "yes" ] && install_sngrep  || true
     [ "${INSTALL_OPENVPN:-no}" = "yes" ] && install_openvpn || true
     [ "${INSTALL_FOP2:-no}"    = "yes" ] && install_fop2    || true
+    install_tftp   # Always install TFTP for phone provisioning support
     [ "${INSTALL_PHONE_PROV:-no}" = "yes" ] && install_phone_provisioning || true
 
     # Phase 9: Backup
@@ -5755,7 +6813,13 @@ ENVIRONMENT VARIABLES:
   INSTALL_FOP2           yes/no — Flash Operator Panel 2 (advanced only)
   INSTALL_SNGREP         yes/no — SIP traffic monitor (advanced only)
   MYSQL_ROOT_PASSWORD    Pre-set MySQL root password (auto-generated if empty)
-  ADMIN_PASSWORD         Unified admin UI password for all web apps (auto-generated if empty)
+  ADMIN_PASSWORD         Unified admin UI password — FreePBX, Reminder, CallCenter (auto-generated if empty)
+  FREEPBX_ADMIN_USERNAME FreePBX GUI admin username (default: admin)
+  AVANTFAX_ADMIN_USERNAME AvantFax web UI admin username (default: admin)
+  AVANTFAX_ADMIN_PASSWORD AvantFax web UI admin password (default: ADMIN_PASSWORD)
+  FAX_TO_EMAIL_ADDRESS   Email address to forward received faxes to (default: ADMIN_EMAIL)
+  FAX_FROM_EMAIL         From address for fax notification emails (default: FROM_EMAIL)
+  FAX_FROM_NAME          From name for fax notification emails (default: FROM_NAME / PBX Fax System)
   GITHUB_REPO            GitHub repo for management scripts (default: scriptmgr/pbx)
   SCRIPTS_REF            Branch/tag for scripts (default: main)
   GITHUB_TOKEN           Token for private forks (optional)
