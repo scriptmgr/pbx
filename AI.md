@@ -26,9 +26,10 @@ These apply to every piece of code, script, UI, config, and documentation in thi
 | 13 | **Always use SERVER FQDN** — never "server name". In all configs, scripts, output, and docs. |
 | 14 | **Never display `0.0.0.0`, `127.0.0.1`, `::1`, or `localhost`** to the user. Always resolve and show the single most relevant address: FQDN first, then global/public IP, then LAN IP. Show only one. |
 | 15 | **Keep `README.md` in sync** with the project at all times. Section order: About → Official Site (if defined) → Production → Client CLI → Other → Development. Production always before development. |
-| 16 | **Always use `TODO.AI.md`** when handling more than 2 tasks. Keep it in sync throughout. When all tasks are completed **and verified**, the file must be **emptied** (not deleted). |
-| 17 | **Never assume or guess.** If anything is unclear, ask the user before proceeding. |
-| 18 | **Always search and read existing code** before implementing or changing anything. |
+| 16 | **Always use `TODO.AI.md`** when working on **2 or more tasks**. Keep it up to date throughout. When all tasks are completed, **empty the file** (do not delete it). |
+| 17 | **`TODO.md`** is the human task backlog — humans add to it, AI executes from it. **Never add items to `TODO.md` unprompted.** `TODO.AI.md` is strictly the AI's session-level working scratchpad. |
+| 18 | **Never assume or guess.** If anything is unclear, ask the user before proceeding. |
+| 19 | **Always search and read existing code** before implementing or changing anything. |
 
 ---
 

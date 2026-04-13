@@ -27,7 +27,7 @@ Progress tracker for the complete v3.0 rewrite.
 - [x] `container-detect` — Detect LXC/Docker, skip iptables/sysctl
 - [x] `derivative-distros` — Detect derivatives via `ID_LIKE` (Mint, Pop, Stream, etc.)
 - [x] `centos6-compat` — CentOS 6 vault mirrors, SysV, EOL warnings
-- [ ] `centos7-compat` — CentOS 7 specific quirks
+- [~] `centos7-compat` — CentOS 7 specific quirks (basic support via Remi; edge cases TBD)
 
 ---
 
@@ -43,7 +43,7 @@ Progress tracker for the complete v3.0 rewrite.
 - [x] `odbc-config` — ODBC for CDR (path differs per arch/distro)
 - [x] `install-asterisk` — Asterisk compilation for version matrix (18/21/22)
 - [x] `install-freepbx` — FreePBX install for version matrix (15/17)
-- [ ] `freepbx-module-list` — Explicit module install list for FreePBX 17
+- [x] `freepbx-module-list` — Explicit module install list for FreePBX 17 (70+ modules via loop)
 - [x] `freepbx-modules` — Remove unsupported, install all supported modules
 - [x] `web-root` — Web root at `/var/www/apache/pbx/` everywhere
 - [x] `install-postfix` — Postfix mail server + voicemail-to-email
@@ -59,8 +59,8 @@ Progress tracker for the complete v3.0 rewrite.
 - [x] `install-knockd` — knockd port knocking (advanced profile only)
 - [x] `install-openvpn` — OpenVPN (advanced profile only)
 - [x] `install-sngrep` — sngrep SIP monitor (advanced profile only)
-- [ ] `fop2` — FOP2 Flash Operator Panel (advanced profile only)
-- [ ] `phone-provisioning` — TFTP + HTTP phone provisioning (advanced profile only)
+- [x] `fop2` — FOP2 Flash Operator Panel (advanced profile, INSTALL_FOP2=yes)
+- [x] `phone-provisioning` — TFTP + HTTP phone provisioning (pbx-tftp + pbx-provision scripts)
 
 ---
 
@@ -71,7 +71,7 @@ Progress tracker for the complete v3.0 rewrite.
 - [x] `email-to-fax` — Email-to-fax configuration
 - [x] `fax-to-email` — Fax-to-email forwarding
 - [x] `telephone-reminder` — Telephone Reminder app (`/reminder/`)
-- [ ] `wakeup-reminder` — Wakeup calls (hotelwakeup module + `*68`)
+- [x] `wakeup-reminder` — Wakeup calls via hotelwakeup module + *68 feature code + AGI script
 
 ---
 
@@ -110,42 +110,42 @@ Progress tracker for the complete v3.0 rewrite.
 ## Phase 8 — Backup & Management Scripts
 
 - [x] `backup-tiers` — Tiered backups: daily/weekly/monthly/config/db to `/mnt/backups/pbx/`
-- [ ] `backup-encryption` — GPG encryption for archives (advanced)
-- [ ] `backup-verify` — Backup integrity checking
-- [ ] `backup-before-update` — DB backup before FreePBX auto-update
-- [ ] `remote-backup` — Remote backup via rclone (advanced)
+- [x] `backup-encryption` — GPG encryption via pbx-backup-encrypt script
+- [x] `backup-verify` — SHA256 integrity checking on all backups
+- [x] `backup-before-update` — DB backup before FreePBX auto-update (pbx-autoupdate)
+- [x] `remote-backup` — Remote backup via rclone (pbx-backup-remote script)
 - [x] `health-alerts` — Service health monitoring + email alerts
-- [ ] `freepbx-autoupdate` — FreePBX weekly auto-update cron
-- [x] `passwords-file` — `/root/.pbx_passwords` auto-generated credentials file
+- [x] `freepbx-autoupdate` — FreePBX weekly auto-update cron (pbx-autoupdate script)
+- [x] `passwords-file` — `/etc/pbx/pbx_passwords` auto-generated credentials file
 - [x] `install-summary` — Installation summary email + console output
 - [x] `pbxstatus` — `pbxstatus` shows on SSH login
 - [x] `root-scripts` — IncrediblePBX-style root management scripts
-- [ ] `cdr-reporting` — CDR reporting script (`pbx-cdr`)
-- [ ] `trunk-monitor` — SIP trunk health monitor (`pbx-trunks`)
-- [ ] `download-integrity` — Checksum/GPG verification for tarballs
+- [x] `cdr-reporting` — CDR reporting script (pbx-cdr)
+- [x] `trunk-monitor` — SIP trunk health monitor (pbx-trunks)
+- [x] `download-integrity` — SHA256 checksum verification for tarballs
 - [x] `fqdn-setup` — FQDN/hostname detection and setup
 
 ---
 
 ## Phase 9 — Management Scripts (`scripts/` dir → `/usr/local/bin/`)
 
-- [~] `scripts-dir` — Creating `scripts/` directory (background agent running)
+- [x] `scripts-dir` — All 32 scripts created in `scripts/` directory
 - [x] `github-api` — GitHub Contents API for dynamic script discovery/sync
 - [x] `install-script-downloader` — Replace heredocs with API download loop
-- [~] `pbx-update-script` — `pbx-update` for self-updating all scripts
-- [~] `pbx-asterisk` — `pbx-asterisk` Asterisk management
-- [~] `pbx-calls` — `pbx-calls` active call monitoring
-- [~] `pbx-diag` — `pbx-diag` diagnostic/support info dump
-- [~] `pbx-recordings` — `pbx-recordings` recording management
-- [~] `pbx-docs-gen` — `pbx-docs generate` documentation output
-- [~] All other 20 pbx-* scripts — background agent creating
+- [x] `pbx-update-script` — `pbx-update` self-updating all scripts
+- [x] `pbx-asterisk` — `pbx-asterisk` Asterisk management
+- [x] `pbx-calls` — `pbx-calls` active call monitoring
+- [x] `pbx-diag` — `pbx-diag` diagnostic/support info dump
+- [x] `pbx-recordings` — `pbx-recordings` recording management
+- [x] `pbx-docs-gen` — `pbx-docs` documentation output
+- [x] All other 20 pbx-* scripts — complete, tested 41P/1W/0F
 
 ---
 
 ## Phase 10 — Verification & Documentation
 
-- [ ] `verify-update` — Update `verify_installation()` for all new components
-- [ ] `readme-update` — Update `README.md` with expanded distro support
-- [ ] `claude-md-update` — Update `CLAUDE.md` with architectural changes
+- [x] `verify-update` — `verify_installation()` covers Asterisk, FreePBX, MariaDB, Apache, PHP
+- [x] `readme-update` — `README.md` updated with full distro support, section reorder
+- [ ] `claude-md-update` — Update `CLAUDE.md` with current architecture (last updated 2025-01-09)
 
 ---

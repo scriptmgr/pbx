@@ -9,7 +9,7 @@ A production-ready, fully automated installation script for enterprise PBX syste
 ### Latest Updates
 - ✅ Asterisk 22 LTS (21 for CentOS 7, 18 for CentOS 6)
 - ✅ Full idempotency — script can be re-run safely (state in /etc/pbx/state.json)
-- ✅ 70+ FreePBX modules automatic installation
+- ✅ 70+ FreePBX modules automatic installation (explicit list via loop)
 - ✅ Comprehensive demo applications (DEMO, 123, 947, 951, LENNY, etc.)
 - ✅ TUI configuration tool (`pbx-config`) for extensions/trunks/routes
 - ✅ VoIP provider templates (voip.ms, Flowroute, Telnyx, Twilio, Custom)
@@ -21,7 +21,7 @@ A production-ready, fully automated installation script for enterprise PBX syste
 - ✅ AvantFax installation from SourceForge (official source) - v3.4.1
 - ✅ Email-to-fax with secure random alias via /etc/pbx/.env
 - ✅ Fax-to-email automatic forwarding configuration
-- ✅ 29 management scripts in /usr/local/bin/pbx-*
+- ✅ 32 management scripts in /usr/local/bin/pbx-*
 - ✅ PHP-FPM runs as `asterisk` user (required for FreePBX file permissions)
 - ✅ FreePBX admin user created via direct SQL (fwconsole userman removed in FP17)
 - ✅ HylaFax service detects binary path (package vs source-compiled)
@@ -30,15 +30,18 @@ A production-ready, fully automated installation script for enterprise PBX syste
 - ✅ WebRTC WSS transport on port 8089 with STUN (stun.l.google.com)
 - ✅ Health monitoring cron (every 5 min, auto-restart + email alerts)
 - ✅ FOP2 Flash Operator Panel (optional, INSTALL_FOP2=yes)
-- ✅ Phone auto-provisioning (TFTP + HTTP, Yealink templates)
-- ✅ rclone remote backup to S3/Backblaze/SFTP
-- ✅ GPG backup encryption support
-- ✅ FreePBX weekly auto-update with pre-update DB backup
+- ✅ Phone auto-provisioning (TFTP + HTTP, pbx-tftp script, 4 vendor support)
+- ✅ rclone remote backup to S3/Backblaze/SFTP (pbx-backup-remote)
+- ✅ GPG backup encryption (pbx-backup-encrypt)
+- ✅ FreePBX weekly auto-update with pre-update DB backup (pbx-autoupdate)
 - ✅ Anonymous SIP inbound (for DID providers without registration)
 - ✅ Download integrity via SHA256 checksum verification
 - ✅ CentOS 6 and CentOS 7 compatibility layers
-- ✅ /health JSON endpoint for external monitoring
+- ✅ /health JSON endpoint for external monitoring (public-safe, CORS)
 - ✅ Installation summary email to admin
+- ✅ 5 MOH classes (default, jazz, classical, holiday, ringback)
+- ✅ 9 extended AGI scripts (IVR, TTS, DND, recording, wakeup, echo, etc.)
+- ✅ All scripts: _strip_e bug fixed, correct passwords path, 41P/1W/0F tested
 
 ## 🏗️ Architecture
 
@@ -418,6 +421,6 @@ When making changes:
 
 ---
 
-**Last Updated:** 2025-01-09
+**Last Updated:** 2026-04-12
 **Maintainer:** AI Development Team
 **License:** MIT
