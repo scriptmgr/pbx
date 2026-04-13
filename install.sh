@@ -1396,7 +1396,7 @@ Web Interfaces:
   Fax (AvantFax): http://${PRIVATE_IP}/avantfax/
   Webmin:         https://${PRIVATE_IP}:9001/
   Main Portal:    http://${PRIVATE_IP}/
-$([ "${BEHIND_PROXY:-no}" = "yes" ] && printf "  [Proxy mode] Apache HTTP: http://127.0.0.1:%s/\n" "$(grep "^PROXY_HTTP_PORT=" "${PBX_ENV_FILE}" 2>/dev/null | cut -d= -f2 | tr -d '"')")
+$([ "${BEHIND_PROXY:-no}" = "yes" ] && printf "  [Proxy mode] Apache is bound to localhost only — point your reverse proxy to the configured port.\n")
 
 SSH Port: ${SSH_PORT}
 PWEOF
@@ -5478,15 +5478,6 @@ printf 'Public  IP   : %s\n' "${PUB:-unknown}"
 IPCEOF
     chmod +x /usr/local/bin/ipchecker
 
-    # add-ip — add IP to iptables whitelist
-    cat > /usr/local/bin/add-ip << 'ADDIPEOF'
-#!/bin/bash
-IP="${1:?Usage: add-ip <ip-address>}"
-iptables -I INPUT -s "${IP}" -j ACCEPT
-echo "Added ${IP} to iptables whitelist"
-ADDIPEOF
-    chmod +x /usr/local/bin/add-ip
-
     # admin-pw-change — change FreePBX admin password
     cat > /usr/local/bin/admin-pw-change << 'APWEOF'
 #!/bin/bash
@@ -6522,8 +6513,8 @@ show_completion_message() {
         avantfax_url="http://${SYSTEM_FQDN:-YOUR-PROXY-DOMAIN}/avantfax  (proxy → http://127.0.0.1:${_pp:-?}/avantfax)"
     else
         [ "${SSL_ENABLED:-0}" -eq 0 ] && scheme="http"
-        admin_url="${scheme}://${PUBLIC_IP}/admin"
-        avantfax_url="${scheme}://${PUBLIC_IP}/avantfax"
+        admin_url="${scheme}://${SYSTEM_FQDN:-${PUBLIC_IP}}/admin"
+        avantfax_url="${scheme}://${SYSTEM_FQDN:-${PUBLIC_IP}}/avantfax"
     fi
 
     echo ""
@@ -6539,14 +6530,14 @@ show_completion_message() {
     if [ "${BEHIND_PROXY:-no}" = "yes" ]; then
         local _pp2
         _pp2=$(grep "^PROXY_HTTP_PORT=" "${PBX_ENV_FILE}" 2>/dev/null | cut -d= -f2 | tr -d '"')
-        echo "${YELLOW}  ⚠️  Reverse Proxy Mode: Apache bound to 127.0.0.1:${_pp2:-?}${NC}"
-        echo "${YELLOW}     Point your proxy to: http://127.0.0.1:${_pp2:-?}/  ${NC}"
+        echo "${YELLOW}  ⚠️  Reverse Proxy Mode: Apache is bound to localhost only.${NC}"
+        echo "${YELLOW}     Point your reverse proxy to port ${_pp2:-?} on this host.${NC}"
         echo ""
     fi
     echo "${CYAN}  Web Interfaces:${NC}"
     echo "    FreePBX     : ${admin_url}"
     echo "    AvantFax    : ${avantfax_url}"
-    echo "    Webmin      : https://${PUBLIC_IP}:9001"
+    echo "    Webmin      : https://${SYSTEM_FQDN:-${PUBLIC_IP}}:9001"
     echo ""
     echo "${CYAN}  Credentials (also saved in /etc/pbx/pbx_passwords):${NC}"
     echo "    FreePBX Admin  : user=${FREEPBX_ADMIN_USERNAME}  password=${ADMIN_PASSWORD}"
@@ -6554,7 +6545,6 @@ show_completion_message() {
     echo "    Reminder/CC    : user=${FREEPBX_ADMIN_USERNAME}  password=${ADMIN_PASSWORD}"
     echo "    MySQL root     : password=${MYSQL_ROOT_PASSWORD}"
     echo "    Webmin (9001)  : user=root  (set password with: passwd root)"
-    echo "    MySQL Root    : ${MYSQL_ROOT_PASSWORD}"
     echo ""
     echo "${CYAN}  Installed Components:${NC}"
     echo "    Asterisk ${ASTERISK_VERSION} | FreePBX ${FREEPBX_VERSION} | PHP ${PHP_VERSION} | MariaDB"
@@ -6572,7 +6562,7 @@ show_completion_message() {
     echo "    pbx-passwords  — Show credentials"
     echo "    pbx-docs       — Quick reference"
     echo "    pbx-tftp       — TFTP phone provisioning"
-    echo "    add-ip <IP>    — Whitelist an IP"
+    echo "    pbx-add-ip <IP> — Whitelist an IP"
     echo ""
     echo "${CYAN}  Demo Extensions (call from any extension):${NC}"
     echo "    123  Speaking clock   947  Weather TTS    951  Today's date"

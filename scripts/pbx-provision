@@ -18,7 +18,11 @@ hdr()  { printf "\n${BOLD}%s${NC}\n" "$*"; }
 [ -f /etc/pbx/.env ] && . /etc/pbx/.env
 [ "$(id -u)" -ne 0 ] && { err "Must run as root"; exit 1; }
 
-PBX_IP="${PRIVATE_IP:-$(hostname -I 2>/dev/null | awk '{print $1}')}"
+PBX_FQDN=$(hostname -f 2>/dev/null || hostname)
+PBX_IP="${PRIVATE_IP:-$(ip -4 route get 8.8.8.8 2>/dev/null \
+    | awk 'NR==1{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}' || true)}"
+case "${PBX_IP:-}" in 127.*|::1|"") PBX_IP=$(hostname -I 2>/dev/null | awk '{print $1}') ;; esac
+[ -z "${PBX_IP:-}" ] && { err "Cannot determine server IP — set PRIVATE_IP in /etc/pbx/.env"; exit 1; }
 TFTP_ROOT="${TFTP_ROOT:-/var/lib/tftpboot}"
 HTTP_ROOT="${HTTP_ROOT:-/var/www/html/provisioning}"
 
@@ -137,7 +141,7 @@ account.1.sip_server_host = ${PBX_IP}
 account.1.sip_server_port = 5060
 YLINK
     ok "Yealink config created: ${CFG_FILE}"
-    info "MAC: ${MAC_NORM} | Extension: ${EXT} | Server: ${PBX_IP}"
+    info "MAC: ${MAC_NORM} | Extension: ${EXT} | Server FQDN: ${PBX_FQDN:-${PBX_IP}}"
     # Also create HTTP copy
     if [ -d "$HTTP_ROOT" ]; then
         cp "$CFG_FILE" "${HTTP_ROOT}/${MAC_NORM}.cfg" 2>/dev/null && \

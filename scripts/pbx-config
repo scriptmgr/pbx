@@ -86,6 +86,7 @@ gen_pass() { tr -dc 'A-Za-z0-9' < /dev/urandom 2>/dev/null | head -c 12 || opens
 add_extension() {
     EXT=$(input "Extension number" "") || EXT=""
     [ -z "$EXT" ] && return
+    [[ "$EXT" =~ ^[0-9]+$ ]] || { warn "Extension must be a numeric value"; return; }
     NAME=$(input "Display name" "Extension $EXT") || NAME="Extension $EXT"
     PASS=$(input "SIP password (blank=auto)" "") || PASS=""
     [ -z "$PASS" ] && PASS=$(gen_pass)
@@ -112,6 +113,7 @@ add_trunk() {
     [ -z "$TTYPE" ] && return
     TNAME=$(input "Trunk name" "$TTYPE-trunk") || TNAME="$TTYPE-trunk"
     USER=$(input "Username/Account" "") || USER=""
+    [ -z "$USER" ] && { warn "Username cannot be empty for trunk authentication"; return; }
     PASS=$(input "Password/Auth" "") || PASS=""
     case "$TTYPE" in
         voip.ms)   HOST="chicago1.voip.ms"; PORT=5060 ;;
@@ -120,7 +122,8 @@ add_trunk() {
         twilio)     HOST="pstn.twilio.com"; PORT=5060 ;;
         custom)
             HOST=$(input "SIP host" "sip.provider.com") || HOST="sip.provider.com"
-            PORT=$(input "SIP port" "5060") || PORT=5060 ;;
+            PORT=$(input "SIP port" "5060") || PORT=5060
+            [[ "$PORT" =~ ^[0-9]+$ ]] && [ "$PORT" -ge 1 ] && [ "$PORT" -le 65535 ] || PORT=5060 ;;
     esac
     hdr "Adding trunk ${TNAME}"
     CONF="/etc/asterisk/pjsip_wizard.conf"
@@ -134,6 +137,7 @@ add_inbound() {
     DID=$(input "DID number (leave blank for any)" "") || DID=""
     DEST=$(input "Destination extension" "") || DEST=""
     [ -z "$DEST" ] && return
+    [[ "$DEST" =~ ^[0-9]+$ ]] || { warn "Destination must be a numeric extension"; return; }
     hdr "Adding inbound route"
     CONF="/etc/asterisk/extensions_custom.conf"
     if [ -n "$DID" ]; then

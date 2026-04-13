@@ -180,12 +180,14 @@ fi
 
 # WEB INTERFACES
 section "WEB INTERFACES"
-_ip="${PRIV_IP4:-localhost}"
-row "FreePBX Admin" "http://${_ip}/admin/"
-row "User Portal"   "http://${_ip}/ucp/"
-row "AvantFax"      "http://${_ip}/avantfax/"
+_disp="${HOSTNAME_FQDN:-${PUBLIC_IP:-${PRIV_IP4:-unknown}}}"
+_scheme="http"
+[ -f /etc/asterisk/keys/asterisk.pem ] && _scheme="https"
+row "FreePBX Admin" "${_scheme}://${_disp}/admin/"
+row "User Portal"   "${_scheme}://${_disp}/ucp/"
+row "AvantFax"      "${_scheme}://${_disp}/avantfax/"
 if printf '%s\n' "$_UNITS" | grep -q '^webmin\.service'; then
-    row "Webmin" "https://${_ip}:10000/"
+    row "Webmin" "https://${_disp}:9001/"
 fi
 
 # RECENT LOG ERRORS

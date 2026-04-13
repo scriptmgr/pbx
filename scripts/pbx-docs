@@ -82,11 +82,14 @@ show_scripts() {
 
 show_urls() {
     hdr "Web Interface URLs"
-    IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+    FQDN=$(hostname -f 2>/dev/null || hostname)
+    IP=$(ip -4 route get 8.8.8.8 2>/dev/null | awk '/src/{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}' || hostname -I 2>/dev/null | awk '{print $1}')
     [ -n "${PUBLIC_IP:-}" ] && IP="$PUBLIC_IP"
-    printf "  FreePBX Admin  : http://%s/admin/\n" "${IP:-localhost}"
-    printf "  UCP Portal     : http://%s/ucp/\n" "${IP:-localhost}"
-    [ -n "${WEBMIN_PORT:-}" ] && printf "  Webmin         : https://%s:%s/\n" "${IP:-localhost}" "$WEBMIN_PORT"
+    DISP="${FQDN:-${IP}}"
+    _scheme="http"; [ -f /etc/asterisk/keys/asterisk.pem ] && _scheme="https"
+    printf "  FreePBX Admin  : %s://%s/admin/\n" "${_scheme}" "${DISP}"
+    printf "  UCP Portal     : %s://%s/ucp/\n" "${_scheme}" "${DISP}"
+    [ -n "${WEBMIN_PORT:-}" ] && printf "  Webmin         : https://%s:%s/\n" "${DISP}" "$WEBMIN_PORT"
     hdr "Admin Credentials"
     [ -f /etc/pbx/pbx_passwords ] && grep -E "^FREEPBX_ADMIN" /etc/pbx/pbx_passwords | head -1 || \
         info "Credentials in /etc/pbx/pbx_passwords"

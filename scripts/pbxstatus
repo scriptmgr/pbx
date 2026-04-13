@@ -26,6 +26,8 @@ case "${1:-}" in --help|-h) usage;; esac
 
 # Fast: no slow commands; use timeouts
 IP=$(ip -4 route get 8.8.8.8 2>/dev/null | awk '/src/{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}' || hostname -I 2>/dev/null | awk '{print $1}')
+FQDN=$(hostname -f 2>/dev/null || hostname)
+DISP="${FQDN:-${IP}}"
 HOST=$(hostname -s 2>/dev/null)
 
 # Asterisk version (no socket needed)
@@ -87,5 +89,5 @@ printf "  asterisk[%b]  freepbx[%b]  db[%b]  web[%b]  fax[%b]  fail2ban[%b]\n" \
 printf "\n  CPU load: ${CYAN}%s${NC}  |  RAM: ${CYAN}%s/%sGB${NC}  |  Disk: ${CYAN}%s${NC}\n" \
     "${LOAD}" "${MEM_USED}" "${MEM_TOTAL}" "${DISK}"
 printf "\n${BOLD}%s${NC}\n" "${LINE}"
-printf "${BOLD}  http://%s/  |  http://%s/admin/${NC}\n" "${IP:-localhost}" "${IP:-localhost}"
+printf "${BOLD}  http://%s/  |  http://%s/admin/${NC}\n" "${DISP}" "${DISP}"
 printf "${BOLD}%s${NC}\n\n" "${LINE}"

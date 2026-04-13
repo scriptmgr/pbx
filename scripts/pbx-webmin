@@ -89,10 +89,12 @@ case "${1:-}" in
     *)
         hdr "Webmin Status"
         PORT=$(get_wm_port)
-        IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+        FQDN=$(hostname -f 2>/dev/null || hostname)
+        IP=$(ip -4 route get 8.8.8.8 2>/dev/null | awk '/src/{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}' || hostname -I 2>/dev/null | awk '{print $1}')
+        DISP="${FQDN:-${IP}}"
         if systemctl is-active --quiet webmin 2>/dev/null || service webmin status >/dev/null 2>&1; then
             ok "Webmin is RUNNING on port ${PORT}"
-            printf "  URL: https://%s:%s/\n" "${IP:-localhost}" "$PORT"
+            printf "  URL: https://%s:%s/\n" "${DISP}" "$PORT"
         else
             warn "Webmin is NOT running"
         fi ;;

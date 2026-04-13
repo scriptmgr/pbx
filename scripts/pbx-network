@@ -29,8 +29,12 @@ else
 fi
 
 hdr "IP Addresses"
-PRIV_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
-printf "  Private IP: %s\n" "${PRIV_IP:-unknown}"
+PRIV_IP=$(ip -4 route get 8.8.8.8 2>/dev/null \
+    | awk 'NR==1{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}' || true)
+# Reject loopback fallback
+case "${PRIV_IP:-}" in 127.*|::1|"") PRIV_IP=$(hostname -I 2>/dev/null | awk '{print $1}') ;; esac
+case "${PRIV_IP:-}" in 127.*|::1|"") PRIV_IP="unknown" ;; esac
+printf "  Private IP: %s\n" "${PRIV_IP}"
 PUB_IP="${PUBLIC_IP:-}"
 if [ -z "$PUB_IP" ]; then
     if command -v curl >/dev/null 2>&1; then
@@ -45,7 +49,7 @@ if [ -n "$PUB_IP" ] && [ -n "$PRIV_IP" ] && [ "$PUB_IP" != "$PRIV_IP" ] && \
    [ "$PUB_IP" != "unavailable" ]; then
     warn "NAT detected: Private ${PRIV_IP} != Public ${PUB_IP}"
     info "Recommended Asterisk NAT settings for pjsip.conf:"
-    printf "  [transport-udp]\n  type=transport\n  protocol=udp\n  bind=0.0.0.0\n"
+    printf "  [transport-udp]\n  type=transport\n  protocol=udp\n  bind=<all-interfaces>\n"
     printf "  external_media_address=%s\n  external_signaling_address=%s\n" "$PUB_IP" "$PUB_IP"
     printf "  local_net=%s/255.255.255.0\n" "$(echo "$PRIV_IP" | cut -d. -f1-3).0"
 fi

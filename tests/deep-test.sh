@@ -194,8 +194,9 @@ _run_mgmt "pbx-backup status"          pbx-backup   "status 2>&1 || true"  "back
 _run_mgmt "pbx-backup-encrypt --help"  pbx-backup-encrypt "--help 2>&1 || true" "help|encrypt|usage|key"
 # pbx-backup-remote --help
 _run_mgmt "pbx-backup-remote --help"   pbx-backup-remote "--help 2>&1 || true" "help|remote|ssh|s3|usage"
-# pbx-calls
-_run_mgmt "pbx-calls"                  pbx-calls    "2>&1 || true"          "call|channel|active|no call"
+# pbx-calls active (non-interactive one-shot; bare 'pbx-calls' launches an
+# interactive while-true monitor that deadlocks in a subshell capture)
+_run_mgmt "pbx-calls active"           pbx-calls    "active 2>&1 || true"   "call|channel|active|no call|Total"
 # pbx-cdr
 _run_mgmt "pbx-cdr"                    pbx-cdr      "2>&1 || true"          "cdr|call|record|detail"
 # pbx-cleanup --dry-run
