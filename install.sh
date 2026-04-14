@@ -631,7 +631,7 @@ setup_pkg_map() {
             PACKAGES_DISTRO_MARIADB="mariadb-server mariadb"
             PACKAGES_DISTRO_PYTHON="python3-devel python3-pip"
             PACKAGES_DISTRO_NODE="nodejs"
-            PACKAGES_DISTRO_SYSTEM="chrony iptables-services cronie"
+            PACKAGES_DISTRO_SYSTEM="chrony iptables-services"
             PACKAGES_DISTRO_KNOCKD="knock-server"
             PACKAGES_DISTRO_FAX="hylafax+"
             PACKAGES_DISTRO_SNGREP="sngrep"
@@ -679,6 +679,27 @@ generate_password() {
 
 command_exists() {
     command -v "$1" >/dev/null 2>&1
+}
+
+disable_anacron_if_present() {
+    case "${DISTRO_FAMILY}" in
+        rhel|fedora)
+            local cron_pkg
+            for cron_pkg in cronie cronie-anacron; do
+                if command_exists rpm && rpm -q "${cron_pkg}" >/dev/null 2>&1; then
+                    rpm -ev --nodeps "${cron_pkg}" >> "${LOG_FILE}" 2>&1 || true
+                fi
+            done
+            if ! run_logged "Installing RPM cron package" \
+                "${PACKAGE_MGR_BIN}" install -y cronie-noanacron; then
+                run_logged "Installing RPM cron fallback" \
+                    "${PACKAGE_MGR_BIN}" install -y cronie
+            fi
+            svc_stop anacron 2>/dev/null || true
+            svc_disable anacron 2>/dev/null || true
+            systemctl mask anacron.service >/dev/null 2>&1 || true
+            ;;
+    esac
 }
 
 is_ipv4() {
@@ -1807,6 +1828,7 @@ install_core_dependencies() {
 
     pkg_install $PACKAGES_GLOBAL $PACKAGES_DISTRO_BUILD
     pkg_install_one_by_one $PACKAGES_DISTRO_SYSTEM   # NTP, iptables-persist, cron, etc.
+    disable_anacron_if_present
     pkg_install_one_by_one $PACKAGES_DISTRO_ASTERISK_DEPS
     pkg_install_one_by_one $PACKAGES_DISTRO_PYTHON
     pkg_install_one_by_one $PACKAGES_DISTRO_NODE
