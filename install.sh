@@ -904,6 +904,7 @@ load_mysql_root_password() {
         fi
     fi
     [ -n "${pw}" ] && MYSQL_ROOT_PASSWORD="${pw}"
+    return 0
 }
 
 normalize_admin_vars() {
@@ -913,6 +914,7 @@ normalize_admin_vars() {
     [ -z "${AVANTFAX_ADMIN_USERNAME:-}" ] && AVANTFAX_ADMIN_USERNAME="${ADMIN_USERNAME}"
     [ -n "${ADMIN_PASSWORD:-}" ] && FREEPBX_ADMIN_PASSWORD="${ADMIN_PASSWORD}"
     [ -z "${AVANTFAX_ADMIN_PASSWORD:-}" ] && AVANTFAX_ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
+    return 0
 }
 
 # ---------------------------------------------------------------------------
