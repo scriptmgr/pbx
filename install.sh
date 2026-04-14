@@ -1284,7 +1284,7 @@ detect_ssh_safety() {
     fi
     # Final fallback: detect via ss what sshd is actually listening on
     if [ -z "${SSH_PORT}" ] && command_exists ss; then
-        SSH_PORT=$(ss -tlnp 2>/dev/null | awk '/sshd/{match($4, /:([0-9]+)$/, a); if(a[1]) print a[1]}' | head -1 || true)
+        SSH_PORT=$(ss -tlnp 2>/dev/null | awk '/sshd/{n=split($4,a,":"); if (n > 1) print a[n]}' | head -1 || true)
     fi
     SSH_PORT="${SSH_PORT:-22}"
     mkdir -p /etc/pbx /var/lib/pbx /var/log/pbx 2>/dev/null || true
