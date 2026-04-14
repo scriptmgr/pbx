@@ -941,7 +941,7 @@ normalize_admin_vars() {
 ensure_freepbx_gui_admin_user() {
     local username="$1" password="$2" email="${3:-admin@localhost}"
     [ -f /etc/freepbx.conf ] || return 0
-    php - "$username" "$password" "$email" <<'PHP'
+    php -- "$username" "$password" "$email" <<'PHP'
 <?php
 require '/etc/freepbx.conf';
 
@@ -5818,12 +5818,73 @@ IPCEOF
     cat > /usr/local/bin/admin-pw-change << 'APWEOF'
 #!/bin/bash
 ENV_FILE="/etc/pbx/.env"
+PASSWORDS_FILE="/etc/pbx/pbx_passwords"
 FREEPBX_ADMIN_USERNAME="administrator"
 [ -f "${ENV_FILE}" ] && source "${ENV_FILE}" 2>/dev/null || true
 echo "Changing FreePBX admin password for ${FREEPBX_ADMIN_USERNAME}..."
 read -rsp "New password: " PW; echo
-fwconsole userman --update --username="${FREEPBX_ADMIN_USERNAME}" --password="${PW}" 2>/dev/null \
-    || echo "fwconsole not available — update in FreePBX GUI"
+MYSQL_ROOT_PASSWORD_FILE="${MYSQL_ROOT_PASSWORD_FILE:-/etc/pbx/mysql_root_password}"
+MYSQL_ROOT_PASSWORD=""
+[ -f "${MYSQL_ROOT_PASSWORD_FILE}" ] && MYSQL_ROOT_PASSWORD=$(tr -d '\r\n' < "${MYSQL_ROOT_PASSWORD_FILE}")
+[ -z "${MYSQL_ROOT_PASSWORD}" ] && [ -f "${ENV_FILE}" ] && MYSQL_ROOT_PASSWORD=$(grep '^MYSQL_ROOT_PASSWORD=' "${ENV_FILE}" | cut -d= -f2- | tr -d '"')
+if [ -n "${MYSQL_ROOT_PASSWORD}" ]; then
+    PASS_HASH=$(printf '%s' "${PW}" | sha1sum | cut -d' ' -f1)
+    mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk 2>/dev/null <<EOF || true
+INSERT INTO ampusers (username, email, password_sha1, extension_low, extension_high, deptname, sections)
+VALUES ('${FREEPBX_ADMIN_USERNAME}', 'admin@localhost', '${PASS_HASH}', '', '', '', 'all')
+ON DUPLICATE KEY UPDATE password_sha1='${PASS_HASH}', sections='all', email='admin@localhost';
+EOF
+fi
+if [ -f /etc/freepbx.conf ]; then
+    php -- "${FREEPBX_ADMIN_USERNAME}" "${PW}" "admin@localhost" <<'PHP'
+<?php
+require '/etc/freepbx.conf';
+$username = $argv[1] ?? '';
+$password = $argv[2] ?? '';
+$email = $argv[3] ?? 'admin@localhost';
+if ($username === '' || $password === '') {
+    exit(1);
+}
+$freepbx = FreePBX::create();
+$userman = $freepbx->Userman;
+$existing = $userman->getUserByUsername($username);
+$displayName = $username;
+$extraData = [
+    'email' => $email,
+    'displayname' => $displayName,
+    'fname' => 'PBX',
+    'lname' => 'Administrator',
+];
+if (!empty($existing['id'])) {
+    $uid = (int)$existing['id'];
+    $defaultExtension = !empty($existing['default_extension']) ? $existing['default_extension'] : 'none';
+    $result = $userman->updateUser($uid, $username, $username, $defaultExtension, 'PBX Administrator', $extraData, $password, true);
+} else {
+    $result = $userman->addUser($username, $password, 'none', 'PBX Administrator', $extraData, true);
+    $uid = (int)($result['id'] ?? 0);
+}
+if (!empty($uid)) {
+    $userman->setGlobalSettingByID($uid, 'pbx_login', true);
+    $userman->setGlobalSettingByID($uid, 'pbx_admin', true);
+    $userman->setGlobalSettingByID($uid, 'pbx_modules', ['*']);
+    $userman->setGlobalSettingByID($uid, 'pbx_landing', 'index');
+}
+PHP
+fi
+if [ -f "${ENV_FILE}" ]; then
+    if grep -q '^ADMIN_PASSWORD=' "${ENV_FILE}" 2>/dev/null; then
+        sed -i "s|^ADMIN_PASSWORD=.*|ADMIN_PASSWORD=\"${PW}\"|" "${ENV_FILE}"
+    else
+        printf 'ADMIN_PASSWORD=\"%s\"\n' "${PW}" >> "${ENV_FILE}"
+    fi
+fi
+if [ -f "${PASSWORDS_FILE}" ]; then
+    if grep -q '^ADMIN_PASSWORD=' "${PASSWORDS_FILE}" 2>/dev/null; then
+        sed -i "s|^ADMIN_PASSWORD=.*|ADMIN_PASSWORD=${PW}|" "${PASSWORDS_FILE}"
+    else
+        printf 'ADMIN_PASSWORD=%s\n' "${PW}" >> "${PASSWORDS_FILE}"
+    fi
+fi
 echo "Password updated"
 APWEOF
     chmod +x /usr/local/bin/admin-pw-change
