@@ -156,8 +156,8 @@ chmod +x install.sh
 
 ADMIN_EMAIL='admin@pbx.example.com' \
 TIMEZONE='America/New_York' \
-FREEPBX_ADMIN_USER='admin' \
-FREEPBX_ADMIN_PASSWORD='MySecurePass123' \
+ADMIN_USERNAME='administrator' \
+ADMIN_PASSWORD='MySecurePass123' \
 ./install.sh
 ```
 
@@ -165,11 +165,12 @@ FREEPBX_ADMIN_PASSWORD='MySecurePass123' \
 
 | Variable | Description | Default |
 |---|---|---|
-| `FREEPBX_ADMIN_USER` | FreePBX admin username | `admin` |
-| `FREEPBX_ADMIN_PASSWORD` | FreePBX admin password | Auto-generated |
-| `AVANTFAX_ADMIN_USER` | AvantFax admin username | `admin` |
+| `ADMIN_USERNAME` | Unified admin username for FreePBX and shared web tools | `administrator` |
+| `ADMIN_PASSWORD` | Unified admin password for FreePBX and shared web tools | Auto-generated |
+| `FREEPBX_ADMIN_USERNAME` | Compatibility alias for `ADMIN_USERNAME` | `administrator` |
+| `AVANTFAX_ADMIN_USERNAME` | AvantFax admin username | `ADMIN_USERNAME` |
 | `AVANTFAX_ADMIN_PASSWORD` | AvantFax admin password | Auto-generated |
-| `MYSQL_ROOT_PASSWORD` | MariaDB root password | Auto-generated |
+| `MYSQL_ROOT_PASSWORD` | Optional preset MariaDB root password for install | Auto-generated, then stored in `/etc/pbx/mysql_root_password` |
 | `ADMIN_EMAIL` | Admin email for alerts, voicemail, fax | required |
 | `FROM_EMAIL` | From address for all system mail | `no-reply@fqdn` |
 | `FROM_NAME` | From display name for system mail | `PBX System` |
@@ -184,7 +185,7 @@ FREEPBX_ADMIN_PASSWORD='MySecurePass123' \
 | `FAIL2BAN_ENABLED` | Install fail2ban (`1`/`0`) | `1` |
 | `BACKUP_ENABLED` | Set up backup cron (`1`/`0`) | `1` |
 | `INSTALL_WEBMIN` | Install Webmin (`yes`/`no`) | profile default |
-| `INSTALL_FOP2` | Flash Operator Panel 2 (`yes`/`no`) | `no` |
+| `INSTALL_FOP2` | FOP2 operator panel (HTML5) (`yes`/`no`) | `no` |
 | `INSTALL_KNOCKD` | Port knocking daemon (`yes`/`no`) | advanced only |
 | `INSTALL_OPENVPN` | OpenVPN server (`yes`/`no`) | advanced only |
 | `INSTALL_SNGREP` | SIP traffic monitor (`yes`/`no`) | advanced only |

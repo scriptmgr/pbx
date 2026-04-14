@@ -24,6 +24,9 @@ info() { printf "       %s\n" "$*"; }
 
 # ── Credentials & config ─────────────────────────────────────────────────────
 ENV_FILE="/etc/pbx/.env"
+FREEPBX_USER="administrator"
+AVANTFAX_USER="administrator"
+AVANTFAX_PASS=""
 FREEPBX_PASS="admin"
 MYSQL_PASS=""
 ADMIN_EMAIL=""
@@ -33,13 +36,19 @@ APACHE_SERVICE="httpd"
 
 if [ -f "$ENV_FILE" ]; then
     _ev() { grep "^${1}=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'; }
+    v=$(_ev FREEPBX_ADMIN_USERNAME);      [ -n "$v" ] && FREEPBX_USER="$v"
     v=$(_ev ADMIN_PASSWORD);             [ -z "$v" ] && v=$(_ev FREEPBX_ADMIN_PASSWORD)
     [ -n "$v" ] && FREEPBX_PASS="$v"
-    v=$(_ev MYSQL_ROOT_PASSWORD);        [ -n "$v" ] && MYSQL_PASS="$v"
+    v=$(_ev AVANTFAX_ADMIN_USERNAME);     [ -n "$v" ] && AVANTFAX_USER="$v"
+    v=$(_ev AVANTFAX_ADMIN_PASSWORD);     [ -n "$v" ] && AVANTFAX_PASS="$v"
+    v=$(_ev MYSQL_ROOT_PASSWORD_FILE);    [ -n "$v" ] && MYSQL_PASS_FILE="$v"
     v=$(_ev ADMIN_EMAIL);                [ -n "$v" ] && ADMIN_EMAIL="$v"
     v=$(_ev WEB_ROOT);                   [ -n "$v" ] && WEB_ROOT="$v"
     v=$(_ev APACHE_SERVICE);             [ -n "$v" ] && APACHE_SERVICE="$v"
 fi
+[ -z "${MYSQL_PASS_FILE:-}" ] && MYSQL_PASS_FILE="/etc/pbx/mysql_root_password"
+[ -z "$MYSQL_PASS" ] && [ -f "$MYSQL_PASS_FILE" ] && MYSQL_PASS=$(tr -d '\r\n' < "$MYSQL_PASS_FILE" 2>/dev/null)
+[ -z "$AVANTFAX_PASS" ] && AVANTFAX_PASS="$FREEPBX_PASS"
 
 v=$(grep "^port=" /etc/webmin/miniserv.conf 2>/dev/null | head -1 | cut -d= -f2)
 [ -n "$v" ] && WEBMIN_PORT="$v"
@@ -1012,7 +1021,7 @@ echo "$FB_LOGIN_BODY" | grep -qiE "login|FreePBX|username|password" \
 # POST login
 FB_POST_CODE=$(curl -skL --max-time 10 \
     -c "$COOKIE_JAR" -b "$COOKIE_JAR" \
-    -d "username=admin&password=${FREEPBX_PASS}&action=login" \
+    -d "username=${FREEPBX_USER}&password=${FREEPBX_PASS}&action=login" \
     -o "$CURL_BODY_FILE" -w "%{http_code}" \
     "https://${HOST_IP}/admin/config.php" 2>/dev/null || echo "000")
 FB_POST_BODY=$(cat "$CURL_BODY_FILE" 2>/dev/null)
@@ -1045,7 +1054,7 @@ if [ -n "$AF_URL" ]; then
 
     # POST login to AvantFax
     AF_POST=$(curl -skL --max-time 10 -c "$COOKIE_JAR" -b "$COOKIE_JAR" \
-        -d "username=admin&password=${FREEPBX_PASS}&action=login" \
+        -d "username=${AVANTFAX_USER}&password=${AVANTFAX_PASS}&action=login" \
         -o "$CURL_BODY_FILE" -w "%{http_code}" "${AF_URL}" 2>/dev/null || echo "000")
     AF_PBODY=$(cat "$CURL_BODY_FILE" 2>/dev/null)
     if echo "$AF_PBODY" | grep -qiE "dashboard|fax|inbox|logout|send fax|avantfax"; then
@@ -1059,7 +1068,7 @@ fi
 
 # c) Reminders with Basic auth
 REM_CODE=$(curl -skL --max-time 10 \
-    -u "admin:${FREEPBX_PASS}" \
+    -u "${FREEPBX_USER}:${FREEPBX_PASS}" \
     -o "$CURL_BODY_FILE" -w "%{http_code}" \
     "https://${HOST_IP}/reminders/" 2>/dev/null || echo "000")
 REM_BODY=$(cat "$CURL_BODY_FILE" 2>/dev/null)
@@ -1075,7 +1084,7 @@ fi
 
 # d) CallCenter with Basic auth
 CC_CODE=$(curl -skL --max-time 10 \
-    -u "admin:${FREEPBX_PASS}" \
+    -u "${FREEPBX_USER}:${FREEPBX_PASS}" \
     -o "$CURL_BODY_FILE" -w "%{http_code}" \
     "https://${HOST_IP}/callcenter/" 2>/dev/null || echo "000")
 CC_BODY=$(cat "$CURL_BODY_FILE" 2>/dev/null)

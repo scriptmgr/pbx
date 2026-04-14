@@ -2,6 +2,11 @@
 # PBX Phone Provisioning Manager
 set -euo pipefail
 
+SCRIPT_VERSION="${SCRIPT_VERSION:-3.0}"
+case "${1:-}" in
+    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${SCRIPT_VERSION}"; exit 0 ;;
+esac
+
 if [ -n "${NO_COLOR+x}" ] || [ ! -t 1 ] || [ "${TERM:-}" = "dumb" ] || [ "${CI:-}" = "true" ]; then
     RED=""; GREEN=""; YELLOW=""; BLUE=""; CYAN=""; BOLD=""; NC=""
 else
@@ -16,13 +21,56 @@ err()  { printf "${RED}%s${NC}\n"     "$*" >&2; }
 hdr()  { printf "\n${BOLD}%s${NC}\n" "$*"; }
 
 [ -f /etc/pbx/.env ] && . /etc/pbx/.env
+[ -z "${MYSQL_ROOT_PASSWORD_FILE:-}" ] && MYSQL_ROOT_PASSWORD_FILE="/etc/pbx/mysql_root_password"
+[ -z "${MYSQL_ROOT_PASSWORD:-}" ] && [ -f "${MYSQL_ROOT_PASSWORD_FILE}" ] && \
+    MYSQL_ROOT_PASSWORD=$(tr -d '\r\n' < "${MYSQL_ROOT_PASSWORD_FILE}" 2>/dev/null)
 [ "$(id -u)" -ne 0 ] && { err "Must run as root"; exit 1; }
 
+unit_exists() {
+    command -v systemctl >/dev/null 2>&1 || return 1
+    local state
+    state=$(systemctl show -p LoadState --value "$1" 2>/dev/null || true)
+    [ -n "${state}" ] && [ "${state}" != "not-found" ]
+}
+
+detect_tftp_unit() {
+    local unit
+    if ! command -v systemctl >/dev/null 2>&1; then
+        [ -x /etc/init.d/xinetd ] && { printf 'xinetd'; return 0; }
+        [ -x /etc/init.d/tftp ] && { printf 'tftp'; return 0; }
+    fi
+    for unit in tftpd-hpa tftp.socket tftp xinetd; do
+        unit_exists "${unit}" && { printf '%s' "${unit}"; return 0; }
+    done
+    printf 'tftp'
+}
+
+TFTP_SVC="$(detect_tftp_unit)"
+
+svc_manage() {
+    local action="$1"
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl "${action}" "${TFTP_SVC}" 2>/dev/null
+    else
+        service "${TFTP_SVC}" "${action}" 2>/dev/null
+    fi
+}
+
+tftp_running() {
+    local state
+    if command -v systemctl >/dev/null 2>&1; then
+        state=$(systemctl is-active "${TFTP_SVC}" 2>/dev/null || true)
+    else
+        service "${TFTP_SVC}" status >/dev/null 2>&1 && state="active" || state="inactive"
+    fi
+    [ "${state}" = "active" ]
+}
+
 PBX_FQDN=$(hostname -f 2>/dev/null || hostname)
-PBX_IP="${PRIVATE_IP:-$(ip -4 route get 8.8.8.8 2>/dev/null \
-    | awk 'NR==1{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}' || true)}"
+PBX_IP="${PRIMARY_IP:-${PRIVATE_IP:-$(ip -4 route get 8.8.8.8 2>/dev/null \
+    | awk 'NR==1{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}' || true)}}"
 case "${PBX_IP:-}" in 127.*|::1|"") PBX_IP=$(hostname -I 2>/dev/null | awk '{print $1}') ;; esac
-[ -z "${PBX_IP:-}" ] && { err "Cannot determine server IP — set PRIVATE_IP in /etc/pbx/.env"; exit 1; }
+[ -z "${PBX_IP:-}" ] && { err "Cannot determine server IP — set PRIMARY_IP in /etc/pbx/.env"; exit 1; }
 TFTP_ROOT="${TFTP_ROOT:-/var/lib/tftpboot}"
 HTTP_ROOT="${HTTP_ROOT:-/var/www/html/provisioning}"
 
@@ -35,7 +83,8 @@ usage() {
     printf "  --yealink MAC EXT  Create Yealink config for MAC address and extension\n"
     printf "  --list             List provisioned device configs\n"
     printf "  --remove MAC       Remove config for a device MAC address\n"
-    printf "  --help/-h          Show help\n\n"
+    printf "  --help (alias: -h)          Show help
+  --version (alias: -V)  Show version\n\n"
     printf "Examples:\n"
     printf "  pbx-provision --yealink aa:bb:cc:dd:ee:ff 1001\n"
     printf "  pbx-provision --list\n"
@@ -51,12 +100,10 @@ show_status() {
     printf "  TFTP URL  : tftp://%s/\n" "$PBX_IP"
     echo ""
     # Check TFTP service
-    if systemctl is-active --quiet tftp 2>/dev/null || \
-       systemctl is-active --quiet tftpd-hpa 2>/dev/null || \
-       systemctl is-active --quiet xinetd 2>/dev/null; then
-        ok "TFTP service is running"
+    if tftp_running; then
+        ok "TFTP service is running (${TFTP_SVC})"
     else
-        warn "TFTP service not running — run: pbx-provision --setup"
+        warn "TFTP service not running (${TFTP_SVC}) — run: pbx-provision --setup"
     fi
     # Show device count
     if [ -d "$TFTP_ROOT" ]; then
@@ -98,11 +145,15 @@ YLINK
         ok "Yealink base template created: ${YLINK_TMPL}"
     fi
     # Enable TFTP if xinetd is installed
-    if command -v xinetd >/dev/null 2>&1 && [ -f /etc/xinetd.d/tftp ]; then
+    if [ "${TFTP_SVC}" = "xinetd" ] && command -v xinetd >/dev/null 2>&1 && [ -f /etc/xinetd.d/tftp ]; then
         sed -i 's/disable.*=.*yes/disable = no/' /etc/xinetd.d/tftp 2>/dev/null || true
-        systemctl restart xinetd 2>/dev/null && ok "xinetd/TFTP restarted" || warn "Could not restart xinetd"
-    elif systemctl list-unit-files 2>/dev/null | grep -q "tftpd-hpa"; then
-        systemctl enable --now tftpd-hpa 2>/dev/null && ok "tftpd-hpa enabled" || warn "Could not enable tftpd-hpa"
+        svc_manage restart && ok "xinetd/TFTP restarted" || warn "Could not restart xinetd"
+    elif unit_exists "${TFTP_SVC}"; then
+        if command -v systemctl >/dev/null 2>&1; then
+            systemctl enable --now "${TFTP_SVC}" 2>/dev/null && ok "${TFTP_SVC} enabled" || warn "Could not enable ${TFTP_SVC}"
+        else
+            svc_manage start && ok "${TFTP_SVC} started" || warn "Could not start ${TFTP_SVC}"
+        fi
     else
         warn "No TFTP server found — install tftp-server or tftpd-hpa"
     fi

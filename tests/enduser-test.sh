@@ -13,20 +13,32 @@ warn() { echo "  WARN: $*"; WARN=$((WARN+1)); }
 sep()  { echo ""; echo "=== $* ==="; }
 
 ENV_FILE="/etc/pbx/.env"
+FREEPBX_USER="administrator"
+AVANTFAX_USER="administrator"
+AVANTFAX_PASS=""
 FREEPBX_PASS="admin"
 MYSQL_PASS=""
 WEBMIN_PORT="9001"
 WEB_ROOT="/var/www/apache/pbx"
 
 if [ -f "$ENV_FILE" ]; then
+    v=$(grep "^FREEPBX_ADMIN_USERNAME=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
+    [ -n "$v" ] && FREEPBX_USER="$v"
     v=$(grep "^ADMIN_PASSWORD=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
     [ -z "$v" ] && v=$(grep "^FREEPBX_ADMIN_PASSWORD=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
     [ -n "$v" ] && FREEPBX_PASS="$v"
-    v=$(grep "^MYSQL_ROOT_PASSWORD=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
-    [ -n "$v" ] && MYSQL_PASS="$v"
+    v=$(grep "^AVANTFAX_ADMIN_USERNAME=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
+    [ -n "$v" ] && AVANTFAX_USER="$v"
+    v=$(grep "^AVANTFAX_ADMIN_PASSWORD=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
+    [ -n "$v" ] && AVANTFAX_PASS="$v"
+    v=$(grep "^MYSQL_ROOT_PASSWORD_FILE=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
+    [ -n "$v" ] && MYSQL_PASS_FILE="$v"
     v=$(grep "^WEB_ROOT=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
     [ -n "$v" ] && WEB_ROOT="$v"
 fi
+[ -z "${MYSQL_PASS_FILE:-}" ] && MYSQL_PASS_FILE="/etc/pbx/mysql_root_password"
+[ -z "$MYSQL_PASS" ] && [ -f "$MYSQL_PASS_FILE" ] && MYSQL_PASS=$(tr -d '\r\n' < "$MYSQL_PASS_FILE" 2>/dev/null)
+[ -z "$AVANTFAX_PASS" ] && AVANTFAX_PASS="$FREEPBX_PASS"
 v=$(grep "^port=" /etc/webmin/miniserv.conf 2>/dev/null | head -1 | cut -d= -f2)
 [ -n "$v" ] && WEBMIN_PORT="$v"
 
@@ -73,12 +85,12 @@ echo "$LOGIN_BODY" | grep -qiE "login|username|password|FreePBX" \
 # Submit login credentials
 POST_CODE=$(curl -skL --max-time 10 \
     -b /tmp/pbx-cookie.jar -c /tmp/pbx-cookie.jar \
-    -d "username=admin&password=${FREEPBX_PASS}&action=login" \
+    -d "username=${FREEPBX_USER}&password=${FREEPBX_PASS}&action=login" \
     -o /tmp/eu-curl.tmp -w "%{http_code}" \
     "https://${HOST_IP}/admin/config.php" 2>/dev/null || echo "000")
 POST_BODY=$(cat /tmp/eu-curl.tmp 2>/dev/null)
 echo "$POST_BODY" | grep -qiE "dashboard|Logout|FreePBX Administration|pbx_admin" \
-    && ok "FreePBX login: authenticated (admin)" || warn "FreePBX login: auth state unclear (HTTP $POST_CODE)"
+    && ok "FreePBX login: authenticated (${FREEPBX_USER})" || warn "FreePBX login: auth state unclear (HTTP $POST_CODE)"
 
 # Navigate to dashboard
 DASH_CODE=$(_http "https://${HOST_IP}/admin/config.php?display=dashboard")

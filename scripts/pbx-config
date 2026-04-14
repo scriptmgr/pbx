@@ -1,5 +1,10 @@
 #!/bin/bash
 set -euo pipefail
+
+SCRIPT_VERSION="${SCRIPT_VERSION:-3.0}"
+case "${1:-}" in
+    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${SCRIPT_VERSION}"; exit 0 ;;
+esac
 if [ -n "${NO_COLOR+x}" ] || [ ! -t 1 ] || [ "${TERM:-}" = "dumb" ] || [ "${CI:-}" = "true" ]; then
     RED=""; GREEN=""; YELLOW=""; BLUE=""; CYAN=""; BOLD=""; NC=""
 else
@@ -18,8 +23,17 @@ WEB_ROOT="${WEB_ROOT:-/var/www/apache/pbx}"
 [ "$(id -u)" -ne 0 ] && { err "Must run as root"; exit 1; }
 
 usage() {
-    printf "Usage: pbx-config\n\nTUI configuration tool for PBX.\n\nOptions:\n"
-    printf "  --help/-h  Show help\n"; exit 0
+    printf "Usage: pbx-config [--help] [--version]\n\n"
+    printf "Interactive TUI tool for common PBX configuration tasks.\n\n"
+    printf "Main actions:\n"
+    printf "  - Add PJSIP extensions\n"
+    printf "  - Add SIP trunks\n"
+    printf "  - Add inbound routes\n"
+    printf "  - Review and reload PBX configuration\n\n"
+    printf "Options:\n"
+    printf "  --help (alias: -h)     Show help\n"
+    printf "  --version (alias: -V)  Show version\n"
+    exit 0
 }
 [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ] && usage
 
@@ -32,17 +46,29 @@ else
     TUI="text"
 fi
 
+ALT_BUFFER_ACTIVE=0
+
 # ---------------------------------------------------------------------------
 # Signal handling — restore terminal on INT/TERM/HUP; don't clear on normal exit
 # ---------------------------------------------------------------------------
 _tui_cleanup() {
     # Clear dialog artifacts and restore terminal to a sane state
     [ "$TUI" != "text" ] && { "$TUI" --clear 2>/dev/null || true; } || true
+    if [ "$ALT_BUFFER_ACTIVE" -eq 1 ] && command -v tput >/dev/null 2>&1; then
+        tput cnorm 2>/dev/null || true
+        tput rmcup 2>/dev/null || true
+        ALT_BUFFER_ACTIVE=0
+    fi
     stty sane 2>/dev/null || true
     clear
 }
 _tui_exit() {
     # On normal exit just ensure terminal is sane — do NOT clear the screen
+    if [ "$ALT_BUFFER_ACTIVE" -eq 1 ] && command -v tput >/dev/null 2>&1; then
+        tput cnorm 2>/dev/null || true
+        tput rmcup 2>/dev/null || true
+        ALT_BUFFER_ACTIVE=0
+    fi
     stty sane 2>/dev/null || true
 }
 _tui_resize() {
@@ -53,10 +79,71 @@ trap '_tui_exit'            EXIT
 trap '_tui_cleanup; exit 130' INT TERM HUP
 trap '_tui_resize'          WINCH
 
+_screen_lines() {
+    local lines
+    lines=$(tput lines 2>/dev/null || printf '24')
+    [[ "$lines" =~ ^[0-9]+$ ]] || lines=24
+    [ "$lines" -ge 12 ] || lines=12
+    printf '%s' "$lines"
+}
+
+_screen_cols() {
+    local cols
+    cols=$(tput cols 2>/dev/null || printf '80')
+    [[ "$cols" =~ ^[0-9]+$ ]] || cols=80
+    [ "$cols" -ge 60 ] || cols=60
+    printf '%s' "$cols"
+}
+
+_box_height() {
+    local lines
+    lines=$(_screen_lines)
+    printf '%s' $(( lines > 30 ? 30 : lines - 2 ))
+}
+
+_box_width() {
+    local cols
+    cols=$(_screen_cols)
+    printf '%s' $(( cols > 100 ? 100 : cols - 4 ))
+}
+
+_menu_height() {
+    local lines
+    lines=$(_screen_lines)
+    printf '%s' $(( lines > 18 ? 12 : lines - 8 ))
+}
+
+_enter_alt_buffer() {
+    if [ "$TUI" != "text" ] && [ "$ALT_BUFFER_ACTIVE" -eq 0 ] && [ -t 1 ] && command -v tput >/dev/null 2>&1; then
+        tput smcup 2>/dev/null || true
+        tput civis 2>/dev/null || true
+        ALT_BUFFER_ACTIVE=1
+    fi
+}
+
+_leave_alt_buffer() {
+    if [ "$ALT_BUFFER_ACTIVE" -eq 1 ] && command -v tput >/dev/null 2>&1; then
+        tput cnorm 2>/dev/null || true
+        tput rmcup 2>/dev/null || true
+        ALT_BUFFER_ACTIVE=0
+    fi
+}
+
+_enter_alt_buffer
+
 menu() {
     local title="$1" prompt="$2"; shift 2
-    if [ "$TUI" = "dialog" ] || [ "$TUI" = "whiptail" ]; then
-        "$TUI" --stdout --menu "$prompt" 22 70 12 "$@" 2>/dev/null
+    local out rc
+    if [ "$TUI" = "dialog" ]; then
+        out=$("$TUI" --stdout --title "$title" --menu "$prompt" "$(_box_height)" "$(_box_width)" "$(_menu_height)" "$@" 2>/dev/null) || rc=$?
+        rc=${rc:-0}
+        [ "$rc" -eq 0 ] || return 1
+        printf '%s' "$out"
+    elif [ "$TUI" = "whiptail" ]; then
+        out=$("$TUI" --title "$title" --menu "$prompt" "$(_box_height)" "$(_box_width)" "$(_menu_height)" "$@" 3>&1 1>&2 2>&3) || rc=$?
+        rc=${rc:-0}
+        [ "$rc" -eq 0 ] || return 1
+        printf '%s' "$out"
     else
         printf "\n%s\n%s\n" "$title" "$prompt" >/dev/tty
         local i=1
@@ -71,9 +158,17 @@ menu() {
 }
 
 input() {
-    local prompt="$1" default="$2"
-    if [ "$TUI" = "dialog" ] || [ "$TUI" = "whiptail" ]; then
-        "$TUI" --stdout --inputbox "$prompt" 8 60 "$default" 2>/dev/null
+    local prompt="$1" default="$2" out rc
+    if [ "$TUI" = "dialog" ]; then
+        out=$("$TUI" --stdout --title "PBX Config" --inputbox "$prompt" 10 "$(_box_width)" "$default" 2>/dev/null) || rc=$?
+        rc=${rc:-0}
+        [ "$rc" -eq 0 ] || return 1
+        printf '%s' "$out"
+    elif [ "$TUI" = "whiptail" ]; then
+        out=$("$TUI" --title "PBX Config" --inputbox "$prompt" 10 "$(_box_width)" "$default" 3>&1 1>&2 2>&3) || rc=$?
+        rc=${rc:-0}
+        [ "$rc" -eq 0 ] || return 1
+        printf '%s' "$out"
     else
         printf "%s [%s]: " "$prompt" "$default" >/dev/tty
         local _iv
@@ -81,111 +176,173 @@ input() {
     fi
 }
 
+show_message() {
+    local title="$1" text="$2"
+    if [ "$TUI" = "dialog" ]; then
+        "$TUI" --title "$title" --msgbox "$text" 10 "$(_box_width)" 2>/dev/null || true
+    elif [ "$TUI" = "whiptail" ]; then
+        "$TUI" --title "$title" --msgbox "$text" 10 "$(_box_width)" 2>/dev/null || true
+    else
+        hdr "$title"
+        printf "%s\n" "$text"
+    fi
+}
+
+show_text_block() {
+    local title="$1" content="$2" tmp
+    if [ "$TUI" = "dialog" ]; then
+        tmp=$(mktemp)
+        printf "%s\n" "$content" > "$tmp"
+        "$TUI" --title "$title" --textbox "$tmp" "$(_box_height)" "$(_box_width)" 2>/dev/null || true
+        rm -f "$tmp"
+    elif [ "$TUI" = "whiptail" ]; then
+        tmp=$(mktemp)
+        printf "%s\n" "$content" > "$tmp"
+        if command -v less >/dev/null 2>&1; then
+            clear
+            printf "%s\n\n" "$title"
+            LESS='-FRSX' less "$tmp" </dev/tty >/dev/tty 2>/dev/null || true
+        else
+            clear
+            printf "%s\n\n%s\n" "$title" "$content" >/dev/tty
+            printf "\nPress Enter to return..." >/dev/tty
+            read -r _ </dev/tty || true
+        fi
+        rm -f "$tmp"
+    else
+        hdr "$title"
+        printf "%s\n" "$content"
+    fi
+}
+
 gen_pass() { tr -dc 'A-Za-z0-9' < /dev/urandom 2>/dev/null | head -c 12 || openssl rand -base64 12 2>/dev/null | tr -d '/+='; }
 
 add_extension() {
-    EXT=$(input "Extension number" "") || EXT=""
-    [ -z "$EXT" ] && return
-    [[ "$EXT" =~ ^[0-9]+$ ]] || { warn "Extension must be a numeric value"; return; }
-    NAME=$(input "Display name" "Extension $EXT") || NAME="Extension $EXT"
-    PASS=$(input "SIP password (blank=auto)" "") || PASS=""
+    local EXT NAME PASS CONF result
+    EXT=$(input "Extension number" "") || return 0
+    [ -z "$EXT" ] && return 0
+    [[ "$EXT" =~ ^[0-9]+$ ]] || { show_message "Invalid extension" "Extension must be numeric."; return 0; }
+    NAME=$(input "Display name" "Extension $EXT") || return 0
+    PASS=$(input "SIP password (blank=auto)" "") || return 0
     [ -z "$PASS" ] && PASS=$(gen_pass)
-    hdr "Adding extension ${EXT}"
+    result="Extension $EXT ($NAME) added."
     if command -v fwconsole >/dev/null 2>&1; then
         fwconsole extension --add --ext "$EXT" --name "$NAME" --password "$PASS" 2>/dev/null \
-            && ok "Extension $EXT ($NAME) added" \
-            || warn "fwconsole extension add failed; writing to pjsip_wizard.conf"
+            || result="fwconsole extension add failed. Extension was written to pjsip_wizard.conf."
     fi
     CONF="/etc/asterisk/pjsip_wizard.conf"
     printf "\n[%s](dp_default)\ntype=wizard\ndisplay_name=%s\nhas_hint=yes\nhint_exten=%s\naors/max_contacts=5\nendpoint/allow=!all,ulaw,alaw\naors/qualify_frequency=30\nauth/auth_type=userpass\nauth/username=%s\nauth/password=%s\n"\
         "$EXT" "$NAME" "$EXT" "$EXT" "$PASS" >> "$CONF"
-    info "Password for ${EXT}: ${PASS}"
     fwconsole reload 2>/dev/null || true
+    show_message "Extension added" "${result}\n\nExtension: ${EXT}\nName: ${NAME}\nPassword: ${PASS}"
 }
 
 add_trunk() {
+    local TTYPE TNAME USER PASS HOST PORT CONF
     TTYPE=$(menu "Trunk Type" "Select VoIP provider:" \
         "voip.ms" "VoIP.ms" \
         "flowroute" "Flowroute" \
         "telnyx" "Telnyx" \
         "twilio" "Twilio" \
-        "custom" "Custom SIP provider") || TTYPE=""
-    [ -z "$TTYPE" ] && return
-    TNAME=$(input "Trunk name" "$TTYPE-trunk") || TNAME="$TTYPE-trunk"
-    USER=$(input "Username/Account" "") || USER=""
-    [ -z "$USER" ] && { warn "Username cannot be empty for trunk authentication"; return; }
-    PASS=$(input "Password/Auth" "") || PASS=""
+        "custom" "Custom SIP provider") || return 0
+    [ -z "$TTYPE" ] && return 0
+    TNAME=$(input "Trunk name" "$TTYPE-trunk") || return 0
+    USER=$(input "Username/Account" "") || return 0
+    [ -z "$USER" ] && { show_message "Invalid trunk" "Username cannot be empty for trunk authentication."; return 0; }
+    PASS=$(input "Password/Auth" "") || return 0
     case "$TTYPE" in
         voip.ms)   HOST="chicago1.voip.ms"; PORT=5060 ;;
         flowroute)  HOST="us-east-va.sip.flowroute.com"; PORT=5060 ;;
         telnyx)     HOST="sip.telnyx.com"; PORT=5060 ;;
         twilio)     HOST="pstn.twilio.com"; PORT=5060 ;;
         custom)
-            HOST=$(input "SIP host" "sip.provider.com") || HOST="sip.provider.com"
-            PORT=$(input "SIP port" "5060") || PORT=5060
+            HOST=$(input "SIP host" "sip.provider.com") || return 0
+            PORT=$(input "SIP port" "5060") || return 0
             [[ "$PORT" =~ ^[0-9]+$ ]] && [ "$PORT" -ge 1 ] && [ "$PORT" -le 65535 ] || PORT=5060 ;;
     esac
-    hdr "Adding trunk ${TNAME}"
     CONF="/etc/asterisk/pjsip_wizard.conf"
     printf "\n[%s]\ntype=wizard\nregisters=yes\nsends_auth=yes\nsends_registrations=yes\nremote_hosts=%s:%s\noutbound_auth/auth_type=userpass\noutbound_auth/username=%s\noutbound_auth/password=%s\n" \
         "$TNAME" "$HOST" "$PORT" "$USER" "$PASS" >> "$CONF"
-    ok "Trunk ${TNAME} added (${HOST})"
     fwconsole reload 2>/dev/null || true
+    show_message "Trunk added" "Trunk ${TNAME} added.\n\nHost: ${HOST}\nPort: ${PORT}\nUsername: ${USER}"
 }
 
 add_inbound() {
-    DID=$(input "DID number (leave blank for any)" "") || DID=""
-    DEST=$(input "Destination extension" "") || DEST=""
-    [ -z "$DEST" ] && return
-    [[ "$DEST" =~ ^[0-9]+$ ]] || { warn "Destination must be a numeric extension"; return; }
-    hdr "Adding inbound route"
+    local DID DEST CONF msg
+    DID=$(input "DID number (leave blank for any)" "") || return 0
+    DEST=$(input "Destination extension" "") || return 0
+    [ -z "$DEST" ] && return 0
+    [[ "$DEST" =~ ^[0-9]+$ ]] || { show_message "Invalid route" "Destination must be a numeric extension."; return 0; }
     CONF="/etc/asterisk/extensions_custom.conf"
     if [ -n "$DID" ]; then
         printf "\nexten => %s,1,Goto(from-did-direct,%s,1)\n" "$DID" "$DEST" >> "$CONF"
-        ok "Inbound route: DID ${DID} -> extension ${DEST}"
+        msg="Inbound route added.\n\nDID ${DID} -> extension ${DEST}"
     else
         printf "\nexten => _.,1,Goto(from-did-direct,%s,1)\n" "$DEST" >> "$CONF"
-        ok "Inbound route: any DID -> extension ${DEST}"
+        msg="Inbound route added.\n\nAny DID -> extension ${DEST}"
     fi
     timeout 5 asterisk -rx "dialplan reload" 2>/dev/null || true
+    show_message "Inbound route added" "$msg"
 }
 
 add_outbound() {
-    RNAME=$(input "Route name" "outbound-main") || RNAME="outbound-main"
-    PATTERN=$(input "Dial pattern (e.g. _1NXXNXXXXXX)" "_1NXXNXXXXXX") || PATTERN="_1NXXNXXXXXX"
-    TRUNK=$(input "Trunk name" "") || TRUNK=""
-    [ -z "$TRUNK" ] && return
-    hdr "Adding outbound route"
+    local RNAME PATTERN TRUNK CONF
+    RNAME=$(input "Route name" "outbound-main") || return 0
+    PATTERN=$(input "Dial pattern (e.g. _1NXXNXXXXXX)" "_1NXXNXXXXXX") || return 0
+    TRUNK=$(input "Trunk name" "") || return 0
+    [ -z "$TRUNK" ] && return 0
     CONF="/etc/asterisk/extensions_custom.conf"
     printf "\nexten => %s,1,Dial(PJSIP/\${EXTEN}@%s)\nexten => %s,n,Hangup()\n" \
         "$PATTERN" "$TRUNK" "$PATTERN" >> "$CONF"
-    ok "Outbound route: ${PATTERN} via ${TRUNK}"
     timeout 5 asterisk -rx "dialplan reload" 2>/dev/null || true
+    show_message "Outbound route added" "Outbound route added.\n\nPattern: ${PATTERN}\nTrunk: ${TRUNK}\nName: ${RNAME}"
 }
 
 apply_reload() {
-    hdr "Applying configuration"
     if command -v fwconsole >/dev/null 2>&1 && fwconsole reload 2>/dev/null; then
-        ok "FreePBX reloaded"
+        show_message "Configuration applied" "FreePBX reloaded successfully."
     elif timeout 5 asterisk -rx "core reload" 2>/dev/null; then
-        ok "Asterisk reloaded"
+        show_message "Configuration applied" "Asterisk reloaded successfully."
     else
-        warn "Could not reload"
+        show_message "Reload warning" "Could not reload FreePBX or Asterisk."
     fi
 }
 
+get_extensions_content() {
+    local content
+    if command -v asterisk >/dev/null 2>&1; then
+        content=$(timeout 5 asterisk -rx "pjsip show endpoints" 2>/dev/null || true)
+        [ -n "$content" ] && { printf '%s' "$content"; return 0; }
+    fi
+    content=$(awk '/^\[[0-9][^]]*\]/{print}' /etc/asterisk/pjsip_wizard.conf 2>/dev/null || true)
+    printf '%s' "$content"
+}
+
+get_trunks_content() {
+    local content
+    if command -v asterisk >/dev/null 2>&1; then
+        content=$(timeout 5 asterisk -rx "pjsip show registrations" 2>/dev/null || true)
+        [ -n "$content" ] && { printf '%s' "$content"; return 0; }
+    fi
+    content=$(awk '
+        /^\[[^]]+\]$/ { section=$0; next }
+        /^remote_hosts=/ { if (section != "") print section "\n" $0 "\n" }
+    ' /etc/asterisk/pjsip_wizard.conf 2>/dev/null || true)
+    printf '%s' "$content"
+}
+
 view_extensions() {
-    hdr "Current Extensions"
-    command -v asterisk >/dev/null 2>&1 \
-        && timeout 5 asterisk -rx "pjsip show endpoints" 2>/dev/null \
-        || cat /etc/asterisk/pjsip_wizard.conf 2>/dev/null | grep '^\[' | grep -v 'template\|wizard'
+    local content
+    content=$(get_extensions_content)
+    [ -n "${content}" ] || content="No extensions found."
+    show_text_block "Current Extensions" "$content"
 }
 
 view_trunks() {
-    hdr "Current Trunks"
-    command -v asterisk >/dev/null 2>&1 \
-        && timeout 5 asterisk -rx "pjsip show registrations" 2>/dev/null \
-        || cat /etc/asterisk/pjsip_wizard.conf 2>/dev/null | grep '^\[' | grep 'trunk'
+    local content
+    content=$(get_trunks_content)
+    [ -n "${content}" ] || content="No trunks found."
+    show_text_block "Current Trunks" "$content"
 }
 
 while true; do
@@ -198,7 +355,7 @@ while true; do
         "6" "View Trunks" \
         "7" "Apply & Reload" \
         "8" "Exit") || CHOICE=""
-    [ -z "$CHOICE" ] && break
+    [ -z "$CHOICE" ] && { [ "$TUI" = "text" ] && break || continue; }
     case "$CHOICE" in
         1) add_extension ;;
         2) add_trunk ;;

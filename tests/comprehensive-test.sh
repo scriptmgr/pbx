@@ -24,13 +24,15 @@ WEB_ROOT="/var/www/apache/pbx"
 if [ -f "$ENV_FILE" ]; then
     v=$(grep "^FREEPBX_ADMIN_PASSWORD=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
     [ -n "$v" ] && FREEPBX_PASS="$v"
-    v=$(grep "^MYSQL_ROOT_PASSWORD=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
-    [ -n "$v" ] && MYSQL_PASS="$v"
+    v=$(grep "^MYSQL_ROOT_PASSWORD_FILE=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
+    [ -n "$v" ] && MYSQL_PASS_FILE="$v"
     v=$(grep "^ADMIN_EMAIL=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
     [ -n "$v" ] && ADMIN_EMAIL="$v"
     v=$(grep "^WEB_ROOT=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
     [ -n "$v" ] && WEB_ROOT="$v"
 fi
+[ -z "${MYSQL_PASS_FILE:-}" ] && MYSQL_PASS_FILE="/etc/pbx/mysql_root_password"
+[ -z "$MYSQL_PASS" ] && [ -f "$MYSQL_PASS_FILE" ] && MYSQL_PASS=$(tr -d '\r\n' < "$MYSQL_PASS_FILE" 2>/dev/null)
 v=$(grep "^port=" /etc/webmin/miniserv.conf 2>/dev/null | head -1 | cut -d= -f2)
 [ -n "$v" ] && WEBMIN_PORT="$v"
 

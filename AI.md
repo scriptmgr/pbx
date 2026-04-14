@@ -135,6 +135,7 @@ incus exec pbx-alma9 -- chmod +x /usr/local/bin/pbx-status
 | Management scripts | `/usr/local/bin/pbx-*` |
 | Credentials file | `/etc/pbx/pbx_passwords` (chmod 600) |
 | Environment/config | `/etc/pbx/.env` (chmod 600) |
+| MySQL root password file | `/etc/pbx/mysql_root_password` (chmod 600) |
 | Install state JSON | `/etc/pbx/state.json` |
 | Logs | `/var/log/pbx/` |
 | Config backups | `/mnt/backups/pbx-config-backups/{epoch}/` |
@@ -234,18 +235,19 @@ incus exec pbx-alma9 -- chmod +x /usr/local/bin/pbx-status
 
 | Variable | Description | Default |
 |---|---|---|
-| `FREEPBX_ADMIN_USER` | FreePBX admin username | `admin` |
-| `FREEPBX_ADMIN_PASSWORD` | FreePBX admin password | (random) |
-| `MYSQL_ROOT_PASSWORD` | MariaDB root password | (random) |
+| `ADMIN_USERNAME` | Unified admin username for FreePBX and shared web tools | `administrator` |
+| `ADMIN_PASSWORD` | Unified admin password for FreePBX and shared web tools | (random) |
+| `MYSQL_ROOT_PASSWORD` | Optional preset MariaDB root password for install | (random, then stored in `/etc/pbx/mysql_root_password`) |
 | `ADMIN_EMAIL` | Administrator email for alerts | (required) |
 | `TIMEZONE` | System timezone | `America/New_York` |
 | `BEHIND_PROXY` | Enable reverse proxy mode | `no` |
-| `INSTALL_FOP2` | Install Flash Operator Panel 2 | `no` |
+| `INSTALL_FOP2` | Install FOP2 operator panel (HTML5) | `no` |
 | `BACKUP_ENCRYPT` | Enable GPG backup encryption | `no` |
 | `FAX_EMAIL` | Email address for inbound fax delivery | (admin email) |
 | `FAX_FROM_NAME` | From name for fax emails | `PBX Fax` |
 | `FAX_FROM_EMAIL` | From address for fax emails | (admin email) |
-| `AVANTFAX_ADMIN_USER` | AvantFax web admin username | `admin` |
+| `FREEPBX_ADMIN_USERNAME` | Compatibility alias for `ADMIN_USERNAME` | `administrator` |
+| `AVANTFAX_ADMIN_USERNAME` | AvantFax web admin username | `ADMIN_USERNAME` |
 | `AVANTFAX_ADMIN_PASSWORD` | AvantFax web admin password | (random) |
 | `INSTALL_PROFILE` | Installation profile: minimal/standard/advanced | `standard` |
 

@@ -1,5 +1,10 @@
 #!/bin/bash
 set -euo pipefail
+
+SCRIPT_VERSION="${SCRIPT_VERSION:-3.0}"
+case "${1:-}" in
+    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${SCRIPT_VERSION}"; exit 0 ;;
+esac
 if [ -n "${NO_COLOR+x}" ] || [ ! -t 1 ] || [ "${TERM:-}" = "dumb" ] || [ "${CI:-}" = "true" ]; then
     RED=""; GREEN=""; YELLOW=""; BLUE=""; CYAN=""; BOLD=""; NC=""
 else
@@ -27,7 +32,8 @@ usage() {
     printf "  --search NUMBER   Search CDR for a phone number\n"
     printf "  --stats           Show call statistics summary\n"
     printf "  --export FILE     Export CDR to FILE.csv\n"
-    printf "  --help/-h         Show help\n"; exit 0
+    printf "  --help (alias: -h)         Show help
+  --version (alias: -V)  Show version\n"; exit 0
 }
 
 check_cdr() {

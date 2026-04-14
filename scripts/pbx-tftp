@@ -1,7 +1,12 @@
 #!/bin/bash
 # pbx-tftp — Manage the PBX TFTP server for phone provisioning
-# Usage: pbx-tftp [status|start|stop|restart|list|add-device|set-server|help]
+# Usage: pbx-tftp [status|start|stop|restart|list|add-device|set-server|--help]
 set -euo pipefail
+
+SCRIPT_VERSION="${SCRIPT_VERSION:-3.0}"
+case "${1:-}" in
+    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${SCRIPT_VERSION}"; exit 0 ;;
+esac
 
 # ---------------------------------------------------------------------------
 # Output helpers
@@ -27,24 +32,52 @@ hdr()  { printf "\n${BOLD}%s${NC}\n%s\n" "$*" "$(printf '%0.s─' $(seq 1 60))";
 TFTP_ROOT="/var/lib/tftpboot"
 ENV_FILE="/etc/pbx/.env"
 [ -f "${ENV_FILE}" ] && . "${ENV_FILE}" 2>/dev/null || true
-PRIVATE_IP="${PRIVATE_IP:-$(ip -4 route get 8.8.8.8 2>/dev/null | awk '/src/{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')}"
+PRIMARY_IP="${PRIMARY_IP:-${PRIVATE_IP:-$(ip -4 route get 8.8.8.8 2>/dev/null | awk '/src/{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')}}"
 
-# Detect TFTP service name
-if systemctl list-unit-files --type=service 2>/dev/null | grep -q "^tftpd-hpa"; then
-    TFTP_SVC="tftpd-hpa"
-elif systemctl list-unit-files --type=socket 2>/dev/null | grep -q "^tftp.socket"; then
-    TFTP_SVC="tftp.socket"
-else
-    TFTP_SVC="tftp"
-fi
+unit_exists() {
+    command -v systemctl >/dev/null 2>&1 || return 1
+    local state
+    state=$(systemctl show -p LoadState --value "$1" 2>/dev/null || true)
+    [ -n "${state}" ] && [ "${state}" != "not-found" ]
+}
+
+detect_tftp_unit() {
+    local unit
+    if ! command -v systemctl >/dev/null 2>&1; then
+        [ -x /etc/init.d/xinetd ] && { printf 'xinetd'; return 0; }
+        [ -x /etc/init.d/tftp ] && { printf 'tftp'; return 0; }
+    fi
+    for unit in tftpd-hpa tftp.socket tftp xinetd; do
+        unit_exists "${unit}" && { printf '%s' "${unit}"; return 0; }
+    done
+    printf 'tftp'
+}
+
+TFTP_SVC="$(detect_tftp_unit)"
 
 [ "$(id -u)" -ne 0 ] && { err "Must run as root"; exit 1; }
+
+svc_run() {
+    local action="$1"
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl "${action}" "${TFTP_SVC}" 2>/dev/null
+    else
+        service "${TFTP_SVC}" "${action}" 2>/dev/null
+    fi
+}
 
 # ---------------------------------------------------------------------------
 # Functions
 # ---------------------------------------------------------------------------
 svc_state() {
-    systemctl is-active "${TFTP_SVC}" 2>/dev/null || echo "inactive"
+    local state
+    if command -v systemctl >/dev/null 2>&1; then
+        state=$(systemctl is-active "${TFTP_SVC}" 2>/dev/null || true)
+    else
+        service "${TFTP_SVC}" status >/dev/null 2>&1 && state="active" || state="inactive"
+    fi
+    [ -n "${state}" ] || state="inactive"
+    printf '%s' "${state}"
 }
 
 cmd_status() {
@@ -57,7 +90,7 @@ cmd_status() {
         printf "  Service       %s %s (%s)\n" "${SYM_FAIL}" "${TFTP_SVC}" "${state}"
     fi
     printf "  TFTP Root     %s\n" "${TFTP_ROOT}"
-    printf "  Server IP     %s\n" "${PRIVATE_IP:-unknown}"
+    printf "  Server IP     %s\n" "${PRIMARY_IP:-unknown}"
     printf "  Port          69/udp\n"
 
     hdr "Provisioning Directories"
@@ -86,17 +119,17 @@ cmd_status() {
 
 cmd_start() {
     ok "Starting ${TFTP_SVC}..."
-    systemctl start "${TFTP_SVC}" 2>/dev/null && ok "Started" || err "Failed to start ${TFTP_SVC}"
+    svc_run start && ok "Started" || err "Failed to start ${TFTP_SVC}"
 }
 
 cmd_stop() {
     warn "Stopping ${TFTP_SVC}..."
-    systemctl stop "${TFTP_SVC}" 2>/dev/null && ok "Stopped" || err "Failed to stop ${TFTP_SVC}"
+    svc_run stop && ok "Stopped" || err "Failed to stop ${TFTP_SVC}"
 }
 
 cmd_restart() {
     warn "Restarting ${TFTP_SVC}..."
-    systemctl restart "${TFTP_SVC}" 2>/dev/null && ok "Restarted" || err "Failed to restart ${TFTP_SVC}"
+    svc_run restart && ok "Restarted" || err "Failed to restart ${TFTP_SVC}"
 }
 
 cmd_list() {
@@ -132,10 +165,10 @@ account.1.display_name = ${ext}
 account.1.auth_name = ${ext}
 account.1.user_name = ${ext}
 account.1.password = ${pass}
-account.1.sip_server.1.address = ${PRIVATE_IP}
+account.1.sip_server.1.address = ${PRIMARY_IP}
 account.1.sip_server.1.port = 5060
 account.1.transport = 0
-auto_provision.server.url = http://${PRIVATE_IP}/provisioning/
+auto_provision.server.url = http://${PRIMARY_IP}/provisioning/
 EOF
             ok "Yealink config written: ${outfile}"
             ;;
@@ -148,7 +181,7 @@ EOF
     reg.1.address="${ext}"
     reg.1.auth.userId="${ext}"
     reg.1.auth.password="${pass}"
-    reg.1.server.1.address="${PRIVATE_IP}"
+    reg.1.server.1.address="${PRIMARY_IP}"
     reg.1.server.1.port="5060"
   />
 </PHONE_CONFIG>
@@ -161,7 +194,7 @@ EOF
 <?xml version="1.0" encoding="UTF-8" ?>
 <gs_provision version="1">
   <config version="1">
-    <P35>${PRIVATE_IP}</P35>
+    <P35>${PRIMARY_IP}</P35>
     <P36>5060</P36>
     <P47>${ext}</P47>
     <P34>${ext}</P34>
@@ -180,7 +213,7 @@ EOF
     <name>${ext}</name>
     <authName>${ext}</authName>
     <authPassword>${pass}</authPassword>
-    <proxy>${PRIVATE_IP}</proxy>
+    <proxy>${PRIMARY_IP}</proxy>
   </line>
 </device>
 EOF
@@ -191,23 +224,23 @@ EOF
             exit 1
             ;;
     esac
-    ok "Provision this phone by pointing it to TFTP server: ${PRIVATE_IP}"
+    ok "Provision this phone by pointing it to TFTP server: ${PRIMARY_IP}"
 }
 
 cmd_set_server() {
     # Update the PBX server IP in all template files
-    local new_ip="${1:-${PRIVATE_IP}}"
+    local new_ip="${1:-${PRIMARY_IP}}"
     hdr "Updating PBX server IP to ${new_ip} in all TFTP templates"
     local updated=0
     while IFS= read -r -d '' f; do
         if grep -qE 'PBX_IP|sip_server.*address|reg\.1\.server|<P35>' "${f}" 2>/dev/null; then
-            sed -i "s|${PRIVATE_IP}|${new_ip}|g; s|PBX_IP|${new_ip}|g" "${f}" 2>/dev/null && \
+            sed -i "s|${PRIMARY_IP}|${new_ip}|g; s|PBX_IP|${new_ip}|g" "${f}" 2>/dev/null && \
                 ok "  Updated: ${f#${TFTP_ROOT}/}" && updated=$((updated+1)) || true
         fi
     done < <(find "${TFTP_ROOT}" -type f -print0 2>/dev/null)
     ok "${updated} file(s) updated"
     # Restart TFTP to pick up changes
-    systemctl restart "${TFTP_SVC}" 2>/dev/null || true
+    svc_run restart || true
 }
 
 cmd_help() {
@@ -229,8 +262,9 @@ Commands:
                               ext:    SIP extension number
                               pass:   SIP password
   set-server [ip]           Update all templates to point to this PBX IP
-                            (defaults to current PRIVATE_IP from /etc/pbx/.env)
-  help                      Show this help
+                            (defaults to current PRIMARY_IP from /etc/pbx/.env)
+  --help                    Show this help (-h and help accepted)
+  --version                 Show version (-V accepted)
 
 TFTP Root:      /var/lib/tftpboot
 HTTP Prov Root: /var/www/apache/pbx/provisioning/

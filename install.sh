@@ -7,6 +7,14 @@
 
 set -euo pipefail
 
+SCRIPT_VERSION="3.0"
+case "${1:-}" in
+    --version|-V)
+        printf "install.sh v%s\n" "${SCRIPT_VERSION}"
+        exit 0
+        ;;
+esac
+
 # =============================================================================
 # SIGNAL HANDLING
 # =============================================================================
@@ -68,7 +76,6 @@ trap '_on_signal' INT TERM HUP
 # SECTION 1: CONFIGURATION & DEFAULTS
 # =============================================================================
 
-SCRIPT_VERSION="3.0"
 ASTERISK_VERSION=""       # set by version_select()
 FREEPBX_VERSION="17.0"
 PHP_VERSION=""            # set by version_select()
@@ -90,6 +97,7 @@ BACKUP_BASE="/mnt/backups/pbx"
 LOG_FILE="/var/log/pbx-install.log"
 ERROR_LOG="/var/log/pbx-install-errors.log"
 AUTO_PASSWORDS_FILE="/etc/pbx/pbx_passwords"
+MYSQL_ROOT_PASSWORD_FILE="/etc/pbx/mysql_root_password"
 WORK_DIR="/var/cache/pbx-install"
 
 # ---------------------------------------------------------------------------
@@ -102,7 +110,7 @@ PACKAGE_MANAGER=""          # always mirrors PACKAGE_MGR_BIN
 
 # Packages with IDENTICAL names on every supported distro — no mapping needed.
 # These are appended per-section; the variable is a convenient prefix.
-PACKAGES_GLOBAL="tar curl wget git vim nano screen tmux htop unzip zip bzip2 net-tools tcpdump sox mpg123 lame ghostscript fail2ban dialog"
+PACKAGES_GLOBAL="tar curl wget git vim nano screen tmux htop unzip zip bzip2 net-tools tcpdump sox mpg123 ghostscript fail2ban dialog"
 
 # Distro-specific package groups — all populated by setup_pkg_map().
 # Install functions use these instead of inline case/esac blocks.
@@ -112,6 +120,8 @@ PACKAGES_DISTRO_WEBSERVER=""     # web server (apache2 / httpd)
 PACKAGES_DISTRO_WEBSERVER_OPT="" # optional web modules (installed one-by-one)
 PACKAGES_DISTRO_PHP=""           # PHP 8.2 + common extensions
 PACKAGES_DISTRO_PHP74=""         # PHP 7.4 for AvantFax
+PACKAGES_DISTRO_MEDIA_OPT=""     # optional media helpers
+PACKAGES_DISTRO_MAIL_CLIENT=""   # mailx-compatible client
 PACKAGES_DISTRO_MARIADB=""       # MariaDB server + client
 PACKAGES_DISTRO_PYTHON=""        # Python 3 dev + pip
 PACKAGES_DISTRO_NODE=""          # Node.js + npm
@@ -141,9 +151,13 @@ PKG_NTP=""                # chrony (service: chronyd)
 
 SYSTEM_FQDN=""
 SYSTEM_DOMAIN=""
+PRIMARY_IP=""
 PRIVATE_IP=""
 PUBLIC_IP=""
+PRIMARY_IP6=""
 PRIVATE_IP6=""   # IPv6 address (optional, used when host has dual-stack)
+PUBLIC_IP6=""    # Public IPv6 address (optional, when host is dual-stack)
+EXTERNAL_IP=""   # Best externally reachable address for SIP/web config
 DETECTED_OS=""
 DETECTED_VERSION=""
 DETECTED_OS_LIKE=""
@@ -151,12 +165,13 @@ DISTRO_FAMILY=""
 DISTRO_GEN=""
 INIT_SYSTEM=""
 MYSQL_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD:-}"
-FREEPBX_ADMIN_USERNAME="${FREEPBX_ADMIN_USERNAME:-}"
+ADMIN_USERNAME="${ADMIN_USERNAME:-${FREEPBX_ADMIN_USERNAME:-${FREEPBX_ADMIN_USER:-}}}"
+FREEPBX_ADMIN_USERNAME="${FREEPBX_ADMIN_USERNAME:-${ADMIN_USERNAME:-${FREEPBX_ADMIN_USER:-}}}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"          # Unified admin UI password (FreePBX, AvantFax, Reminder, CallCenter)
 FREEPBX_ADMIN_PASSWORD="${FREEPBX_ADMIN_PASSWORD:-}"  # Derived from ADMIN_PASSWORD — kept for internal use
 FREEPBX_DB_PASSWORD="${FREEPBX_DB_PASSWORD:-}"
 AVANTFAX_DB_PASSWORD="${AVANTFAX_DB_PASSWORD:-}"
-AVANTFAX_ADMIN_USERNAME="${AVANTFAX_ADMIN_USERNAME:-}"  # AvantFax web UI admin user (default: admin)
+AVANTFAX_ADMIN_USERNAME="${AVANTFAX_ADMIN_USERNAME:-${AVANTFAX_ADMIN_USER:-${ADMIN_USERNAME:-}}}"  # AvantFax web UI admin user (default: administrator)
 AVANTFAX_ADMIN_PASSWORD="${AVANTFAX_ADMIN_PASSWORD:-}"  # AvantFax web UI password (default: ADMIN_PASSWORD)
 INSTALL_INVENTORY="/var/lib/pbx/install_inventory"
 INSTALLED_COMPONENTS=""
@@ -281,7 +296,6 @@ _spinner_start() {
           done ) &
         _spinner_pid=$!
     else
-        printf "  ... %s\n" "${_spinner_label}" >&2
         _spinner_pid=""
     fi
 }
@@ -493,39 +507,21 @@ detect_system() {
         INIT_SYSTEM="sysv"
     fi
 
-    # Network information — smart IPv4/IPv6 detection
-    # Private IPv4: use the source IP that would route to Google DNS (avoids loopback/docker bridges)
-    PRIVATE_IP=$(ip -4 route get 8.8.8.8 2>/dev/null \
-        | awk '/src/{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}' \
-        | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
-    # Fallback: first non-loopback IPv4 from ip addr
-    if [ -z "${PRIVATE_IP}" ]; then
-        PRIVATE_IP=$(ip -4 addr show scope global 2>/dev/null \
-            | awk '/inet /{split($2,a,"/"); print a[1]}' | head -1)
-    fi
-    # Final fallback
-    [ -z "${PRIVATE_IP}" ] && PRIVATE_IP=$(hostname -I 2>/dev/null | tr ' ' '\n' \
-        | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | grep -v '^127\.' | head -1)
-    [ -z "${PRIVATE_IP}" ] && PRIVATE_IP="127.0.0.1"
-
-    # Private IPv6 (optional, stored separately for SIP/web config use)
-    PRIVATE_IP6=$(ip -6 route get 2001:4860:4860::8888 2>/dev/null \
-        | awk '/src/{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}' \
-        | grep -v '^::1$' | head -1) || PRIVATE_IP6=""
-
-    # Public IP: try IPv4 first via multiple services (fast 5s timeout each)
-    PUBLIC_IP=$(curl -s4 --max-time 5 https://ifconfig.me 2>/dev/null \
-        || curl -s4 --max-time 5 https://api.ipify.org 2>/dev/null \
-        || curl -s4 --max-time 5 https://icanhazip.com 2>/dev/null) || true
-    # If no IPv4 public IP (pure IPv6 host), fall back to IPv6 detection
-    if [ -z "${PUBLIC_IP}" ] && [ -n "${PRIVATE_IP6}" ]; then
-        PUBLIC_IP=$(curl -s6 --max-time 5 https://ifconfig.me 2>/dev/null \
-            || curl -s6 --max-time 5 https://icanhazip.com 2>/dev/null) || true
-    fi
-    # If still empty, use private IP (LAN-only setup)
-    [ -z "${PUBLIC_IP}" ] && PUBLIC_IP="${PRIVATE_IP}"
-    # Strip trailing whitespace from curl output
-    PUBLIC_IP=$(printf '%s' "${PUBLIC_IP}" | tr -d '[:space:]')
+    # Network information — distinguish primary interface addresses from
+    # truly private RFC1918/ULA addresses and public internet-routable ones.
+    PRIMARY_IP=$(detect_primary_ipv4 || true)
+    PRIMARY_IP6=$(detect_primary_ipv6 || true)
+    PRIVATE_IP=$(detect_private_ipv4 || true)
+    PRIVATE_IP6=$(detect_private_ipv6 || true)
+    PUBLIC_IP=$(detect_public_ipv4 || true)
+    PUBLIC_IP6=$(detect_public_ipv6 || true)
+    [ -z "${PUBLIC_IP:-}" ] && is_public_ipv4 "${PRIMARY_IP:-}" && PUBLIC_IP="${PRIMARY_IP}"
+    [ -z "${PUBLIC_IP6:-}" ] && is_public_ipv6 "${PRIMARY_IP6:-}" && PUBLIC_IP6="${PRIMARY_IP6}"
+    EXTERNAL_IP="${PUBLIC_IP:-${PUBLIC_IP6:-${PRIMARY_IP:-${PRIMARY_IP6:-}}}}"
+    [ -z "${PRIMARY_IP}" ] && [ -z "${PRIMARY_IP6}" ] && {
+        error "Could not determine a usable primary IPv4 or IPv6 address"
+        exit 1
+    }
 
     SYSTEM_FQDN=$(hostname -f 2>/dev/null || hostname 2>/dev/null || echo "pbx.local")
     SYSTEM_DOMAIN=$(echo "${SYSTEM_FQDN}" | cut -d. -f2- 2>/dev/null || echo "local")
@@ -540,7 +536,9 @@ detect_system() {
     info "OS: ${DETECTED_OS} ${DETECTED_VERSION} (${DISTRO_FAMILY} gen${DISTRO_GEN})"
     info "Package manager: ${PACKAGE_MGR_BIN} ${PACKAGE_MGR_ARG}"
     info "Init system: ${INIT_SYSTEM}"
-    info "Private IP: ${PRIVATE_IP} | Public IP: ${PUBLIC_IP}"
+    info "Primary IPv4: ${PRIMARY_IP:-n/a} | Public IPv4: ${PUBLIC_IP:-n/a}"
+    [ -n "${PRIMARY_IP6:-}" ] || [ -n "${PUBLIC_IP6:-}" ] && \
+        info "Primary IPv6: ${PRIMARY_IP6:-n/a} | Public IPv6: ${PUBLIC_IP6:-n/a}"
     info "FQDN: ${SYSTEM_FQDN}"
 }
 
@@ -590,8 +588,10 @@ setup_pkg_map() {
             PACKAGES_DISTRO_WEBSERVER="apache2 apache2-utils"
             # Optional apache modules — installed one-by-one so a missing name never blocks apache2
             PACKAGES_DISTRO_WEBSERVER_OPT="libapache2-mod-fcgid"
-            PACKAGES_DISTRO_PHP="php${PHP_VERSION} php${PHP_VERSION}-fpm php${PHP_VERSION}-cli php${PHP_VERSION}-common php${PHP_VERSION}-mysql php${PHP_VERSION}-gd php${PHP_VERSION}-xml php${PHP_VERSION}-curl php${PHP_VERSION}-zip php${PHP_VERSION}-mbstring php${PHP_VERSION}-intl php${PHP_VERSION}-bcmath php${PHP_VERSION}-opcache php${PHP_VERSION}-soap php${PHP_VERSION}-ldap php${PHP_VERSION}-imap php${PHP_VERSION}-xmlrpc"
+            PACKAGES_DISTRO_PHP="php${PHP_VERSION} php${PHP_VERSION}-fpm php${PHP_VERSION}-cli php${PHP_VERSION}-common php${PHP_VERSION}-mysql php${PHP_VERSION}-gd php${PHP_VERSION}-xml php${PHP_VERSION}-curl php${PHP_VERSION}-zip php${PHP_VERSION}-mbstring php${PHP_VERSION}-intl php${PHP_VERSION}-bcmath php${PHP_VERSION}-opcache php${PHP_VERSION}-soap php${PHP_VERSION}-ldap php${PHP_VERSION}-imap"
             PACKAGES_DISTRO_PHP74="php${PHP_AVANTFAX_VERSION} php${PHP_AVANTFAX_VERSION}-fpm php${PHP_AVANTFAX_VERSION}-cli php${PHP_AVANTFAX_VERSION}-common php${PHP_AVANTFAX_VERSION}-mysql php${PHP_AVANTFAX_VERSION}-gd php${PHP_AVANTFAX_VERSION}-xml php${PHP_AVANTFAX_VERSION}-curl php${PHP_AVANTFAX_VERSION}-zip php${PHP_AVANTFAX_VERSION}-mbstring php${PHP_AVANTFAX_VERSION}-intl php${PHP_AVANTFAX_VERSION}-bcmath php${PHP_AVANTFAX_VERSION}-soap php${PHP_AVANTFAX_VERSION}-imap php-pear"
+            PACKAGES_DISTRO_MEDIA_OPT="libsox-fmt-all"
+            PACKAGES_DISTRO_MAIL_CLIENT="bsd-mailx"
             PACKAGES_DISTRO_MARIADB="mariadb-server mariadb-client"
             PACKAGES_DISTRO_PYTHON="python3-dev python3-pip"
             PACKAGES_DISTRO_NODE="nodejs npm"
@@ -624,12 +624,14 @@ setup_pkg_map() {
             PACKAGES_DISTRO_ASTERISK_DEPS="openssl-devel libxml2-devel libxslt-devel sqlite-devel sqlite libuuid-devel ncurses-devel newt-devel jansson-devel libcurl-devel libsrtp-devel speex-devel speexdsp-devel alsa-lib-devel libogg-devel libvorbis-devel libtiff-devel libpng-devel libjpeg-devel libicu-devel openldap-devel readline-devel libedit-devel libgd-devel pkgconf-pkg-config pkgconf"
             PACKAGES_DISTRO_WEBSERVER="httpd httpd-tools"
             PACKAGES_DISTRO_WEBSERVER_OPT="mod_ssl mod_proxy_html"
-            PACKAGES_DISTRO_PHP="php php-fpm php-cli php-common php-mysqlnd php-gd php-xml php-curl php-zip php-mbstring php-intl php-bcmath php-opcache php-soap php-ldap php-json php-imap php-xmlrpc php-process php-pdo php-pear"
+            PACKAGES_DISTRO_PHP="php php-fpm php-cli php-common php-mysqlnd php-gd php-xml php-curl php-zip php-mbstring php-intl php-bcmath php-opcache php-soap php-ldap php-imap php-process php-pdo php-pear"
             PACKAGES_DISTRO_PHP74="php74 php74-php-fpm php74-php-cli php74-php-common php74-php-mysqlnd php74-php-gd php74-php-xml php74-php-curl php74-php-zip php74-php-mbstring php74-php-intl php74-php-bcmath php74-php-soap php74-php-imap php74-php-pear"
+            PACKAGES_DISTRO_MEDIA_OPT=""
+            PACKAGES_DISTRO_MAIL_CLIENT="s-nail"
             PACKAGES_DISTRO_MARIADB="mariadb-server mariadb"
             PACKAGES_DISTRO_PYTHON="python3-devel python3-pip"
             PACKAGES_DISTRO_NODE="nodejs npm"
-            PACKAGES_DISTRO_SYSTEM="chrony iptables-services cronie-noanacron"
+            PACKAGES_DISTRO_SYSTEM="chrony iptables-services cronie"
             PACKAGES_DISTRO_KNOCKD="knock-server"
             PACKAGES_DISTRO_FAX="hylafax+"
             PACKAGES_DISTRO_SNGREP="sngrep"
@@ -651,6 +653,7 @@ setup_pkg_map() {
             if [ "${DISTRO_GEN}" -eq 1 ]; then
                 PACKAGES_DISTRO_KNOCKD="knock"
                 PACKAGES_DISTRO_SYSTEM="ntp iptables"
+                PACKAGES_DISTRO_MAIL_CLIENT="mailx"
                 PKG_NTP="ntp"
                 PKG_IPTABLES_PERSIST="iptables"
             fi
@@ -676,6 +679,137 @@ generate_password() {
 
 command_exists() {
     command -v "$1" >/dev/null 2>&1
+}
+
+is_ipv4() {
+    local ip="${1:-}" octet old_ifs
+    [[ "${ip}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+    old_ifs="${IFS}"
+    IFS='.'
+    set -- ${ip}
+    IFS="${old_ifs}"
+    for octet in "$@"; do
+        [ "${octet}" -ge 0 ] 2>/dev/null && [ "${octet}" -le 255 ] 2>/dev/null || return 1
+    done
+    return 0
+}
+
+is_local_ipv4() {
+    case "${1:-}" in
+        127.*|169.254.*|0.*|"") return 0 ;;
+    esac
+    return 1
+}
+
+is_private_ipv4() {
+    case "${1:-}" in
+        10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[0-1].*) return 0 ;;
+    esac
+    return 1
+}
+
+is_public_ipv4() {
+    local ip="${1:-}"
+    is_ipv4 "${ip}" || return 1
+    is_local_ipv4 "${ip}" && return 1
+    is_private_ipv4 "${ip}" && return 1
+    case "${ip}" in
+        224.*|225.*|226.*|227.*|228.*|229.*|23[0-9].*|24[0-9].*|25[0-5].*) return 1 ;;
+    esac
+    return 0
+}
+
+is_ipv6() {
+    local ip="${1:-}"
+    [[ -n "${ip}" && "${ip}" == *:* ]] || return 1
+    printf '%s' "${ip}" | grep -qiE '^[0-9a-f:]+$'
+}
+
+is_private_ipv6() {
+    case "${1,,}" in
+        ::1|fe8*|fe9*|fea*|feb*|fc*|fd*|"") return 0 ;;
+    esac
+    return 1
+}
+
+is_public_ipv6() {
+    local ip="${1:-}"
+    is_ipv6 "${ip}" || return 1
+    is_private_ipv6 "${ip}" && return 1
+    return 0
+}
+
+detect_primary_ipv4() {
+    local ip=""
+    ip=$(ip -4 route get 8.8.8.8 2>/dev/null \
+        | awk '/src/{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}' \
+        | head -1)
+    if ! is_ipv4 "${ip}" || is_local_ipv4 "${ip}"; then
+        ip=$(ip -4 addr show scope global 2>/dev/null \
+            | awk '/inet /{split($2,a,"/"); print a[1]}' \
+            | grep -vE '^(127\.|169\.254\.|0\.)' | head -1)
+    fi
+    if ! is_ipv4 "${ip}" || is_local_ipv4 "${ip}"; then
+        ip=$(hostname -I 2>/dev/null | tr ' ' '\n' \
+            | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' \
+            | grep -vE '^(127\.|169\.254\.|0\.)' | head -1)
+    fi
+    is_ipv4 "${ip}" && ! is_local_ipv4 "${ip}" && printf '%s' "${ip}"
+}
+
+detect_private_ipv4() {
+    local ip=""
+    ip=$(detect_primary_ipv4 || true)
+    is_private_ipv4 "${ip}" && printf '%s' "${ip}"
+}
+
+detect_primary_ipv6() {
+    local ip=""
+    ip=$(ip -6 route get 2001:4860:4860::8888 2>/dev/null \
+        | awk '/src/{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}' \
+        | head -1)
+    if ! is_ipv6 "${ip}" || is_private_ipv6 "${ip}"; then
+        ip=$(ip -6 addr show scope global 2>/dev/null \
+            | awk '/inet6 /{split($2,a,"/"); print a[1]}' \
+            | grep -viE '^(::1|fe8|fe9|fea|feb)' | head -1)
+    fi
+    is_ipv6 "${ip}" && printf '%s' "${ip}"
+}
+
+detect_private_ipv6() {
+    local ip=""
+    ip=$(detect_primary_ipv6 || true)
+    is_private_ipv6 "${ip}" && printf '%s' "${ip}"
+}
+
+detect_public_ipv4() {
+    local ip="" url=""
+    for url in https://ifconfig.me https://api.ipify.org https://icanhazip.com; do
+        if command_exists curl; then
+            ip=$(curl -fsS4 --max-time 5 "${url}" 2>/dev/null | tr -d '[:space:]')
+        elif command_exists wget; then
+            ip=$(wget -4 -qO- --timeout=5 "${url}" 2>/dev/null | tr -d '[:space:]')
+        else
+            break
+        fi
+        is_public_ipv4 "${ip}" && { printf '%s' "${ip}"; return 0; }
+    done
+    return 1
+}
+
+detect_public_ipv6() {
+    local ip="" url=""
+    for url in https://ifconfig.me https://api64.ipify.org https://icanhazip.com; do
+        if command_exists curl; then
+            ip=$(curl -fsS6 --max-time 5 "${url}" 2>/dev/null | tr -d '[:space:]')
+        elif command_exists wget; then
+            ip=$(wget -6 -qO- --timeout=5 "${url}" 2>/dev/null | tr -d '[:space:]')
+        else
+            break
+        fi
+        is_public_ipv6 "${ip}" && { printf '%s' "${ip}"; return 0; }
+    done
+    return 1
 }
 
 # download_file URL DEST [timeout_seconds]
@@ -750,6 +884,35 @@ state_set() {
 state_get() {
     [ -f "${PBX_STATE_FILE}" ] && \
         grep "^${1}=" "${PBX_STATE_FILE}" | cut -d= -f2- | tail -1 || echo ""
+}
+
+save_mysql_root_password() {
+    mkdir -p "${PBX_ENV_DIR}"
+    chmod 750 "${PBX_ENV_DIR}" 2>/dev/null || true
+    printf '%s\n' "${MYSQL_ROOT_PASSWORD}" > "${MYSQL_ROOT_PASSWORD_FILE}"
+    chmod 600 "${MYSQL_ROOT_PASSWORD_FILE}" 2>/dev/null || true
+}
+
+load_mysql_root_password() {
+    local pw=""
+    [ -f "${MYSQL_ROOT_PASSWORD_FILE}" ] && pw=$(tr -d '\r\n' < "${MYSQL_ROOT_PASSWORD_FILE}" 2>/dev/null || true)
+    if [ -z "${pw}" ]; then
+        pw="$(state_get MYSQL_ROOT_PASSWORD)"
+        if [ -n "${pw}" ]; then
+            MYSQL_ROOT_PASSWORD="${pw}"
+            save_mysql_root_password
+        fi
+    fi
+    [ -n "${pw}" ] && MYSQL_ROOT_PASSWORD="${pw}"
+}
+
+normalize_admin_vars() {
+    [ -z "${ADMIN_USERNAME:-}" ] && ADMIN_USERNAME="${FREEPBX_ADMIN_USERNAME:-${FREEPBX_ADMIN_USER:-}}"
+    [ -z "${ADMIN_USERNAME:-}" ] && ADMIN_USERNAME="administrator"
+    [ -z "${FREEPBX_ADMIN_USERNAME:-}" ] && FREEPBX_ADMIN_USERNAME="${ADMIN_USERNAME}"
+    [ -z "${AVANTFAX_ADMIN_USERNAME:-}" ] && AVANTFAX_ADMIN_USERNAME="${ADMIN_USERNAME}"
+    [ -n "${ADMIN_PASSWORD:-}" ] && FREEPBX_ADMIN_PASSWORD="${ADMIN_PASSWORD}"
+    [ -z "${AVANTFAX_ADMIN_PASSWORD:-}" ] && AVANTFAX_ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 }
 
 # ---------------------------------------------------------------------------
@@ -861,6 +1024,8 @@ load_pbx_env() {
         source "${AUTO_PASSWORDS_FILE}" 2>/dev/null || true
         info "Loaded PBX env from ${AUTO_PASSWORDS_FILE}"
     fi
+    load_mysql_root_password
+    normalize_admin_vars
 }
 
 save_pbx_env() {
@@ -880,7 +1045,8 @@ save_pbx_env() {
 # Edit values below to reconfigure; re-run install.sh to apply.
 
 # --- Credentials ---
-MYSQL_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD:-}"
+MYSQL_ROOT_PASSWORD_FILE="${MYSQL_ROOT_PASSWORD_FILE:-/etc/pbx/mysql_root_password}"
+ADMIN_USERNAME="${ADMIN_USERNAME:-${FREEPBX_ADMIN_USERNAME:-}}"
 FREEPBX_ADMIN_USERNAME="${FREEPBX_ADMIN_USERNAME:-}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 FREEPBX_DB_PASSWORD="${FREEPBX_DB_PASSWORD:-}"
@@ -889,9 +1055,13 @@ AVANTFAX_ADMIN_USERNAME="${AVANTFAX_ADMIN_USERNAME:-}"
 AVANTFAX_ADMIN_PASSWORD="${AVANTFAX_ADMIN_PASSWORD:-}"
 
 # --- Network ---
+PRIMARY_IP="${PRIMARY_IP:-}"
 PRIVATE_IP="${PRIVATE_IP:-}"
 PUBLIC_IP="${PUBLIC_IP:-}"
+PRIMARY_IP6="${PRIMARY_IP6:-}"
 PRIVATE_IP6="${PRIVATE_IP6:-}"
+PUBLIC_IP6="${PUBLIC_IP6:-}"
+EXTERNAL_IP="${EXTERNAL_IP:-}"
 SYSTEM_FQDN="${SYSTEM_FQDN:-}"
 SYSTEM_DOMAIN="${SYSTEM_DOMAIN:-}"
 
@@ -1291,13 +1461,9 @@ prepare_system() {
     # Generate passwords if not already loaded from env
     # ADMIN_PASSWORD: unified admin UI password — alphanumeric only (no special chars, avoids shell/form issues)
     [ -z "${ADMIN_PASSWORD}" ]         && ADMIN_PASSWORD=$(tr -dc 'A-Za-z0-9' < /dev/urandom 2>/dev/null | head -c 16; echo)
-    # FreePBX admin password always mirrors ADMIN_PASSWORD
-    FREEPBX_ADMIN_PASSWORD="${ADMIN_PASSWORD}"
-    [ -z "${FREEPBX_ADMIN_USERNAME}" ] && FREEPBX_ADMIN_USERNAME="admin"
-    # AvantFax admin defaults to same username/password as ADMIN
-    [ -z "${AVANTFAX_ADMIN_USERNAME}" ] && AVANTFAX_ADMIN_USERNAME="admin"
-    [ -z "${AVANTFAX_ADMIN_PASSWORD}" ] && AVANTFAX_ADMIN_PASSWORD="${ADMIN_PASSWORD}"
+    normalize_admin_vars
     [ -z "${MYSQL_ROOT_PASSWORD}" ]    && MYSQL_ROOT_PASSWORD=$(generate_password 32)
+    save_mysql_root_password
     [ -z "${FREEPBX_DB_PASSWORD}" ]    && FREEPBX_DB_PASSWORD=$(generate_password 24)
     [ -z "${AVANTFAX_DB_PASSWORD}" ]   && AVANTFAX_DB_PASSWORD=$(generate_password 24)
     [ -z "${EMAIL_TO_FAX_ALIAS}" ]     && generate_fax_alias
@@ -1312,7 +1478,8 @@ prepare_system() {
 # PBX Installation Passwords - Generated $(date '+%Y-%m-%d %H:%M:%S')
 # KEEP THIS FILE SECURE - chmod 600
 ADMIN_PASSWORD=${ADMIN_PASSWORD}
-MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+ADMIN_USERNAME=${ADMIN_USERNAME}
+MYSQL_ROOT_PASSWORD_FILE=${MYSQL_ROOT_PASSWORD_FILE}
 FREEPBX_ADMIN_USERNAME=${FREEPBX_ADMIN_USERNAME}
 FREEPBX_DB_PASSWORD=${FREEPBX_DB_PASSWORD}
 AVANTFAX_DB_PASSWORD=${AVANTFAX_DB_PASSWORD}
@@ -1327,11 +1494,18 @@ FROM_NAME=${FROM_NAME}
 PWEOF
         chmod 600 "${AUTO_PASSWORDS_FILE}"
     else
-        # File exists (re-run): always update ADMIN_PASSWORD so an env-provided password takes effect
-        sed -i "s|^ADMIN_PASSWORD=.*|ADMIN_PASSWORD=${ADMIN_PASSWORD}|" "${AUTO_PASSWORDS_FILE}" 2>/dev/null || true
-        # Load remaining vars from the existing file so they're not regenerated
-        # shellcheck source=/dev/null
-        source "${AUTO_PASSWORDS_FILE}" 2>/dev/null || true
+        # File exists (re-run): keep the stored shell-style file in sync when present,
+        # but never source it here because finalized installs rewrite it as human-readable text.
+        if grep -q '^ADMIN_PASSWORD=' "${AUTO_PASSWORDS_FILE}" 2>/dev/null; then
+            sed -i \
+                -e "s|^ADMIN_PASSWORD=.*|ADMIN_PASSWORD=${ADMIN_PASSWORD}|" \
+                -e "s|^ADMIN_USERNAME=.*|ADMIN_USERNAME=${ADMIN_USERNAME}|" \
+                -e "s|^MYSQL_ROOT_PASSWORD_FILE=.*|MYSQL_ROOT_PASSWORD_FILE=${MYSQL_ROOT_PASSWORD_FILE}|" \
+                -e "s|^FREEPBX_ADMIN_USERNAME=.*|FREEPBX_ADMIN_USERNAME=${FREEPBX_ADMIN_USERNAME}|" \
+                -e "s|^AVANTFAX_ADMIN_USERNAME=.*|AVANTFAX_ADMIN_USERNAME=${AVANTFAX_ADMIN_USERNAME}|" \
+                -e "s|^AVANTFAX_ADMIN_PASSWORD=.*|AVANTFAX_ADMIN_PASSWORD=${AVANTFAX_ADMIN_PASSWORD}|" \
+                "${AUTO_PASSWORDS_FILE}" 2>/dev/null || true
+        fi
     fi
 
     # Set timezone
@@ -1385,17 +1559,18 @@ PWEOF
 # KEEP THIS FILE SECURE
 
 MySQL Root Password:    ${MYSQL_ROOT_PASSWORD}
+Admin Username:         ${ADMIN_USERNAME}
 FreePBX Admin User:     ${FREEPBX_ADMIN_USERNAME}
 Admin Password:         ${ADMIN_PASSWORD}
 FreePBX DB Password:    ${FREEPBX_DB_PASSWORD}
 AvantFax DB Password:   ${AVANTFAX_DB_PASSWORD}
 
 Web Interfaces:
-  FreePBX Admin:  http://${PRIVATE_IP}/admin/
-  User Portal:    http://${PRIVATE_IP}/ucp/
-  Fax (AvantFax): http://${PRIVATE_IP}/avantfax/
-  Webmin:         https://${PRIVATE_IP}:9001/
-  Main Portal:    http://${PRIVATE_IP}/
+  FreePBX Admin:  http://${SYSTEM_FQDN:-${EXTERNAL_IP:-${PRIMARY_IP:-unknown}}}/admin/
+  User Portal:    http://${SYSTEM_FQDN:-${EXTERNAL_IP:-${PRIMARY_IP:-unknown}}}/ucp/
+  Fax (AvantFax): http://${SYSTEM_FQDN:-${EXTERNAL_IP:-${PRIMARY_IP:-unknown}}}/avantfax/
+  Webmin:         https://${SYSTEM_FQDN:-${EXTERNAL_IP:-${PRIMARY_IP:-unknown}}}:9001/
+  Main Portal:    http://${SYSTEM_FQDN:-${EXTERNAL_IP:-${PRIMARY_IP:-unknown}}}/
 $([ "${BEHIND_PROXY:-no}" = "yes" ] && printf "  [Proxy mode] Apache is bound to localhost only — point your reverse proxy to the configured port.\n")
 
 SSH Port: ${SSH_PORT}
@@ -1938,13 +2113,10 @@ install_apache() {
     # Install core webserver packages (split from optional modules to avoid silent failures)
     pkg_install $PACKAGES_DISTRO_WEBSERVER
     # Optional modules — one by one so a missing one doesn't block
+    pkg_install_one_by_one $PACKAGES_DISTRO_WEBSERVER_OPT
     case "${DISTRO_FAMILY}" in
         debian)
-            pkg_install_one_by_one libapache2-mod-fcgid libapache2-mod-proxy-html
             a2enmod rewrite ssl proxy proxy_fcgi proxy_http setenvif headers expires deflate 2>/dev/null || true
-            ;;
-        rhel|fedora)
-            pkg_install_one_by_one mod_ssl mod_proxy_html
             ;;
     esac
 
@@ -2922,6 +3094,7 @@ XMPPEOF
         error "FreePBX installation failed — fwconsole not found"
         return 1
     fi
+    chmod 755 /var/lib/asterisk/bin/fwconsole /usr/sbin/fwconsole 2>/dev/null || true
 
     # FreePBX installer stores AMPWEBROOT=/var/www/html as default in freepbx_settings,
     # ignoring the --webroot flag we passed. Update it to match our actual webroot so
@@ -3085,10 +3258,10 @@ ANONEOF
 
     # Use INSERT ... ON DUPLICATE KEY UPDATE so existing rows get updated, new rows get proper type
     mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk << NATEOF 2>/dev/null || true
-INSERT INTO freepbx_settings (keyword,value,type,emptyok) VALUES ('EXTERNALIP','${PUBLIC_IP}','text',1)
-  ON DUPLICATE KEY UPDATE value='${PUBLIC_IP}';
-INSERT INTO freepbx_settings (keyword,value,type,emptyok) VALUES ('LOCALNET','${PRIVATE_IP}/255.255.255.0','text',1)
-  ON DUPLICATE KEY UPDATE value='${PRIVATE_IP}/255.255.255.0';
+INSERT INTO freepbx_settings (keyword,value,type,emptyok) VALUES ('EXTERNALIP','${EXTERNAL_IP:-${PUBLIC_IP:-${PRIMARY_IP}}}','text',1)
+  ON DUPLICATE KEY UPDATE value='${EXTERNAL_IP:-${PUBLIC_IP:-${PRIMARY_IP}}}';
+INSERT INTO freepbx_settings (keyword,value,type,emptyok) VALUES ('LOCALNET','${PRIVATE_IP:+${PRIVATE_IP}/255.255.255.0}','text',1)
+  ON DUPLICATE KEY UPDATE value='${PRIVATE_IP:+${PRIVATE_IP}/255.255.255.0}';
 INSERT INTO freepbx_settings (keyword,value,type,emptyok) VALUES ('SIPNAT','yes','bool',1)
   ON DUPLICATE KEY UPDATE value='yes';
 NATEOF
@@ -3190,7 +3363,7 @@ install_postfix() {
 
     case "${DISTRO_FAMILY}" in
         debian)
-            $PACKAGE_MGR_BIN remove -y sendmail exim4 2>/dev/null || true
+            $PACKAGE_MGR_BIN remove -y sendmail sendmail-bin sendmail-base exim4 exim4-base exim4-daemon-light exim4-config 2>/dev/null || true
             echo "postfix postfix/mailname string ${SYSTEM_FQDN}" | debconf-set-selections
             echo "postfix postfix/main_mailer_type string 'Internet Site'" | debconf-set-selections
             ;;
@@ -3200,8 +3373,8 @@ install_postfix() {
     esac
 
     pkg_install postfix
-    # Mail client utilities — try several names (distro/version differ)
-    pkg_install_one_by_one mailutils bsd-mailx s-nail mailx
+    # Mail client utilities — mapped per distro so install logs stay clean
+    [ -n "${PACKAGES_DISTRO_MAIL_CLIENT}" ] && pkg_install_one_by_one $PACKAGES_DISTRO_MAIL_CLIENT
 
     svc_enable postfix
     svc_start  postfix
@@ -3889,7 +4062,7 @@ FLITEEOF
 install_gtts() {
     step "🗣️  Installing gTTS (Google Text-to-Speech)..."
 
-    pkg_install_one_by_one python3-pip jq libsox-fmt-all
+    pkg_install_one_by_one python3-pip jq $PACKAGES_DISTRO_MEDIA_OPT
 
     # Debian 12+ uses PEP 668 (externally-managed-environment); need --break-system-packages
     run_logged "pip: install gTTS" bash -c '
@@ -4632,9 +4805,8 @@ configure_firewall() {
         done
         firewall-cmd --permanent --add-port=10000-20000/udp 2>/dev/null || true
         # Allow ICMP (ping) for monitoring
-        firewall-cmd --permanent --add-icmp-block-inversion 2>/dev/null || true
         firewall-cmd --permanent --remove-icmp-block=echo-request 2>/dev/null || true
-        firewall-cmd --permanent --add-rich-rule='rule protocol value="icmp" accept' 2>/dev/null || true
+        firewall-cmd --permanent --remove-icmp-block=echo-reply 2>/dev/null || true
         firewall-cmd --reload 2>/dev/null || true
         success "firewalld configured"
     elif command_exists ufw; then
@@ -4646,8 +4818,16 @@ configure_firewall() {
         ufw allow 5061/tcp 2>/dev/null || true
         ufw allow 4569/udp 2>/dev/null || true
         ufw allow 10000:20000/udp 2>/dev/null || true
-        # Allow ICMP (ping) for monitoring — ufw blocks ping by default when INPUT is DROP
-        ufw allow proto icmp 2>/dev/null || true
+        # Allow ICMP (ping) for monitoring — UFW needs before.rules entries, not
+        # "ufw allow proto icmp".
+        if [ -f /etc/ufw/before.rules ] && ! grep -q "PBX ICMP allow" /etc/ufw/before.rules 2>/dev/null; then
+            backup_config /etc/ufw/before.rules
+            sed -i '/^COMMIT$/i # PBX ICMP allow\n-A ufw-before-input -p icmp --icmp-type echo-request -j ACCEPT\n-A ufw-before-input -p icmp --icmp-type echo-reply -j ACCEPT\n-A ufw-before-input -p icmp --icmp-type destination-unreachable -j ACCEPT\n-A ufw-before-input -p icmp --icmp-type time-exceeded -j ACCEPT\n' /etc/ufw/before.rules 2>/dev/null || true
+        fi
+        if [ -f /etc/ufw/before6.rules ] && ! grep -q "PBX ICMPv6 allow" /etc/ufw/before6.rules 2>/dev/null; then
+            backup_config /etc/ufw/before6.rules
+            sed -i '/^COMMIT$/i # PBX ICMPv6 allow\n-A ufw6-before-input -p ipv6-icmp -j ACCEPT\n' /etc/ufw/before6.rules 2>/dev/null || true
+        fi
         ufw reload 2>/dev/null || true
         success "ufw configured"
     else
@@ -4664,7 +4844,7 @@ configure_iptables() {
     [ "${FIREWALL_ENABLED}" -ne 1 ] && return 0
 
     local server_ip user_ip public_ip
-    server_ip="${PRIVATE_IP:-}"
+    server_ip="${PRIMARY_IP:-}"
     [ -z "${server_ip}" ] && server_ip=$(ip -4 route get 8.8.8.8 2>/dev/null \
         | awk '/src/{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}') || true
     user_ip=$(echo "${SSH_CONNECTION:-}" | cut -f1 -d" " 2>/dev/null || echo "")
@@ -4724,28 +4904,31 @@ IPTEOF
 }
 
 # =============================================================================
-# SECTION 31: DISABLE IPv6
+# SECTION 31: IPv6 HANDLING
 # =============================================================================
 
-disable_ipv6() {
-    step "🔧 Disabling IPv6..."
+configure_ipv6() {
+    if [ "${DISABLE_IPV6:-no}" = "yes" ]; then
+        step "Disabling IPv6 (DISABLE_IPV6=yes)..."
 
-    if ! grep -q "disable_ipv6" /etc/sysctl.conf 2>/dev/null; then
-        backup_config /etc/sysctl.conf
-        cat >> /etc/sysctl.conf << 'SYSCTLEOF'
+        if ! grep -q "disable_ipv6" /etc/sysctl.conf 2>/dev/null; then
+            backup_config /etc/sysctl.conf
+            cat >> /etc/sysctl.conf << 'SYSCTLEOF'
 # Disable IPv6 (PBX installer)
 net.ipv6.conf.all.disable_ipv6     = 1
 net.ipv6.conf.default.disable_ipv6 = 1
 net.ipv6.conf.lo.disable_ipv6      = 1
 SYSCTLEOF
-        sysctl -p 2>/dev/null || true
+            sysctl -p 2>/dev/null || true
+        fi
+
+        command_exists postconf && postconf -e "inet_protocols = ipv4" 2>/dev/null || true
+        success "IPv6 disabled"
+        return 0
     fi
 
-    # Postfix IPv4-only (if installed)
-    command_exists postconf \
-        && postconf -e "inet_protocols = ipv4" 2>/dev/null || true
-
-    success "IPv6 disabled"
+    info "Leaving IPv6 enabled (default) for dual-stack support"
+    command_exists postconf && postconf -e "inet_protocols = all" 2>/dev/null || true
 }
 
 # =============================================================================
@@ -5118,6 +5301,9 @@ fwconsole backup --backup-name="auto-${TIMESTAMP}" 2>/dev/null \
 
 # MySQL databases
 [ -f /etc/pbx/.env ] && . /etc/pbx/.env 2>/dev/null || true
+MYSQL_ROOT_PASSWORD_FILE="${MYSQL_ROOT_PASSWORD_FILE:-/etc/pbx/mysql_root_password}"
+[ -z "${MYSQL_ROOT_PASSWORD:-}" ] && [ -f "${MYSQL_ROOT_PASSWORD_FILE}" ] && \
+    MYSQL_ROOT_PASSWORD=$(tr -d '\r\n' < "${MYSQL_ROOT_PASSWORD_FILE}" 2>/dev/null)
 MYSQL_PASS="${MYSQL_ROOT_PASSWORD:-}"
 MYSQL_OPTS=""; [ -n "${MYSQL_PASS}" ] && MYSQL_OPTS="-p${MYSQL_PASS}"
 # shellcheck disable=SC2086
@@ -5227,11 +5413,11 @@ ENCNOTE
 }
 
 # =============================================================================
-# SECTION 38d: FOP2 FLASH OPERATOR PANEL (fop2)
+# SECTION 38d: FOP2 OPERATOR PANEL (HTML5)
 # =============================================================================
 
 install_fop2() {
-    step "📊 Installing FOP2 (Flash Operator Panel 2)..."
+    step "📊 Installing FOP2 operator panel (HTML5)..."
     skip_if_done fop2 && return 0
 
     local fop2_url="http://download.fop2.com/install_fop2.sh"
@@ -5290,6 +5476,21 @@ install_tftp() {
 
     local tftp_root="/var/lib/tftpboot"
     local tftp_svc=""
+    local tftp_user="tftp"
+    local tftp_group="tftp"
+
+    getent group "${tftp_group}" >/dev/null 2>&1 || {
+        getent group nogroup >/dev/null 2>&1 && tftp_group="nogroup" || tftp_group="root"
+    }
+
+    mkdir -p "${tftp_root}"/{yealink,polycom,grandstream,cisco,snom}
+    chmod 755 "${tftp_root}"
+    chmod 755 "${tftp_root}"/{yealink,polycom,grandstream,cisco,snom}
+    if id "${tftp_user}" >/dev/null 2>&1; then
+        chown -R "${tftp_user}:${tftp_group}" "${tftp_root}" 2>/dev/null || true
+        chmod 775 "${tftp_root}"
+        chmod 775 "${tftp_root}"/{yealink,polycom,grandstream,cisco,snom}
+    fi
 
     case "${DISTRO_FAMILY}" in
         debian)
@@ -5297,38 +5498,61 @@ install_tftp() {
             tftp_svc="tftpd-hpa"
             if [ -f /etc/default/tftpd-hpa ]; then
                 backup_config /etc/default/tftpd-hpa
-                cat > /etc/default/tftpd-hpa << TFTPEOF
+            fi
+            cat > /etc/default/tftpd-hpa << TFTPEOF
 TFTP_USERNAME="tftp"
 TFTP_DIRECTORY="${tftp_root}"
 TFTP_ADDRESS=":69"
 TFTP_OPTIONS="--secure --create"
 TFTPEOF
-            fi
-            svc_enable tftpd-hpa 2>/dev/null || true
-            svc_start  tftpd-hpa 2>/dev/null || true
+            svc_enable "${tftp_svc}"
+            svc_restart "${tftp_svc}"
             ;;
         rhel|fedora)
             pkg_install tftp-server
-            tftp_svc="tftp"
-            # RHEL/Fedora use tftp.socket (systemd socket activation)
-            if [ -f /usr/lib/systemd/system/tftp.service ]; then
-                # Override to use our tftp_root and allow file creation
-                mkdir -p /etc/systemd/system/tftp.service.d
-                cat > /etc/systemd/system/tftp.service.d/override.conf << 'TFTPOVR'
+            if [ "${INIT_SYSTEM}" = "systemd" ]; then
+                if [ -f /usr/lib/systemd/system/tftp.socket ] || [ -f /etc/systemd/system/tftp.socket ]; then
+                    tftp_svc="tftp.socket"
+                else
+                    tftp_svc="tftp"
+                fi
+                if [ -f /usr/lib/systemd/system/tftp.service ] || [ -f /etc/systemd/system/tftp.service ]; then
+                    mkdir -p /etc/systemd/system/tftp.service.d
+                    cat > /etc/systemd/system/tftp.service.d/override.conf << TFTPOVR
 [Service]
 ExecStart=
-ExecStart=/usr/sbin/in.tftpd -s /var/lib/tftpboot -c -p -u tftp
+ExecStart=/usr/sbin/in.tftpd -s ${tftp_root} -c -p -u ${tftp_user}
 TFTPOVR
-                svc_daemon_reload
+                    svc_daemon_reload
+                fi
+                svc_enable "${tftp_svc}"
+                svc_restart "${tftp_svc}"
+            else
+                pkg_install_one_by_one xinetd
+                tftp_svc="xinetd"
+                if [ -f /etc/xinetd.d/tftp ]; then
+                    backup_config /etc/xinetd.d/tftp
+                fi
+                cat > /etc/xinetd.d/tftp << TFTPXEOF
+service tftp
+{
+    socket_type     = dgram
+    protocol        = udp
+    wait            = yes
+    user            = ${tftp_user}
+    server          = /usr/sbin/in.tftpd
+    server_args     = -s ${tftp_root} -c -p
+    disable         = no
+    per_source      = 11
+    cps             = 100 2
+    flags           = IPv4
+}
+TFTPXEOF
+                chkconfig xinetd on 2>/dev/null || true
+                service xinetd restart 2>/dev/null || true
             fi
-            svc_enable tftp.socket 2>/dev/null || true
-            svc_start  tftp.socket 2>/dev/null || true
-            tftp_svc="tftp.socket"
             ;;
     esac
-
-    mkdir -p "${tftp_root}"/{yealink,polycom,grandstream,cisco,snom}
-    chmod 777 "${tftp_root}"   # TFTP needs world-writable for --create mode
 
     # Yealink global provisioning template
     cat > "${tftp_root}/yealink/y000000000000.cfg" << YLEOF
@@ -5343,12 +5567,12 @@ account.1.display_name = PBX Extension
 account.1.auth_name = 1000
 account.1.user_name = 1000
 account.1.password = CHANGEME
-account.1.sip_server.1.address = ${PRIVATE_IP}
+account.1.sip_server.1.address = ${PRIMARY_IP:-${EXTERNAL_IP}}
 account.1.sip_server.1.port = 5060
 account.1.transport = 0
 
 # Provisioning server (HTTP fallback)
-auto_provision.server.url = http://${PRIVATE_IP}/provisioning/
+auto_provision.server.url = http://${SYSTEM_FQDN:-${PRIMARY_IP:-${EXTERNAL_IP}}}/provisioning/
 YLEOF
 
     # Polycom placeholder
@@ -5365,7 +5589,10 @@ YLEOF
   />
 </PHONE_CONFIG>
 POLEOF
-    sed -i "s|PBX_IP|${PRIVATE_IP}|g" "${tftp_root}/polycom/000000000000.cfg"
+    sed -i "s|PBX_IP|${PRIMARY_IP:-${EXTERNAL_IP}}|g" "${tftp_root}/polycom/000000000000.cfg"
+    if id "${tftp_user}" >/dev/null 2>&1; then
+        chown -R "${tftp_user}:${tftp_group}" "${tftp_root}" 2>/dev/null || true
+    fi
 
     # Open TFTP port in firewall if iptables is active
     if iptables -L INPUT -n 2>/dev/null | grep -q "^Chain"; then
@@ -5389,6 +5616,11 @@ POLEOF
     # ufw
     if command_exists ufw && ufw status 2>/dev/null | grep -q "Status: active"; then
         ufw allow 69/udp 2>/dev/null || true
+    fi
+
+    if ! svc_active "${tftp_svc}"; then
+        error "TFTP service failed to start: ${tftp_svc}"
+        return 1
     fi
 
     mark_done tftp
@@ -5457,22 +5689,27 @@ RCLCRONEOF
 
 create_root_scripts() {
     step "📜 Creating root utility scripts..."
+    info "Creating ipchecker, admin-pw-change, sig-fix, and timezone-setup"
 
     # IP checker
     cat > /usr/local/bin/ipchecker << 'IPCEOF'
 #!/bin/bash
-# ipchecker — show current public and private IPs
-PRIV4=$(ip -4 route get 8.8.8.8 2>/dev/null \
+# ipchecker — show current primary, private, and public IPs
+PRIM4=$(ip -4 route get 8.8.8.8 2>/dev/null \
     | awk '/src/{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}') \
-    || PRIV4=$(ip -4 addr show scope global 2>/dev/null | awk '/inet /{split($2,a,"/"); print a[1]}' | head -1)
-PRIV6=$(ip -6 route get 2001:4860:4860::8888 2>/dev/null \
-    | awk '/src/{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}' | grep -v '^::1$') || PRIV6=""
+    || PRIM4=$(ip -4 addr show scope global 2>/dev/null | awk '/inet /{split($2,a,"/"); print a[1]}' | head -1)
+PRIM6=$(ip -6 route get 2001:4860:4860::8888 2>/dev/null \
+    | awk '/src/{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}' | grep -v '^::1$') || PRIM6=""
+case "${PRIM4:-}" in 10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[0-1].*) PRIV4="${PRIM4}" ;; *) PRIV4="" ;; esac
+case "${PRIM6,,}" in fc*|fd*) PRIV6="${PRIM6}" ;; *) PRIV6="" ;; esac
 PUB=$(curl -s4 --max-time 5 https://ifconfig.me 2>/dev/null \
     || curl -s4 --max-time 5 https://api.ipify.org 2>/dev/null \
     || curl -s4 --max-time 5 https://icanhazip.com 2>/dev/null || echo "unknown")
 [ -z "${PUB}" ] || [ "${PUB}" = "unknown" ] && \
     PUB=$(curl -s6 --max-time 5 https://ifconfig.me 2>/dev/null || echo "unknown")
-printf 'Private IPv4 : %s\n' "${PRIV4:-unknown}"
+printf 'Primary IPv4 : %s\n' "${PRIM4:-unknown}"
+[ -n "${PRIV4}" ] && printf 'Private IPv4 : %s\n' "${PRIV4}"
+[ -n "${PRIM6}" ] && printf 'Primary IPv6 : %s\n' "${PRIM6}"
 [ -n "${PRIV6}" ] && printf 'Private IPv6 : %s\n' "${PRIV6}"
 printf 'Public  IP   : %s\n' "${PUB:-unknown}"
 IPCEOF
@@ -5481,9 +5718,12 @@ IPCEOF
     # admin-pw-change — change FreePBX admin password
     cat > /usr/local/bin/admin-pw-change << 'APWEOF'
 #!/bin/bash
-echo "Changing FreePBX admin password..."
+ENV_FILE="/etc/pbx/.env"
+FREEPBX_ADMIN_USERNAME="administrator"
+[ -f "${ENV_FILE}" ] && source "${ENV_FILE}" 2>/dev/null || true
+echo "Changing FreePBX admin password for ${FREEPBX_ADMIN_USERNAME}..."
 read -rsp "New password: " PW; echo
-fwconsole userman --update --username=admin --password="${PW}" 2>/dev/null \
+fwconsole userman --update --username="${FREEPBX_ADMIN_USERNAME}" --password="${PW}" 2>/dev/null \
     || echo "fwconsole not available — update in FreePBX GUI"
 echo "Password updated"
 APWEOF
@@ -5542,7 +5782,7 @@ syntax on
 VIMEOF
     fi
 
-    success "Root scripts created"
+    success "Root utility scripts created"
 }
 
 # =============================================================================
@@ -5560,11 +5800,12 @@ install_asteridex() {
 
     cd "${WORK_DIR}"
     if download_file \
-        "https://sourceforge.net/projects/asteridex/files/latest/download" \
-        asteridex.tar.gz 60 2>/dev/null; then
-        tar -xzf asteridex.tar.gz 2>/dev/null || true
+        "https://bestof.nerdvittles.com/applications/asteridex4/asteridex4.zip" \
+        asteridex4.zip 60 2>/dev/null; then
+        rm -rf "${WORK_DIR}/asteridex4" "${WORK_DIR}/asteridex"
+        unzip -oq asteridex4.zip >/dev/null 2>&1 || true
         local adir
-        adir=$(ls -d "${WORK_DIR}"/asteridex*/ 2>/dev/null | head -1 || true)
+        adir=$(ls -d "${WORK_DIR}"/asteridex4 "${WORK_DIR}"/asteridex "${WORK_DIR}"/asteridex*/ 2>/dev/null | head -1 || true)
         if [ -d "${adir:-}" ]; then
             mv "${adir}" "${asteridex_dir}"
             chown -R "${APACHE_USER}":"${APACHE_GROUP}" "${asteridex_dir}"
@@ -5891,12 +6132,13 @@ set -u
 # Service status
 # ---------------------------------------------------------------------------
 CORE_SERVICES=(asterisk mariadb mysql httpd apache2)
-ALL_SERVICES=(asterisk freepbx mariadb mysql httpd apache2 php-fpm php8.2-fpm php7.4-fpm fail2ban postfix hylafax iaxmodem webmin tftp tftpd-hpa)
+ALL_SERVICES=(asterisk freepbx mariadb mysql httpd apache2 php-fpm php8.2-fpm php7.4-fpm fail2ban postfix hylafax iaxmodem webmin tftp tftpd-hpa tftp.socket xinetd)
 declare -A SVC_STATUS
 overall="ok"
 
 for svc in "${ALL_SERVICES[@]}"; do
-    state=$(systemctl is-active "${svc}" 2>/dev/null || echo "inactive")
+    state=$(systemctl is-active "${svc}" 2>/dev/null || true)
+    [ -n "${state}" ] || state="inactive"
     [ "${state}" = "active" ] && SVC_STATUS["${svc}"]="running" || SVC_STATUS["${svc}"]="${state}"
 done
 
@@ -5963,7 +6205,7 @@ feat_fax="false"; systemctl is-active hylafax >/dev/null 2>&1 && feat_fax="true"
 feat_tts="false"; command -v flite >/dev/null 2>&1 && feat_tts="true"
 feat_festival="false"; command -v festival >/dev/null 2>&1 && feat_festival="true"
 feat_webmin="false"; systemctl is-active webmin >/dev/null 2>&1 && feat_webmin="true"
-feat_tftp="false"; { systemctl is-active tftpd-hpa >/dev/null 2>&1 || systemctl is-active tftp.socket >/dev/null 2>&1; } && feat_tftp="true"
+feat_tftp="false"; { systemctl is-active tftpd-hpa >/dev/null 2>&1 || systemctl is-active tftp.socket >/dev/null 2>&1 || systemctl is-active tftp >/dev/null 2>&1 || systemctl is-active xinetd >/dev/null 2>&1; } && feat_tftp="true"
 feat_fail2ban="false"; systemctl is-active fail2ban >/dev/null 2>&1 && feat_fail2ban="true"
 
 # ---------------------------------------------------------------------------
@@ -6284,6 +6526,9 @@ finalize_installation() {
         [ -d "$sess_dir" ] && chown asterisk:asterisk "$sess_dir" 2>/dev/null || true
     done
     fwconsole chown  2>/dev/null || true
+    chmod 755 /var/lib/asterisk/bin/fwconsole /usr/sbin/fwconsole 2>/dev/null || true
+    chmod +x /var/lib/asterisk/agi-bin/*.agi /var/lib/asterisk/agi-bin/*.sh \
+             /var/lib/asterisk/agi-bin/*.py /var/lib/asterisk/agi-bin/*.php 2>/dev/null || true
     fwconsole reload --skip-registry-checks 2>/dev/null || true
     # Ensure pbx_config.so (dialplan) is loaded after FreePBX generates configs
     asterisk -rx "module load pbx_config.so" 2>/dev/null || true
@@ -6328,7 +6573,7 @@ SVCEOF
     # Append extended credential info to passwords file
     {
         echo "WEBMIN_URL=https://${SYSTEM_FQDN}:9001/"
-        echo "AVANTFAX_ADMIN=admin"
+        echo "AVANTFAX_ADMIN=${AVANTFAX_ADMIN_USERNAME}"
         echo "AVANTFAX_URL=http://${SYSTEM_FQDN}/avantfax/"
         echo "FREEPBX_URL=http://${SYSTEM_FQDN}/admin/"
     } >> "${AUTO_PASSWORDS_FILE}" 2>/dev/null || true
@@ -6523,8 +6768,10 @@ show_completion_message() {
     echo "${GREEN}╚══════════════════════════════════════════════════════════════════╝${NC}"
     echo ""
     echo "${CYAN}  System Information:${NC}"
-    echo "    Private IP  : ${PRIVATE_IP}"
-    echo "    Public IP   : ${PUBLIC_IP}"
+    echo "    Primary IPv4: ${PRIMARY_IP:-n/a}"
+    echo "    Public IPv4 : ${PUBLIC_IP:-n/a}"
+    [ -n "${PRIMARY_IP6:-}" ] && echo "    Primary IPv6: ${PRIMARY_IP6}"
+    [ -n "${PUBLIC_IP6:-}" ] && echo "    Public IPv6 : ${PUBLIC_IP6}"
     echo "    FQDN        : ${SYSTEM_FQDN}"
     echo ""
     if [ "${BEHIND_PROXY:-no}" = "yes" ]; then
@@ -6540,11 +6787,11 @@ show_completion_message() {
     echo "    Webmin      : https://${SYSTEM_FQDN:-${PUBLIC_IP}}:9001"
     echo ""
     echo "${CYAN}  Credentials (also saved in /etc/pbx/pbx_passwords):${NC}"
-    echo "    FreePBX Admin  : user=${FREEPBX_ADMIN_USERNAME}  password=${ADMIN_PASSWORD}"
-    echo "    AvantFax Admin : user=${AVANTFAX_ADMIN_USERNAME}  password=${AVANTFAX_ADMIN_PASSWORD}"
-    echo "    Reminder/CC    : user=${FREEPBX_ADMIN_USERNAME}  password=${ADMIN_PASSWORD}"
-    echo "    MySQL root     : password=${MYSQL_ROOT_PASSWORD}"
-    echo "    Webmin (9001)  : user=root  (set password with: passwd root)"
+    echo "    FreePBX Admin  : User: ${ADMIN_USERNAME}  Pass: ${ADMIN_PASSWORD}"
+    echo "    AvantFax Admin : User: ${AVANTFAX_ADMIN_USERNAME}  Pass: ${AVANTFAX_ADMIN_PASSWORD}"
+    echo "    Reminder/CC    : User: ${ADMIN_USERNAME}  Pass: ${ADMIN_PASSWORD}"
+    echo "    MySQL root     : User: root  Pass: ${MYSQL_ROOT_PASSWORD}"
+    echo "    Webmin (9001)  : User: root  Pass: set with: passwd root"
     echo ""
     echo "${CYAN}  Installed Components:${NC}"
     echo "    Asterisk ${ASTERISK_VERSION} | FreePBX ${FREEPBX_VERSION} | PHP ${PHP_VERSION} | MariaDB"
@@ -6581,7 +6828,10 @@ show_completion_message() {
             echo "PBX v3.0 Installation Complete"
             echo ""
             echo "Server: $(hostname -f 2>/dev/null || hostname)"
-            echo "IP: ${PRIVATE_IP} / ${PUBLIC_IP}"
+            echo "Primary IPv4: ${PRIMARY_IP:-n/a}"
+            echo "Public IPv4: ${PUBLIC_IP:-n/a}"
+            [ -n "${PRIMARY_IP6:-}" ] && echo "Primary IPv6: ${PRIMARY_IP6}"
+            [ -n "${PUBLIC_IP6:-}" ] && echo "Public IPv6: ${PUBLIC_IP6}"
             echo ""
             cat "${AUTO_PASSWORDS_FILE}" 2>/dev/null
         } | mail -s "[PBX] Installation Complete on $(hostname)" \
@@ -6608,15 +6858,22 @@ run_installation() {
     # Preserve any user-supplied credential env vars BEFORE load_pbx_env sources /etc/pbx/.env,
     # which would otherwise overwrite them with previously-stored values.
     local _pre_admin_pw="${ADMIN_PASSWORD:-}"
+    local _pre_admin_user="${ADMIN_USERNAME:-${FREEPBX_ADMIN_USERNAME:-${FREEPBX_ADMIN_USER:-}}}"
     local _pre_mysql_pw="${MYSQL_ROOT_PASSWORD:-}"
     local _pre_fpbx_user="${FREEPBX_ADMIN_USERNAME:-}"
+    local _pre_avantfax_user="${AVANTFAX_ADMIN_USERNAME:-}"
+    local _pre_avantfax_pw="${AVANTFAX_ADMIN_PASSWORD:-}"
 
     load_pbx_env
 
     # Restore user-supplied values so they take priority over stored .env values
-    [ -n "${_pre_admin_pw}" ]   && ADMIN_PASSWORD="${_pre_admin_pw}"
-    [ -n "${_pre_mysql_pw}" ]   && MYSQL_ROOT_PASSWORD="${_pre_mysql_pw}"
-    [ -n "${_pre_fpbx_user}" ]  && FREEPBX_ADMIN_USERNAME="${_pre_fpbx_user}"
+    [ -n "${_pre_admin_pw}" ]      && ADMIN_PASSWORD="${_pre_admin_pw}"
+    [ -n "${_pre_admin_user}" ]    && ADMIN_USERNAME="${_pre_admin_user}"
+    [ -n "${_pre_mysql_pw}" ]      && MYSQL_ROOT_PASSWORD="${_pre_mysql_pw}"
+    [ -n "${_pre_fpbx_user}" ]     && FREEPBX_ADMIN_USERNAME="${_pre_fpbx_user}"
+    [ -n "${_pre_avantfax_user}" ] && AVANTFAX_ADMIN_USERNAME="${_pre_avantfax_user}"
+    [ -n "${_pre_avantfax_pw}" ]   && AVANTFAX_ADMIN_PASSWORD="${_pre_avantfax_pw}"
+    normalize_admin_vars
 
     setup_dns
     prepare_system
@@ -6631,7 +6888,7 @@ run_installation() {
     install_apache
     configure_odbc
     configure_letsencrypt_integration
-    [ "${IS_CONTAINER:-0}" = "0" ] && disable_ipv6 || true
+    [ "${IS_CONTAINER:-0}" = "0" ] && configure_ipv6 || true
 
     # Phase 4: PBX core
     install_asterisk
@@ -6777,14 +7034,17 @@ PBX Installer v3.0 — Production Asterisk + FreePBX installer
 Supports: AlmaLinux/Rocky/RHEL/Oracle 8-9, Fedora 35+, Ubuntu 18+, Debian 10+, CentOS 6/7
 
 USAGE:
-  ./install.sh [command]
+  ./install.sh [install|status|fix|update-scripts|--help]
 
 COMMANDS:
   install          Run full installation (default)
   status           Show installed components, versions, service health
   fix              Repair: restart failed services, fwconsole reload, fix permissions
   update-scripts   Re-sync all pbx-* scripts from GitHub (no install steps)
-  help             Show this help message
+
+OPTIONS:
+  --help           Show this help message (-h and help are accepted aliases)
+  --version        Show installer version (-V accepted)
 
 ENVIRONMENT VARIABLES:
   TIMEZONE               System timezone (default: America/New_York)
@@ -6800,12 +7060,13 @@ ENVIRONMENT VARIABLES:
   INSTALL_WEBMIN         yes/no — override profile default
   INSTALL_KNOCKD         yes/no — port knocking (advanced only by default)
   INSTALL_OPENVPN        yes/no — OpenVPN (advanced only by default)
-  INSTALL_FOP2           yes/no — Flash Operator Panel 2 (advanced only)
+  INSTALL_FOP2           yes/no — FOP2 operator panel (HTML5, advanced only)
   INSTALL_SNGREP         yes/no — SIP traffic monitor (advanced only)
-  MYSQL_ROOT_PASSWORD    Pre-set MySQL root password (auto-generated if empty)
+  MYSQL_ROOT_PASSWORD    Pre-set MySQL root password (auto-generated if empty, then stored in /etc/pbx/mysql_root_password)
+  ADMIN_USERNAME         Unified admin username for FreePBX and shared web tools (default: administrator)
   ADMIN_PASSWORD         Unified admin UI password — FreePBX, Reminder, CallCenter (auto-generated if empty)
-  FREEPBX_ADMIN_USERNAME FreePBX GUI admin username (default: admin)
-  AVANTFAX_ADMIN_USERNAME AvantFax web UI admin username (default: admin)
+  FREEPBX_ADMIN_USERNAME Compatibility alias for ADMIN_USERNAME
+  AVANTFAX_ADMIN_USERNAME AvantFax web UI admin username (default: ADMIN_USERNAME)
   AVANTFAX_ADMIN_PASSWORD AvantFax web UI admin password (default: ADMIN_PASSWORD)
   FAX_TO_EMAIL_ADDRESS   Email address to forward received faxes to (default: ADMIN_EMAIL)
   FAX_FROM_EMAIL         From address for fax notification emails (default: FROM_EMAIL)
@@ -6858,6 +7119,9 @@ case "${1:-install}" in
         setup_output
         sync_management_scripts
         ;;
+    --version|-V)
+        printf "install.sh v%s\n" "${SCRIPT_VERSION}"
+        ;;
     help|--help|-h)
         show_help
         ;;
@@ -6867,4 +7131,3 @@ case "${1:-install}" in
         exit 1
         ;;
 esac
-

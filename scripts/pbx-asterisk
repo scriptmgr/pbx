@@ -1,5 +1,10 @@
 #!/bin/bash
 set -euo pipefail
+
+SCRIPT_VERSION="${SCRIPT_VERSION:-3.0}"
+case "${1:-}" in
+    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${SCRIPT_VERSION}"; exit 0 ;;
+esac
 if [ -n "${NO_COLOR+x}" ] || [ ! -t 1 ] || [ "${TERM:-}" = "dumb" ] || [ "${CI:-}" = "true" ]; then
     RED=""; GREEN=""; YELLOW=""; BLUE=""; CYAN=""; BOLD=""; NC=""
 else
@@ -27,7 +32,8 @@ usage() {
     printf "  --calls          Show active calls (concise)\n"
     printf "  --log LEVEL      Set verbose log level\n"
     printf "  --upgrade VER    Upgrade Asterisk to VERSION\n"
-    printf "  --help/-h        Show help\n"; exit 0
+    printf "  --help (alias: -h)        Show help
+  --version (alias: -V)  Show version\n"; exit 0
 }
 
 need_ast() { command -v asterisk >/dev/null 2>&1 || { err "Asterisk not found"; exit 1; }; }

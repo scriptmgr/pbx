@@ -1,5 +1,10 @@
 #!/bin/bash
 set -euo pipefail
+
+SCRIPT_VERSION="${SCRIPT_VERSION:-3.0}"
+case "${1:-}" in
+    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${SCRIPT_VERSION}"; exit 0 ;;
+esac
 if [ -n "${NO_COLOR+x}" ] || [ ! -t 1 ] || [ "${TERM:-}" = "dumb" ] || [ "${CI:-}" = "true" ]; then
     RED=""; GREEN=""; YELLOW=""; BLUE=""; CYAN=""; BOLD=""; NC=""
 else
@@ -22,7 +27,8 @@ DRY_RUN=0; AGGRESSIVE=0
 usage() {
     printf "Usage: pbx-cleanup [--dry-run] [--aggressive]\n\nClean up old backup files and logs.\n\nOptions:\n"
     printf "  --dry-run    Preview without deleting\n"
-    printf "  --aggressive Remove files older than 7 days\n  --help/-h    Show help\n"; exit 0
+    printf "  --aggressive Remove files older than 7 days\n  --help (alias: -h)    Show help
+  --version (alias: -V)  Show version\n"; exit 0
 }
 for arg in "$@"; do case "$arg" in
     --help|-h) usage ;; --dry-run) DRY_RUN=1 ;; --aggressive) AGGRESSIVE=1 ;;

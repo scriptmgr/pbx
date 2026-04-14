@@ -2,10 +2,15 @@
 # pbx-status — PBX system status dashboard
 set -euo pipefail
 
+SCRIPT_VERSION="${SCRIPT_VERSION:-3.0}"
+case "${1:-}" in
+    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${SCRIPT_VERSION}"; exit 0 ;;
+esac
+
 # ── Usage ──────────────────────────────────────────────────────────────────────
 case "${1:-}" in
     --help|-h)
-        printf 'Usage: pbx-status\n\nDisplay a formatted PBX system status dashboard.\n\nOptions:\n  --help, -h   Show this help\n'
+        printf 'Usage: pbx-status [--help] [--version]\n\nDisplay a formatted PBX system status dashboard with service health,\nactive calls, endpoint counts, resource usage, and primary web URLs.\n\nOptions:\n  --help (alias: -h)     Show help\n  --version (alias: -V)  Show version\n'
         exit 0
         ;;
 esac
@@ -51,8 +56,9 @@ _badge() {
     esac
 }
 
-# Cache unit-file list once to avoid repeated systemctl calls
+# Cache unit-file lists once to avoid repeated systemctl calls
 _UNITS=$(systemctl list-unit-files --type=service 2>/dev/null || true)
+_SOCKET_UNITS=$(systemctl list-unit-files --type=socket 2>/dev/null || true)
 
 svc_row() {
     local svc="$1" extra="${2:-}" state installed=0
@@ -88,6 +94,18 @@ _fpm='php-fpm'
 for _s in php8.2-fpm php8.1-fpm php8.0-fpm php-fpm; do
     printf '%s\n' "$_UNITS" | grep -q "^${_s}\.service" && { _fpm="$_s"; break; } || true
 done
+
+# Detect TFTP service/socket name
+_tftp=''
+if printf '%s\n' "$_UNITS" | grep -q '^tftpd-hpa\.service'; then
+    _tftp='tftpd-hpa'
+elif printf '%s\n' "$_SOCKET_UNITS" | grep -q '^tftp\.socket'; then
+    _tftp='tftp.socket'
+elif printf '%s\n' "$_UNITS" | grep -q '^tftp\.service'; then
+    _tftp='tftp'
+elif printf '%s\n' "$_UNITS" | grep -q '^xinetd\.service'; then
+    _tftp='xinetd'
+fi
 
 # ── Gather system data ─────────────────────────────────────────────────────────
 HOSTNAME_FQDN="$(hostname -f 2>/dev/null || hostname)"
@@ -167,7 +185,7 @@ svc_row "$_fpm"
 svc_row "fail2ban"
 svc_row "postfix"
 svc_row "hylafax"
-svc_row "tftpd-hpa"
+[ -n "$_tftp" ] && svc_row "$_tftp"
 
 # TELEPHONY
 section "TELEPHONY"

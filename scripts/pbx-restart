@@ -1,5 +1,10 @@
 #!/bin/bash
 set -euo pipefail
+
+SCRIPT_VERSION="${SCRIPT_VERSION:-3.0}"
+case "${1:-}" in
+    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${SCRIPT_VERSION}"; exit 0 ;;
+esac
 if [ -n "${NO_COLOR+x}" ] || [ ! -t 1 ] || [ "${TERM:-}" = "dumb" ] || [ "${CI:-}" = "true" ]; then
     RED=""; GREEN=""; YELLOW=""; BLUE=""; CYAN=""; BOLD=""; NC=""
 else
@@ -18,7 +23,8 @@ hdr()  { printf "\n${BOLD}%s${NC}\n" "$*"; }
 
 usage() {
     printf "Usage: pbx-restart [--force] [--dry-run]\n\nSafely restart PBX services.\n\nOptions:\n"
-    printf "  --force     Skip confirmation\n  --dry-run   Show what would be done without doing it\n  --help/-h   Show help\n"; exit 0
+    printf "  --force     Skip confirmation\n  --dry-run   Show what would be done without doing it\n  --help (alias: -h)   Show help
+  --version (alias: -V)  Show version\n"; exit 0
 }
 FORCE=0; DRY=0
 case "${1:-}" in --help|-h) usage ;; --force) FORCE=1 ;; --dry-run) DRY=1 ;; esac
