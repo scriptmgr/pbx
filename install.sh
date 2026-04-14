@@ -110,7 +110,7 @@ PACKAGE_MANAGER=""          # always mirrors PACKAGE_MGR_BIN
 
 # Packages with IDENTICAL names on every supported distro — no mapping needed.
 # These are appended per-section; the variable is a convenient prefix.
-PACKAGES_GLOBAL="tar curl wget git vim nano screen tmux htop unzip zip bzip2 net-tools tcpdump sox mpg123 ghostscript fail2ban dialog"
+PACKAGES_GLOBAL="tar curl wget git vim nano screen tmux htop unzip zip bzip2 net-tools tcpdump sox mpg123 ghostscript fail2ban dialog openssl file"
 
 # Distro-specific package groups — all populated by setup_pkg_map().
 # Install functions use these instead of inline case/esac blocks.
@@ -594,7 +594,7 @@ setup_pkg_map() {
             PACKAGES_DISTRO_MAIL_CLIENT="bsd-mailx"
             PACKAGES_DISTRO_MARIADB="mariadb-server mariadb-client"
             PACKAGES_DISTRO_PYTHON="python3-dev python3-pip"
-            PACKAGES_DISTRO_NODE="nodejs npm"
+            PACKAGES_DISTRO_NODE="nodejs"
             PACKAGES_DISTRO_SYSTEM="chrony pkg-config iptables-persistent cron"
             PACKAGES_DISTRO_KNOCKD="knockd"
             PACKAGES_DISTRO_FAX="hylafax-server iaxmodem"
@@ -621,7 +621,7 @@ setup_pkg_map() {
             APACHE_GROUP="apache"
 
             PACKAGES_DISTRO_BUILD="gcc gcc-c++ make cmake autoconf automake libtool bison flex doxygen ImageMagick patch"
-            PACKAGES_DISTRO_ASTERISK_DEPS="openssl-devel libxml2-devel libxslt-devel sqlite-devel sqlite libuuid-devel ncurses-devel newt-devel jansson-devel libcurl-devel libsrtp-devel speex-devel speexdsp-devel alsa-lib-devel libogg-devel libvorbis-devel libtiff-devel libpng-devel libjpeg-devel libicu-devel openldap-devel readline-devel libedit-devel libgd-devel pkgconf-pkg-config pkgconf"
+            PACKAGES_DISTRO_ASTERISK_DEPS="openssl-devel libxml2-devel libxslt-devel sqlite-devel sqlite libuuid-devel ncurses-devel newt-devel jansson-devel libcurl-devel libsrtp-devel speex-devel speexdsp-devel alsa-lib-devel libogg-devel libvorbis-devel libtiff-devel libpng-devel libjpeg-devel libicu-devel openldap-devel readline-devel libedit-devel gd-devel pkgconf-pkg-config pkgconf"
             PACKAGES_DISTRO_WEBSERVER="httpd httpd-tools"
             PACKAGES_DISTRO_WEBSERVER_OPT="mod_ssl mod_proxy_html"
             PACKAGES_DISTRO_PHP="php php-fpm php-cli php-common php-mysqlnd php-gd php-xml php-curl php-zip php-mbstring php-intl php-bcmath php-opcache php-soap php-ldap php-imap php-process php-pdo php-pear"
@@ -630,7 +630,7 @@ setup_pkg_map() {
             PACKAGES_DISTRO_MAIL_CLIENT="s-nail"
             PACKAGES_DISTRO_MARIADB="mariadb-server mariadb"
             PACKAGES_DISTRO_PYTHON="python3-devel python3-pip"
-            PACKAGES_DISTRO_NODE="nodejs npm"
+            PACKAGES_DISTRO_NODE="nodejs"
             PACKAGES_DISTRO_SYSTEM="chrony iptables-services cronie"
             PACKAGES_DISTRO_KNOCKD="knock-server"
             PACKAGES_DISTRO_FAX="hylafax+"
@@ -917,6 +917,80 @@ normalize_admin_vars() {
     return 0
 }
 
+ensure_freepbx_gui_admin_user() {
+    local username="$1" password="$2" email="${3:-admin@localhost}"
+    [ -f /etc/freepbx.conf ] || return 0
+    php - "$username" "$password" "$email" <<'PHP'
+<?php
+require '/etc/freepbx.conf';
+
+$username = $argv[1] ?? '';
+$password = $argv[2] ?? '';
+$email = $argv[3] ?? 'admin@localhost';
+
+if ($username === '' || $password === '') {
+    fwrite(STDERR, "Missing FreePBX GUI admin credentials\n");
+    exit(1);
+}
+
+$freepbx = FreePBX::create();
+$userman = $freepbx->Userman;
+$existing = $userman->getUserByUsername($username);
+$displayName = $username;
+$extraData = [
+    'email' => $email,
+    'displayname' => $displayName,
+    'fname' => 'PBX',
+    'lname' => 'Administrator',
+];
+
+if (!empty($existing['id'])) {
+    $uid = (int)$existing['id'];
+    $defaultExtension = !empty($existing['default_extension']) ? $existing['default_extension'] : 'none';
+    $result = $userman->updateUser($uid, $username, $username, $defaultExtension, 'PBX Administrator', $extraData, $password, true);
+} else {
+    $result = $userman->addUser($username, $password, 'none', 'PBX Administrator', $extraData, true);
+    $uid = (int)($result['id'] ?? 0);
+}
+
+if (empty($result['status']) || empty($uid)) {
+    $message = is_array($result) ? ($result['message'] ?? 'Unknown Userman failure') : 'Unknown Userman failure';
+    fwrite(STDERR, "Failed to sync FreePBX GUI admin user: {$message}\n");
+    exit(1);
+}
+
+$defaultGroups = $userman->getDefaultGroups();
+if (empty($defaultGroups)) {
+    $autoGroup = $userman->getAutoGroup();
+    if (!empty($autoGroup)) {
+        $defaultGroups = [(int)$autoGroup];
+    }
+}
+
+foreach ((array)$defaultGroups as $gid) {
+    $group = $userman->getGroupByGID($gid);
+    if (empty($group['id'])) {
+        continue;
+    }
+    $users = !empty($group['users']) && is_array($group['users']) ? $group['users'] : [];
+    if (!in_array($uid, $users, true)) {
+        $users[] = $uid;
+        $update = $userman->updateGroup((int)$group['id'], $group['groupname'], $group['groupname'], $group['description'] ?? null, $users, true);
+        if (empty($update['status'])) {
+            $message = is_array($update) ? ($update['message'] ?? 'Unknown group update failure') : 'Unknown group update failure';
+            fwrite(STDERR, "Failed to assign FreePBX GUI admin group: {$message}\n");
+            exit(1);
+        }
+    }
+}
+
+$userman->setGlobalSettingByID($uid, 'pbx_login', true);
+$userman->setGlobalSettingByID($uid, 'pbx_admin', true);
+$userman->setGlobalSettingByID($uid, 'pbx_modules', ['*']);
+$userman->setGlobalSettingByID($uid, 'pbx_landing', 'index');
+PHP
+}
+
 # ---------------------------------------------------------------------------
 # component_ok COMPONENT — live health check per component
 # Returns 0 if component is healthy, 1 if broken/missing
@@ -1142,7 +1216,7 @@ safe_restart_asterisk() {
     info "Restarting Asterisk..."
     # If FreePBX is available, prefer fwconsole restart
     if command_exists fwconsole; then
-        fwconsole restart 2>/dev/null || true
+        fwconsole restart >/dev/null 2>&1 || true
         sleep 3
         return 0
     fi
@@ -1905,12 +1979,12 @@ install_mariadb() {
 
     # Wait for socket to become available
     local retries=30
-    while ! mysqladmin ping --silent 2>/dev/null && [ "${retries}" -gt 0 ]; do
+    while ! mysqladmin ping --silent >/dev/null 2>&1 && [ "${retries}" -gt 0 ]; do
         sleep 2; retries=$((retries - 1))
     done
 
     # Secure MariaDB and set root password
-    if mysql -u root -e "SELECT 1;" 2>/dev/null; then
+    if mysql -u root -Nse "SELECT 1;" >/dev/null 2>&1; then
         info "Setting MariaDB root password..."
         mysql -u root << SQLEOF 2>/dev/null || true
 ALTER USER 'root'@'localhost' IDENTIFIED BY '${MYSQL_ROOT_PASSWORD}';
@@ -1920,7 +1994,7 @@ DROP DATABASE IF EXISTS test;
 DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';
 FLUSH PRIVILEGES;
 SQLEOF
-    elif mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "SELECT 1;" 2>/dev/null; then
+    elif mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -Nse "SELECT 1;" >/dev/null 2>&1; then
         info "MariaDB already secured"
     else
         warn "Could not access MariaDB - may need manual setup"
@@ -2933,8 +3007,15 @@ install_asterisk() {
     [ -d "${asterisk_dir:-}" ] || error "Asterisk source not found after extraction"
 
     cd "${asterisk_dir}"
-    [ -f contrib/scripts/install_prereq ] && \
-        run_logged "Asterisk prereqs" bash contrib/scripts/install_prereq install || true
+    if [ ! -x /usr/bin/file ] && command_exists file; then
+        mkdir -p /usr/bin 2>/dev/null || true
+        ln -sf "$(command -v file)" /usr/bin/file 2>/dev/null || true
+    fi
+    # We install Asterisk build dependencies ourselves via the distro package map.
+    # The bundled prereq helper pulls obsolete package names on modern distros.
+    if [ -f contrib/scripts/install_prereq ]; then
+        info "Skipping bundled Asterisk prereq helper — using mapped distro dependencies"
+    fi
 
     export CFLAGS="-DENABLE_SRTP_AES_256 -DENABLE_SRTP_AES_GCM"
     run_logged "Asterisk: configure" \
@@ -3323,24 +3404,18 @@ CFGPATCH
             svc_restart php8.1-fpm 2>/dev/null || true
     fi
 
-    fwconsole reload --skip-registry-checks 2>/dev/null || true
+    fwconsole reload --skip-registry-checks >/dev/null 2>&1 || true
     # fwconsole reload may fail on some distros (PHP null deprecation in Config.class.php)
     # but config files are written; ensure Asterisk picks them up with a direct reload.
     asterisk -rx "core reload" 2>/dev/null || true
     # pbx_config.so (dialplan loader) can fail to preload if extensions.conf didn't exist yet.
     # Force-load it after FreePBX has generated the config files.
-    asterisk -rx "module load pbx_config.so" 2>/dev/null || true
+    asterisk -rx "module load pbx_config.so" >/dev/null 2>&1 || true
 
-    # Set admin password via fwconsole userman (more reliable than direct SQL in FreePBX 17)
-    # This ensures the user exists with admin flag AND correct hashed password
-    if fwconsole userman --list 2>/dev/null | grep -q "${FREEPBX_ADMIN_USERNAME}"; then
-        fwconsole userman --update --username="${FREEPBX_ADMIN_USERNAME}" \
-            --password="${FREEPBX_ADMIN_PASSWORD}" 2>/dev/null || true
-    else
-        fwconsole userman --create --username="${FREEPBX_ADMIN_USERNAME}" \
-            --password="${FREEPBX_ADMIN_PASSWORD}" \
-            --email="admin@localhost" 2>/dev/null || true
-    fi
+    # FreePBX 17 authenticates GUI logins through User Management.
+    # Sync the admin account into Userman with full PBX admin rights.
+    ensure_freepbx_gui_admin_user "${FREEPBX_ADMIN_USERNAME}" "${FREEPBX_ADMIN_PASSWORD}" "admin@localhost" \
+        || warn "Failed to sync FreePBX GUI admin user in Userman"
     # Also ensure ampusers row has correct hash and full admin sections
     # In FreePBX 17, ampusers sections='all' grants full admin access to the GUI
     local pass_hash_new
@@ -5736,7 +5811,7 @@ APWEOF
 #!/bin/bash
 echo "Refreshing FreePBX module signatures..."
 fwconsole ma refreshsignatures 2>/dev/null || true
-fwconsole chown 2>/dev/null || true
+fwconsole chown >/dev/null 2>&1 || true
 echo "Done."
 SIGEOF
     chmod +x /usr/local/bin/sig-fix
@@ -6527,20 +6602,20 @@ finalize_installation() {
     for sess_dir in /var/lib/php/session /var/lib/php/sessions; do
         [ -d "$sess_dir" ] && chown asterisk:asterisk "$sess_dir" 2>/dev/null || true
     done
-    fwconsole chown  2>/dev/null || true
+    fwconsole chown >/dev/null 2>&1 || true
     chmod 755 /var/lib/asterisk/bin/fwconsole /usr/sbin/fwconsole 2>/dev/null || true
     chmod +x /var/lib/asterisk/agi-bin/*.agi /var/lib/asterisk/agi-bin/*.sh \
              /var/lib/asterisk/agi-bin/*.py /var/lib/asterisk/agi-bin/*.php 2>/dev/null || true
-    fwconsole reload --skip-registry-checks 2>/dev/null || true
+    fwconsole reload --skip-registry-checks >/dev/null 2>&1 || true
     # Ensure pbx_config.so (dialplan) is loaded after FreePBX generates configs
-    asterisk -rx "module load pbx_config.so" 2>/dev/null || true
+    asterisk -rx "module load pbx_config.so" >/dev/null 2>&1 || true
 
     # Add systemd override so pbx_config.so loads on every Asterisk start
     # (needed when preload fails because extensions.conf doesn't exist yet at boot)
     mkdir -p /etc/systemd/system/asterisk.service.d 2>/dev/null || true
     cat > /etc/systemd/system/asterisk.service.d/pbx_config_load.conf << 'SVCEOF'
 [Service]
-ExecStartPost=/bin/bash -c "sleep 3 && asterisk -rx 'module load pbx_config.so' 2>/dev/null || true"
+ExecStartPost=/bin/bash -c "sleep 3 && asterisk -rx 'module load pbx_config.so' >/dev/null 2>&1 || true"
 SVCEOF
     systemctl daemon-reload 2>/dev/null || true
 
@@ -6552,12 +6627,12 @@ SVCEOF
         local _apid
         _apid=$(pgrep -x asterisk 2>/dev/null || true)
         if [ -n "$_apid" ]; then
-            fwconsole stop 2>/dev/null || kill "$_apid" 2>/dev/null || true
+            fwconsole stop >/dev/null 2>&1 || kill "$_apid" 2>/dev/null || true
             sleep 3
             rm -f /var/run/asterisk/asterisk.ctl /run/asterisk/asterisk.ctl \
                   /var/run/asterisk/asterisk.pid  /run/asterisk/asterisk.pid
         fi
-        svc_start freepbx 2>/dev/null || fwconsole start 2>/dev/null || true
+        svc_start freepbx >/dev/null 2>&1 || fwconsole start >/dev/null 2>&1 || true
         sleep 5
     else
         safe_restart_asterisk
@@ -7020,8 +7095,8 @@ fix_installation() {
     done
     if command_exists fwconsole; then
         info "Running fwconsole chown + reload..."
-        fwconsole chown 2>/dev/null || true
-        fwconsole reload --skip-registry-checks 2>/dev/null && success "FreePBX reloaded" || warn "FreePBX reload had warnings"
+        fwconsole chown >/dev/null 2>&1 || true
+        fwconsole reload --skip-registry-checks >/dev/null 2>&1 && success "FreePBX reloaded" || warn "FreePBX reload had warnings"
     fi
     info "Fixing file permissions..."
     [ -d /etc/asterisk ]       && chown -R asterisk:asterisk /etc/asterisk 2>/dev/null || true
