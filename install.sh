@@ -938,11 +938,17 @@ normalize_admin_vars() {
     return 0
 }
 
+sql_escape() {
+    printf '%s' "${1:-}" | sed "s/'/''/g"
+}
+
 ensure_freepbx_gui_admin_user() {
     local username="$1" password="$2" email="${3:-admin@localhost}"
     [ -f /etc/freepbx.conf ] || return 0
-    php -- "$username" "$password" "$email" <<'PHP'
+    php /dev/stdin "$username" "$password" "$email" <<'PHP'
 <?php
+// Skip AMI connection — Userman is pure DB; avoids hang if Asterisk isn't ready yet.
+$bootstrap_settings = ['skip_astman' => true];
 require '/etc/freepbx.conf';
 
 $username = $argv[1] ?? '';
@@ -952,6 +958,54 @@ $email = $argv[3] ?? 'admin@localhost';
 if ($username === '' || $password === '') {
     fwrite(STDERR, "Missing FreePBX GUI admin credentials\n");
     exit(1);
+}
+
+ensure_freepbx_gui_admin_user_sql_fallback() {
+    local username="$1" password="$2" email="${3:-admin@localhost}"
+    local username_sql email_sql pw_hash_sql uid pw_hash
+    [ -n "${MYSQL_ROOT_PASSWORD:-}" ] || load_mysql_root_password
+    [ -n "${MYSQL_ROOT_PASSWORD:-}" ] || return 1
+
+    username_sql=$(sql_escape "${username}")
+    email_sql=$(sql_escape "${email}")
+    pw_hash=$(php -r 'echo password_hash($argv[1], PASSWORD_BCRYPT);' "${password}" 2>/dev/null || true)
+    [ -n "${pw_hash}" ] || return 1
+    pw_hash_sql=$(sql_escape "${pw_hash}")
+
+    uid=$(mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk -Nse \
+        "SELECT id FROM userman_users WHERE username='${username_sql}' ORDER BY id LIMIT 1" 2>/dev/null || true)
+
+    if [ -n "${uid}" ]; then
+        mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk 2>/dev/null <<EOF || return 1
+UPDATE userman_users
+SET auth='1',
+    description='PBX Administrator',
+    password='${pw_hash_sql}',
+    default_extension='none',
+    fname='PBX',
+    lname='Administrator',
+    displayname='${username_sql}',
+    email='${email_sql}'
+WHERE id=${uid};
+EOF
+    else
+        mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk 2>/dev/null <<EOF || return 1
+INSERT INTO userman_users (auth, username, description, password, default_extension, fname, lname, displayname, email)
+VALUES ('1', '${username_sql}', 'PBX Administrator', '${pw_hash_sql}', 'none', 'PBX', 'Administrator', '${username_sql}', '${email_sql}');
+EOF
+        uid=$(mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk -Nse \
+            "SELECT id FROM userman_users WHERE username='${username_sql}' ORDER BY id LIMIT 1" 2>/dev/null || true)
+        [ -n "${uid}" ] || return 1
+    fi
+
+    mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk 2>/dev/null <<EOF || return 1
+INSERT INTO userman_users_settings (uid, module, \`key\`, val, type) VALUES
+(${uid}, 'global', 'pbx_login', '1', NULL),
+(${uid}, 'global', 'pbx_admin', '1', NULL),
+(${uid}, 'global', 'pbx_modules', '["*"]', 'json-arr'),
+(${uid}, 'global', 'pbx_landing', 'index', NULL)
+ON DUPLICATE KEY UPDATE val=VALUES(val), type=VALUES(type);
+EOF
 }
 
 $freepbx = FreePBX::create();
@@ -3437,7 +3491,9 @@ CFGPATCH
     # FreePBX 17 authenticates GUI logins through User Management.
     # Sync the admin account into Userman with full PBX admin rights.
     ensure_freepbx_gui_admin_user "${FREEPBX_ADMIN_USERNAME}" "${FREEPBX_ADMIN_PASSWORD}" "admin@localhost" \
-        || warn "Failed to sync FreePBX GUI admin user in Userman"
+        || warn "Failed PHP Userman sync for FreePBX GUI admin"
+    ensure_freepbx_gui_admin_user_sql_fallback "${FREEPBX_ADMIN_USERNAME}" "${FREEPBX_ADMIN_PASSWORD}" "admin@localhost" \
+        || warn "Failed SQL fallback sync for FreePBX GUI admin"
     # Also ensure ampusers row has correct hash and full admin sections
     # In FreePBX 17, ampusers sections='all' grants full admin access to the GUI
     local pass_hash_new
@@ -5820,6 +5876,7 @@ IPCEOF
 ENV_FILE="/etc/pbx/.env"
 PASSWORDS_FILE="/etc/pbx/pbx_passwords"
 FREEPBX_ADMIN_USERNAME="administrator"
+sql_escape() { printf '%s' "$1" | sed "s/'/''/g"; }
 [ -f "${ENV_FILE}" ] && source "${ENV_FILE}" 2>/dev/null || true
 echo "Changing FreePBX admin password for ${FREEPBX_ADMIN_USERNAME}..."
 read -rsp "New password: " PW; echo
@@ -5836,8 +5893,9 @@ ON DUPLICATE KEY UPDATE password_sha1='${PASS_HASH}', sections='all', email='adm
 EOF
 fi
 if [ -f /etc/freepbx.conf ]; then
-    php -- "${FREEPBX_ADMIN_USERNAME}" "${PW}" "admin@localhost" <<'PHP'
+    php /dev/stdin "${FREEPBX_ADMIN_USERNAME}" "${PW}" "admin@localhost" <<'PHP'
 <?php
+$bootstrap_settings = ['skip_astman' => true];
 require '/etc/freepbx.conf';
 $username = $argv[1] ?? '';
 $password = $argv[2] ?? '';
@@ -5870,6 +5928,47 @@ if (!empty($uid)) {
     $userman->setGlobalSettingByID($uid, 'pbx_landing', 'index');
 }
 PHP
+fi
+if [ -n "${MYSQL_ROOT_PASSWORD}" ]; then
+    USERMAN_PW_HASH=$(php -r 'echo password_hash($argv[1], PASSWORD_BCRYPT);' "${PW}" 2>/dev/null || true)
+    if [ -n "${USERMAN_PW_HASH}" ]; then
+        USER_SQL=$(sql_escape "${FREEPBX_ADMIN_USERNAME}")
+        EMAIL_SQL=$(sql_escape "admin@localhost")
+        HASH_SQL=$(sql_escape "${USERMAN_PW_HASH}")
+        USERMAN_UID=$(mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk -Nse \
+            "SELECT id FROM userman_users WHERE username='${USER_SQL}' ORDER BY id LIMIT 1" 2>/dev/null || true)
+        if [ -n "${USERMAN_UID}" ]; then
+            mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk 2>/dev/null <<EOF || true
+UPDATE userman_users
+SET auth='1',
+    description='PBX Administrator',
+    password='${HASH_SQL}',
+    default_extension='none',
+    fname='PBX',
+    lname='Administrator',
+    displayname='${USER_SQL}',
+    email='${EMAIL_SQL}'
+WHERE id=${USERMAN_UID};
+EOF
+        else
+            mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk 2>/dev/null <<EOF || true
+INSERT INTO userman_users (auth, username, description, password, default_extension, fname, lname, displayname, email)
+VALUES ('1', '${USER_SQL}', 'PBX Administrator', '${HASH_SQL}', 'none', 'PBX', 'Administrator', '${USER_SQL}', '${EMAIL_SQL}');
+EOF
+            USERMAN_UID=$(mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk -Nse \
+                "SELECT id FROM userman_users WHERE username='${USER_SQL}' ORDER BY id LIMIT 1" 2>/dev/null || true)
+        fi
+        if [ -n "${USERMAN_UID}" ]; then
+            mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk 2>/dev/null <<EOF || true
+INSERT INTO userman_users_settings (uid, module, \`key\`, val, type) VALUES
+(${USERMAN_UID}, 'global', 'pbx_login', '1', NULL),
+(${USERMAN_UID}, 'global', 'pbx_admin', '1', NULL),
+(${USERMAN_UID}, 'global', 'pbx_modules', '["*"]', 'json-arr'),
+(${USERMAN_UID}, 'global', 'pbx_landing', 'index', NULL)
+ON DUPLICATE KEY UPDATE val=VALUES(val), type=VALUES(type);
+EOF
+        fi
+    fi
 fi
 if [ -f "${ENV_FILE}" ]; then
     if grep -q '^ADMIN_PASSWORD=' "${ENV_FILE}" 2>/dev/null; then
