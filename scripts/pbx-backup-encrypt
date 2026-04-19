@@ -23,6 +23,11 @@ hdr()  { printf "\n${BOLD}%s${NC}\n" "$*"; }
 [ -f /etc/pbx/.env ] && . /etc/pbx/.env
 [ "$(id -u)" -ne 0 ] && { err "Must run as root"; exit 1; }
 
+PBX_ETC_DIR="/etc/pbx"
+PBX_VAR_DIR="/var/lib/pbx"
+GPG_BATCH_DIR="${PBX_VAR_DIR}/tmp"
+PUBLIC_KEY_FILE="${PBX_ETC_DIR}/pbx-backup-key.pub"
+
 usage() {
     printf "Usage: pbx-backup-encrypt <command> [args]\n\n"
     printf "Manage GPG encryption for PBX backups.\n\n"
@@ -45,8 +50,10 @@ cmd_init() {
     hdr "Generating GPG key for backup encryption"
     KEYNAME="PBX Backup $(hostname -f 2>/dev/null || hostname)"
     KEYEMAIL="backup@$(hostname -f 2>/dev/null || hostname)"
-    # Write batch file to /root (never /tmp)
-    BATCH_FILE="/root/.pbx-gpg-batch"
+    mkdir -p "${PBX_ETC_DIR}" "${GPG_BATCH_DIR}"
+    chmod 700 "${GPG_BATCH_DIR}" 2>/dev/null || true
+    BATCH_FILE=$(mktemp "${GPG_BATCH_DIR}/pbx-gpg-batch.XXXXXX")
+    chmod 600 "${BATCH_FILE}" 2>/dev/null || true
     cat > "${BATCH_FILE}" << GPGBATCH
 %no-protection
 Key-Type: RSA
@@ -72,10 +79,11 @@ GPGBATCH
         err "Could not retrieve generated key ID"
         exit 1
     fi
-    gpg --armor --export "${KEY_ID}" > /root/pbx-backup-key.pub 2>/dev/null
-    ok "Public key exported: /root/pbx-backup-key.pub"
+    gpg --armor --export "${KEY_ID}" > "${PUBLIC_KEY_FILE}" 2>/dev/null
+    chmod 600 "${PUBLIC_KEY_FILE}" 2>/dev/null || true
+    ok "Public key exported: ${PUBLIC_KEY_FILE}"
     # Store key ID in /etc/pbx/.env
-    mkdir -p /etc/pbx
+    mkdir -p "${PBX_ETC_DIR}"
     if [ -f /etc/pbx/.env ]; then
         grep -v "^BACKUP_GPG_KEY=" /etc/pbx/.env > /etc/pbx/.env.new 2>/dev/null \
             && mv /etc/pbx/.env.new /etc/pbx/.env || true

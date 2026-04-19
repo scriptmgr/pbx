@@ -240,8 +240,9 @@ incus exec pbx-alma9 -- chmod +x /usr/local/bin/pbx-status
 | `MYSQL_ROOT_PASSWORD` | Optional preset MariaDB root password for install | (random, then stored in `/etc/pbx/mysql_root_password`) |
 | `ADMIN_EMAIL` | Administrator email for alerts | (required) |
 | `TIMEZONE` | System timezone | `America/New_York` |
-| `BEHIND_PROXY` | Enable reverse proxy mode | `no` |
-| `INSTALL_FOP2` | Install FOP2 operator panel (HTML5) | `no` |
+| `BEHIND_PROXY` | Enable reverse proxy mode (`yes`/`no`) | `yes` |
+| `INSTALL_FOP2` | Install FOP2 operator panel (HTML5) (`yes`/`no`) | `yes` |
+| `INSTALL_WIREGUARD` | Install WireGuard client tools only (`yes`/`no`) | `yes` |
 | `BACKUP_ENCRYPT` | Enable GPG backup encryption | `no` |
 | `FAX_EMAIL` | Email address for inbound fax delivery | (admin email) |
 | `FAX_FROM_NAME` | From name for fax emails | `PBX Fax` |
@@ -249,7 +250,6 @@ incus exec pbx-alma9 -- chmod +x /usr/local/bin/pbx-status
 | `FREEPBX_ADMIN_USERNAME` | Compatibility alias for `ADMIN_USERNAME` | `administrator` |
 | `AVANTFAX_ADMIN_USERNAME` | AvantFax web admin username | `ADMIN_USERNAME` |
 | `AVANTFAX_ADMIN_PASSWORD` | AvantFax web admin password | (random) |
-| `INSTALL_PROFILE` | Installation profile: minimal/standard/advanced | `standard` |
 
 ---
 
@@ -290,6 +290,7 @@ All in `/usr/local/bin/`, all support `--help`.
 | `pbx-services` | Service status badges |
 | `pbx-logs` | Asterisk/FreePBX log viewer |
 | `pbx-network` | Network interfaces, NAT, port check |
+| `pbx-vpn` | VPN client setup guidance and status |
 | `pbx-ssl` | Let's Encrypt certificate status |
 | `pbx-passwords` | Credential display (masked by default) |
 | `pbx-docs` | Quick reference documentation |

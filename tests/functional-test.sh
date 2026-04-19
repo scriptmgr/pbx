@@ -6,6 +6,21 @@ fail() { echo "  FAIL: $*"; FAIL=$((FAIL+1)); }
 warn() { echo "  WARN: $*"; WARN=$((WARN+1)); }
 sep()  { echo ""; echo "=== $* ==="; }
 
+ENV_FILE="/etc/pbx/.env"
+BEHIND_PROXY="no"
+PROXY_HTTP_PORT=""
+if [ -f "$ENV_FILE" ]; then
+    v=$(grep "^BEHIND_PROXY=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
+    [ -n "$v" ] && BEHIND_PROXY="$v"
+    v=$(grep "^PROXY_HTTP_PORT=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
+    [ -n "$v" ] && PROXY_HTTP_PORT="$v"
+fi
+if [ "$BEHIND_PROXY" = "yes" ] && [ -n "$PROXY_HTTP_PORT" ]; then
+    WEB_BASE_URL="http://127.0.0.1:${PROXY_HTTP_PORT}"
+else
+    WEB_BASE_URL="https://127.0.0.1"
+fi
+
 sep "ASTERISK FUNCTIONAL"
 # Service: managed by freepbx.service (fwconsole start) or directly
 if systemctl is-active asterisk >/dev/null 2>&1; then
@@ -54,19 +69,19 @@ asterisk -rx "module show like chan_pjsip" 2>/dev/null | grep -q "Running" \
     && ok "chan_pjsip.so loaded" || fail "chan_pjsip.so not loaded"
 
 sep "WEB PORTAL FUNCTIONAL"
-# Use HTTPS directly — HTTP redirects to the configured FQDN which may not resolve in containers
-curl -skL "https://127.0.0.1/" -o /dev/null -w "%{http_code}" | grep -q "^200$" \
+# Use the local Apache backend URL. In reverse proxy mode Apache is loopback-only on PROXY_HTTP_PORT.
+curl -skL "${WEB_BASE_URL}/" -o /dev/null -w "%{http_code}" | grep -q "^200$" \
     && ok "portal / accessible" \
-    || fail "portal / returned $(curl -skL https://127.0.0.1/ -o /dev/null -w '%{http_code}')"
-curl -skL "https://127.0.0.1/admin/" -o /dev/null -w "%{http_code}" | grep -qE "^(200|302)$" \
+    || fail "portal / returned $(curl -skL "${WEB_BASE_URL}/" -o /dev/null -w '%{http_code}')"
+curl -skL "${WEB_BASE_URL}/admin/" -o /dev/null -w "%{http_code}" | grep -qE "^(200|302)$" \
     && ok "FreePBX /admin/ accessible" || fail "FreePBX /admin/ not accessible"
-curl -skL "https://127.0.0.1/health" 2>/dev/null | grep -qiE "status|ok|healthy|version" \
+curl -skL "${WEB_BASE_URL}/health" 2>/dev/null | grep -qiE "status|ok|healthy|version" \
     && ok "/health endpoint returns JSON" || fail "/health endpoint not working"
-curl -skL "https://127.0.0.1/status/" -o /dev/null -w "%{http_code}" | grep -q "^200$" \
+curl -skL "${WEB_BASE_URL}/status/" -o /dev/null -w "%{http_code}" | grep -q "^200$" \
     && ok "/status/ accessible" || warn "/status/ not accessible"
-curl -skL "https://127.0.0.1/avantfax/" -o /dev/null -w "%{http_code}" | grep -qE "^(200|302)$" \
+curl -skL "${WEB_BASE_URL}/avantfax/" -o /dev/null -w "%{http_code}" | grep -qE "^(200|302)$" \
     && ok "/avantfax/ accessible" || warn "/avantfax/ not accessible"
-curl -skL "https://127.0.0.1/callcenter/" -o /dev/null -w "%{http_code}" | grep -qE "^(200|302|403)$" \
+curl -skL "${WEB_BASE_URL}/callcenter/" -o /dev/null -w "%{http_code}" | grep -qE "^(200|302|403)$" \
     && ok "/callcenter/ accessible" || warn "/callcenter/ not accessible"
 WM_PORT=$(grep "^port=" /etc/webmin/miniserv.conf 2>/dev/null | cut -d= -f2 || echo 9001)
 curl -sk --max-time 5 "https://127.0.0.1:${WM_PORT}/" -o /dev/null -w "%{http_code}" | grep -qE "^(200|302|401)$" \
@@ -100,7 +115,7 @@ find /mnt/backups/pbx -name "*.tar.gz" -o -name "*.sql.gz" 2>/dev/null | head -1
 
 sep "SCRIPTS FUNCTIONAL"
 for script in pbx-status pbx-services pbx-ssl pbx-network pbx-logs pbx-firewall \
-              pbx-security pbx-passwords pbx-cdr pbx-trunks pbx-asterisk pbx-calls \
+              pbx-vpn pbx-security pbx-passwords pbx-cdr pbx-trunks pbx-asterisk pbx-calls \
               pbx-repair pbx-restart pbx-cleanup pbx-docs pbx-moh pbx-recordings \
               pbx-config pbx-diag pbx-update; do
     if command -v "$script" >/dev/null 2>&1; then

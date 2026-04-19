@@ -20,6 +20,8 @@ MYSQL_PASS=""
 ADMIN_EMAIL=""
 WEBMIN_PORT="9001"
 WEB_ROOT="/var/www/apache/pbx"
+BEHIND_PROXY="no"
+PROXY_HTTP_PORT=""
 
 if [ -f "$ENV_FILE" ]; then
     v=$(grep "^FREEPBX_ADMIN_PASSWORD=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
@@ -30,6 +32,10 @@ if [ -f "$ENV_FILE" ]; then
     [ -n "$v" ] && ADMIN_EMAIL="$v"
     v=$(grep "^WEB_ROOT=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
     [ -n "$v" ] && WEB_ROOT="$v"
+    v=$(grep "^BEHIND_PROXY=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
+    [ -n "$v" ] && BEHIND_PROXY="$v"
+    v=$(grep "^PROXY_HTTP_PORT=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
+    [ -n "$v" ] && PROXY_HTTP_PORT="$v"
 fi
 [ -z "${MYSQL_PASS_FILE:-}" ] && MYSQL_PASS_FILE="/etc/pbx/mysql_root_password"
 [ -z "$MYSQL_PASS" ] && [ -f "$MYSQL_PASS_FILE" ] && MYSQL_PASS=$(tr -d '\r\n' < "$MYSQL_PASS_FILE" 2>/dev/null)
@@ -41,6 +47,12 @@ AMI_SECRET=$(grep "^secret" /etc/asterisk/manager.conf 2>/dev/null | head -1 | a
 DB_NAME=$(php -r "include '/etc/freepbx.conf'; echo \$amp_conf['AMPDBNAME'];" 2>/dev/null)
 [ -z "$DB_NAME" ] && DB_NAME="asterisk"
 FQDN=$(hostname -f 2>/dev/null || hostname)
+
+if [ "$BEHIND_PROXY" = "yes" ] && [ -n "$PROXY_HTTP_PORT" ]; then
+    WEB_BASE_URL="http://127.0.0.1:${PROXY_HTTP_PORT}"
+else
+    WEB_BASE_URL="https://127.0.0.1"
+fi
 
 db_q() { mysql -u root ${MYSQL_PASS:+-p"${MYSQL_PASS}"} "${DB_NAME}" -sNe "$1" 2>/dev/null; }
 ast()  { asterisk -rx "$*" 2>/dev/null; }
@@ -281,16 +293,16 @@ check_url() {
     fi
 }
 
-check_url "HTTPS root"              "https://127.0.0.1/"                    "200,301,302"
-check_url "FreePBX /admin/"         "https://127.0.0.1/admin/"              "200,302"   "FreePBX|pbx|login|password"
-check_url "/health JSON"            "https://127.0.0.1/health"              "200"       "status|ok|healthy|version"
-check_url "/status/ page"           "https://127.0.0.1/status/"             "200"       "asterisk|pbx|service|version|status"
-check_url "/avantfax/"              "https://127.0.0.1/avantfax/"           "200,302"   "AvantFax|fax|Hyla|login"
-check_url "/callcenter/"            "https://127.0.0.1/callcenter/"         "200,302,401,403"
+check_url "Portal root"             "${WEB_BASE_URL}/"                      "200,301,302"
+check_url "FreePBX /admin/"         "${WEB_BASE_URL}/admin/"                "200,302"   "FreePBX|pbx|login|password"
+check_url "/health JSON"            "${WEB_BASE_URL}/health"                "200"       "status|ok|healthy|version"
+check_url "/status/ page"           "${WEB_BASE_URL}/status/"               "200"       "asterisk|pbx|service|version|status"
+check_url "/avantfax/"              "${WEB_BASE_URL}/avantfax/"             "200,302"   "AvantFax|fax|Hyla|login"
+check_url "/callcenter/"            "${WEB_BASE_URL}/callcenter/"           "200,302,401,403"
 check_url "Webmin HTTPS"            "https://127.0.0.1:${WEBMIN_PORT}/"    "200,302,401" "Webmin|webmin|login"
 
 # Health endpoint detailed
-HEALTH=$(_curl_code "https://127.0.0.1/health")
+HEALTH=$(_curl_code "${WEB_BASE_URL}/health")
 HBODY=$(_curl_body)
 echo "$HBODY" | grep -qiE '"status"'   && ok "/health: has 'status' key"    || warn "/health: missing 'status' key"
 echo "$HBODY" | grep -qiE '"asterisk"' && ok "/health: has 'asterisk' key"  || warn "/health: missing 'asterisk' key"
@@ -298,22 +310,26 @@ echo "$HBODY" | grep -qiE '"mariadb"|"database"' && ok "/health: has DB key" || 
 echo "$HBODY" | grep -qiE '"hylafax"|"fax"' && ok "/health: has fax key"    || warn "/health: missing fax key"
 
 # FreePBX admin login page content
-ADMIN_BODY=$(_curl_code "https://127.0.0.1/admin/config.php" >/dev/null; _curl_body)
+ADMIN_BODY=$(_curl_code "${WEB_BASE_URL}/admin/config.php" >/dev/null; _curl_body)
 echo "$ADMIN_BODY" | grep -qiE "html|FreePBX|login|password" \
     && ok "FreePBX admin page: HTML rendered" || warn "FreePBX admin page: unexpected content"
 
 # PHP working (dynamic content test)
-PHP_OUT=$(_curl_code "https://127.0.0.1/admin/config.php" > /dev/null; _curl_body)
+PHP_OUT=$(_curl_code "${WEB_BASE_URL}/admin/config.php" > /dev/null; _curl_body)
 echo "$PHP_OUT" | grep -qiE "<!DOCTYPE|<html" \
     && ok "PHP: dynamic HTML page rendered via Apache/FPM" || warn "PHP: page may not be rendering"
 
-# SSL certificate
-CERT=$(echo | openssl s_client -connect 127.0.0.1:443 -servername "$FQDN" 2>/dev/null | openssl x509 -noout -subject -dates 2>/dev/null)
-[ -n "$CERT" ] && ok "TLS: SSL cert valid — $(echo "$CERT" | grep notAfter)" || warn "TLS: no cert returned"
-
-# Apache listening on 443
-ss -tlnp 2>/dev/null | grep -q ":443" && ok "Apache: port 443 listening" || fail "Apache: port 443 NOT listening"
-ss -tlnp 2>/dev/null | grep -q ":80" && ok "Apache: port 80 listening" || warn "Apache: port 80 not listening"
+if [ "$BEHIND_PROXY" = "yes" ] && [ -n "$PROXY_HTTP_PORT" ]; then
+    skip "TLS: direct Apache 443 skipped in reverse proxy mode"
+    ss -tlnp 2>/dev/null | grep -q ":${PROXY_HTTP_PORT}\b" \
+        && ok "Apache proxy port ${PROXY_HTTP_PORT} listening" \
+        || fail "Apache proxy port ${PROXY_HTTP_PORT} NOT listening"
+else
+    CERT=$(echo | openssl s_client -connect 127.0.0.1:443 -servername "$FQDN" 2>/dev/null | openssl x509 -noout -subject -dates 2>/dev/null)
+    [ -n "$CERT" ] && ok "TLS: SSL cert valid — $(echo "$CERT" | grep notAfter)" || warn "TLS: no cert returned"
+    ss -tlnp 2>/dev/null | grep -q ":443" && ok "Apache: port 443 listening" || fail "Apache: port 443 NOT listening"
+    ss -tlnp 2>/dev/null | grep -q ":80" && ok "Apache: port 80 listening" || warn "Apache: port 80 not listening"
+fi
 
 # =============================================================================
 sep "8. FAX SYSTEM"
@@ -432,6 +448,11 @@ echo "$OUT" | grep -qiE "asterisk|channel|version|peer" \
 OUT=$(NO_COLOR=1 pbx-network 2>/dev/null)
 echo "$OUT" | grep -qiE "IP|interface|eth|port|network" \
     && ok "pbx-network: network info shown" || warn "pbx-network: minimal output"
+
+# pbx-vpn
+OUT=$(NO_COLOR=1 pbx-vpn --status 2>/dev/null)
+echo "$OUT" | grep -qiE "vpn|openvpn|wireguard|client" \
+    && ok "pbx-vpn: VPN client status shown" || warn "pbx-vpn: minimal output"
 
 # pbx-ssl
 OUT=$(NO_COLOR=1 pbx-ssl 2>/dev/null)
@@ -577,8 +598,12 @@ sep "14. CERTIFICATES & TLS"
 KEY_N=$(ls /etc/asterisk/keys/*.pem /etc/asterisk/keys/*.crt 2>/dev/null | wc -l)
 [ "$KEY_N" -ge 1 ] && ok "Asterisk TLS key files: $KEY_N" || warn "No Asterisk TLS keys"
 
-openssl s_client -connect 127.0.0.1:443 -servername localhost </dev/null 2>/dev/null | grep -qiE "CONNECTED|CERTIFICATE" \
-    && ok "TLS handshake: Apache 443 OK" || warn "TLS handshake: failed"
+if [ "$BEHIND_PROXY" = "yes" ] && [ -n "$PROXY_HTTP_PORT" ]; then
+    skip "TLS handshake: skipped in reverse proxy mode"
+else
+    openssl s_client -connect 127.0.0.1:443 -servername localhost </dev/null 2>/dev/null | grep -qiE "CONNECTED|CERTIFICATE" \
+        && ok "TLS handshake: Apache 443 OK" || warn "TLS handshake: failed"
+fi
 
 if [ -d /etc/letsencrypt/live ]; then
     LE_N=$(ls /etc/letsencrypt/live/ 2>/dev/null | wc -l)

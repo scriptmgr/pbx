@@ -20,6 +20,8 @@ FREEPBX_PASS="admin"
 MYSQL_PASS=""
 WEBMIN_PORT="9001"
 WEB_ROOT="/var/www/apache/pbx"
+BEHIND_PROXY="no"
+PROXY_HTTP_PORT=""
 
 if [ -f "$ENV_FILE" ]; then
     v=$(grep "^FREEPBX_ADMIN_USERNAME=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
@@ -35,6 +37,10 @@ if [ -f "$ENV_FILE" ]; then
     [ -n "$v" ] && MYSQL_PASS_FILE="$v"
     v=$(grep "^WEB_ROOT=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
     [ -n "$v" ] && WEB_ROOT="$v"
+    v=$(grep "^BEHIND_PROXY=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
+    [ -n "$v" ] && BEHIND_PROXY="$v"
+    v=$(grep "^PROXY_HTTP_PORT=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
+    [ -n "$v" ] && PROXY_HTTP_PORT="$v"
 fi
 [ -z "${MYSQL_PASS_FILE:-}" ] && MYSQL_PASS_FILE="/etc/pbx/mysql_root_password"
 [ -z "$MYSQL_PASS" ] && [ -f "$MYSQL_PASS_FILE" ] && MYSQL_PASS=$(tr -d '\r\n' < "$MYSQL_PASS_FILE" 2>/dev/null)
@@ -49,6 +55,12 @@ DB_NAME=$(php -r "include '/etc/freepbx.conf'; echo \$amp_conf['AMPDBNAME'];" 2>
 FQDN=$(hostname -f 2>/dev/null || hostname)
 HOST_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 APACHE_SERVICE=$(grep "^APACHE_SERVICE=" "$ENV_FILE" 2>/dev/null | cut -d= -f2 || echo "httpd")
+
+if [ "$BEHIND_PROXY" = "yes" ] && [ -n "$PROXY_HTTP_PORT" ]; then
+    WEB_BASE_URL="http://127.0.0.1:${PROXY_HTTP_PORT}"
+else
+    WEB_BASE_URL="https://${HOST_IP}"
+fi
 
 db_q() { mysql -u root ${MYSQL_PASS:+-p"${MYSQL_PASS}"} "${DB_NAME}" -sNe "$1" 2>/dev/null; }
 ast()  { asterisk -rx "$*" 2>/dev/null; }
@@ -75,7 +87,7 @@ sep "1. WEB UI - FREEPBX ADMIN LOGIN & NAVIGATION"
 # Login to FreePBX
 LOGIN_CODE=$(curl -skL --max-time 10 \
     -c /tmp/pbx-cookie.jar -o /tmp/eu-curl.tmp -w "%{http_code}" \
-    "https://${HOST_IP}/admin/" 2>/dev/null || echo "000")
+    "${WEB_BASE_URL}/admin/" 2>/dev/null || echo "000")
 [ "$LOGIN_CODE" != "000" ] && ok "FreePBX admin page: reachable (HTTP $LOGIN_CODE)" || fail "FreePBX admin: unreachable"
 
 LOGIN_BODY=$(cat /tmp/eu-curl.tmp 2>/dev/null)
@@ -87,51 +99,51 @@ POST_CODE=$(curl -skL --max-time 10 \
     -b /tmp/pbx-cookie.jar -c /tmp/pbx-cookie.jar \
     -d "username=${FREEPBX_USER}&password=${FREEPBX_PASS}&action=login" \
     -o /tmp/eu-curl.tmp -w "%{http_code}" \
-    "https://${HOST_IP}/admin/config.php" 2>/dev/null || echo "000")
+    "${WEB_BASE_URL}/admin/config.php" 2>/dev/null || echo "000")
 POST_BODY=$(cat /tmp/eu-curl.tmp 2>/dev/null)
 echo "$POST_BODY" | grep -qiE "dashboard|Logout|FreePBX Administration|pbx_admin" \
     && ok "FreePBX login: authenticated (${FREEPBX_USER})" || warn "FreePBX login: auth state unclear (HTTP $POST_CODE)"
 
 # Navigate to dashboard
-DASH_CODE=$(_http "https://${HOST_IP}/admin/config.php?display=dashboard")
+DASH_CODE=$(_http "${WEB_BASE_URL}/admin/config.php?display=dashboard")
 DASH_BODY=$(curl_body)
 echo "$DASH_BODY" | grep -qiE "module|FreePBX|dashboard|System|Notifications" \
     && ok "FreePBX dashboard: loads after login" || warn "FreePBX dashboard: content unexpected"
 
 # Navigate to Extensions page  
-EXT_CODE=$(_http "https://${HOST_IP}/admin/config.php?display=extensions")
+EXT_CODE=$(_http "${WEB_BASE_URL}/admin/config.php?display=extensions")
 EXT_BODY=$(curl_body)
 echo "$EXT_BODY" | grep -qiE "extension|device|FreePBX" \
     && ok "FreePBX Extensions page: accessible" || warn "FreePBX Extensions page: access issue (HTTP $EXT_CODE)"
 
 # Navigate to Trunks page
-TRUNK_CODE=$(_http "https://${HOST_IP}/admin/config.php?display=trunks")
+TRUNK_CODE=$(_http "${WEB_BASE_URL}/admin/config.php?display=trunks")
 TRUNK_BODY=$(curl_body)
 echo "$TRUNK_BODY" | grep -qiE "trunk|FreePBX" \
     && ok "FreePBX Trunks page: accessible" || warn "FreePBX Trunks page: access issue (HTTP $TRUNK_CODE)"
 
 # Navigate to Inbound Routes
-IR_CODE=$(_http "https://${HOST_IP}/admin/config.php?display=inboundroutes")
+IR_CODE=$(_http "${WEB_BASE_URL}/admin/config.php?display=inboundroutes")
 echo "$IR_CODE" | grep -qE "^(200|302)$" && ok "FreePBX Inbound Routes: accessible (HTTP $IR_CODE)" || warn "Inbound Routes: HTTP $IR_CODE"
 
 # Navigate to Outbound Routes
-OR_CODE=$(_http "https://${HOST_IP}/admin/config.php?display=outboundroutes")
+OR_CODE=$(_http "${WEB_BASE_URL}/admin/config.php?display=outboundroutes")
 echo "$OR_CODE" | grep -qE "^(200|302)$" && ok "FreePBX Outbound Routes: accessible (HTTP $OR_CODE)" || warn "Outbound Routes: HTTP $OR_CODE"
 
 # Navigate to IVR
-IVR_CODE=$(_http "https://${HOST_IP}/admin/config.php?display=ivr")
+IVR_CODE=$(_http "${WEB_BASE_URL}/admin/config.php?display=ivr")
 echo "$IVR_CODE" | grep -qE "^(200|302)$" && ok "FreePBX IVR: accessible (HTTP $IVR_CODE)" || warn "IVR: HTTP $IVR_CODE"
 
 # Navigate to Ring Groups
-RG_CODE=$(_http "https://${HOST_IP}/admin/config.php?display=ringgroups")
+RG_CODE=$(_http "${WEB_BASE_URL}/admin/config.php?display=ringgroups")
 echo "$RG_CODE" | grep -qE "^(200|302)$" && ok "FreePBX Ring Groups: accessible (HTTP $RG_CODE)" || warn "Ring Groups: HTTP $RG_CODE"
 
 # CDR Reports
-CDR_CODE=$(_http "https://${HOST_IP}/admin/config.php?display=cdr")
+CDR_CODE=$(_http "${WEB_BASE_URL}/admin/config.php?display=cdr")
 echo "$CDR_CODE" | grep -qE "^(200|302)$" && ok "FreePBX CDR Reports: accessible (HTTP $CDR_CODE)" || warn "CDR Reports: HTTP $CDR_CODE"
 
 # System Info page
-SYSINFO_CODE=$(_http "https://${HOST_IP}/admin/config.php?display=sysadmin")
+SYSINFO_CODE=$(_http "${WEB_BASE_URL}/admin/config.php?display=sysadmin")
 echo "$SYSINFO_CODE" | grep -qE "^(200|302)$" && ok "FreePBX System Admin: accessible (HTTP $SYSINFO_CODE)" || warn "System Admin: HTTP $SYSINFO_CODE"
 
 # =============================================================================
@@ -159,12 +171,12 @@ check_url() {
     fi
 }
 
-check_url "Portal home"                  "https://${HOST_IP}/"           "PBX|asterisk|FreePBX|portal"
-check_url "Health endpoint"              "https://${HOST_IP}/health"     "status"
-check_url "Status page"                  "https://${HOST_IP}/status/"    "asterisk|service|pbx"
-check_url "AvantFax UI"                  "https://${HOST_IP}/avantfax/"  "AvantFax|fax|Hyla|login"
+check_url "Portal home"                  "${WEB_BASE_URL}/"              "PBX|asterisk|FreePBX|portal"
+check_url "Health endpoint"              "${WEB_BASE_URL}/health"        "status"
+check_url "Status page"                  "${WEB_BASE_URL}/status/"       "asterisk|service|pbx"
+check_url "AvantFax UI"                  "${WEB_BASE_URL}/avantfax/"     "AvantFax|fax|Hyla|login"
 check_url "Webmin HTTPS"                 "https://${HOST_IP}:${WEBMIN_PORT}/" "webmin|login|hostname|system"
-check_url "FreePBX admin"               "https://${HOST_IP}/admin/"      "FreePBX|login"
+check_url "FreePBX admin"               "${WEB_BASE_URL}/admin/"         "FreePBX|login"
 
 # =============================================================================
 sep "3. ASTERISK DIALPLAN - ALL DEMO APPS"
@@ -173,9 +185,12 @@ sep "3. ASTERISK DIALPLAN - ALL DEMO APPS"
 # Verify each demo extension is routable
 for ext in DEMO 123 947 951 TODAY LENNY 4747; do
     # Check in from-internal, from-internal-custom, or demo-menu context
-    FOUND=$(ast "dialplan show from-internal" 2>/dev/null | grep -cF "$ext" || echo 0)
-    FOUND2=$(ast "dialplan show demo-menu" 2>/dev/null | grep -cF "$ext" || echo 0)
-    FOUND3=$(ast "dialplan show from-internal-custom" 2>/dev/null | grep -cF "$ext" || echo 0)
+    FOUND=$(ast "dialplan show from-internal" 2>/dev/null | grep -cF "$ext" || true)
+    FOUND2=$(ast "dialplan show demo-menu" 2>/dev/null | grep -cF "$ext" || true)
+    FOUND3=$(ast "dialplan show from-internal-custom" 2>/dev/null | grep -cF "$ext" || true)
+    FOUND=${FOUND:-0}
+    FOUND2=${FOUND2:-0}
+    FOUND3=${FOUND3:-0}
     [ "${FOUND:-0}" -ge 1 ] || [ "${FOUND2:-0}" -ge 1 ] || [ "${FOUND3:-0}" -ge 1 ] \
         && ok "Demo extension [${ext}]: routable in dialplan" \
         || warn "Demo extension [${ext}]: NOT found in dialplan"
@@ -183,8 +198,10 @@ done
 
 # Verify special services
 for ext in '*43' '*97' '*469' '*470'; do
-    FOUND=$(ast "dialplan show from-internal" 2>/dev/null | grep -cF "$ext" || echo 0)
-    FOUND2=$(ast "dialplan show from-internal-custom" 2>/dev/null | grep -cF "$ext" || echo 0)
+    FOUND=$(ast "dialplan show from-internal" 2>/dev/null | grep -cF "$ext" || true)
+    FOUND2=$(ast "dialplan show from-internal-custom" 2>/dev/null | grep -cF "$ext" || true)
+    FOUND=${FOUND:-0}
+    FOUND2=${FOUND2:-0}
     [ "${FOUND:-0}" -ge 1 ] || [ "${FOUND2:-0}" -ge 1 ] \
         && ok "Service code [${ext}]: in dialplan" \
         || warn "Service code [${ext}]: missing from dialplan"
@@ -229,7 +246,13 @@ echo "$TRANS" | grep -qiE "wss|websocket" && ok "PJSIP: WSS transport configured
 ss -ulnp 2>/dev/null | grep -q ":5060" && ok "Network: UDP 5060 open" || warn "Network: UDP 5060 not listening"
 ss -tlnp 2>/dev/null | grep -q ":5061" && ok "Network: TCP/TLS 5061 open" || warn "Network: TLS 5061 not listening"
 ss -tlnp 2>/dev/null | grep -q ":5038" && ok "Network: AMI 5038 open" || fail "Network: AMI 5038 not listening"
-ss -tlnp 2>/dev/null | grep -q ":443"  && ok "Network: HTTPS 443 open" || fail "Network: HTTPS 443 not listening"
+if [ "$BEHIND_PROXY" = "yes" ] && [ -n "$PROXY_HTTP_PORT" ]; then
+    ss -tlnp 2>/dev/null | grep -q ":${PROXY_HTTP_PORT}\b" \
+        && ok "Network: Apache proxy port ${PROXY_HTTP_PORT} open" \
+        || fail "Network: Apache proxy port ${PROXY_HTTP_PORT} not listening"
+else
+    ss -tlnp 2>/dev/null | grep -q ":443"  && ok "Network: HTTPS 443 open" || fail "Network: HTTPS 443 not listening"
+fi
 
 # =============================================================================
 sep "6. AMI - ADMIN INTERFACE TESTS"
@@ -289,7 +312,7 @@ done
 [ -d /var/spool/hylafax/sendq ] && ok "HylaFAX sendq: exists" || warn "HylaFAX sendq: missing"
 
 # AvantFax web
-AVF=$(curl -skL --max-time 8 "https://${HOST_IP}/avantfax/" 2>/dev/null)
+AVF=$(curl -skL --max-time 8 "${WEB_BASE_URL}/avantfax/" 2>/dev/null)
 echo "$AVF" | grep -qiE "AvantFax|HylaFax|fax|login" && ok "AvantFax web: accessible" || fail "AvantFax web: not accessible"
 [ -f "${WEB_ROOT}/avantfax/includes/FaxModem.php" ] && ok "AvantFax PHP files: installed" || fail "AvantFax PHP: missing"
 
@@ -313,8 +336,12 @@ echo "$F2B" | grep -qi "asterisk" && ok "Fail2ban: asterisk jail protecting SIP"
 echo "$F2B" | grep -qi "apache" && ok "Fail2ban: apache jail protecting web" || warn "Fail2ban: no apache-auth jail"
 
 # SSL/TLS
-CERT_INFO=$(echo | openssl s_client -connect 127.0.0.1:443 -servername "${FQDN}" 2>/dev/null | openssl x509 -noout -subject -enddate 2>/dev/null)
-[ -n "$CERT_INFO" ] && ok "SSL certificate: $CERT_INFO" || fail "SSL: no valid certificate on port 443"
+if [ "$BEHIND_PROXY" = "yes" ] && [ -n "$PROXY_HTTP_PORT" ]; then
+    warn "SSL: direct Apache certificate check skipped in reverse proxy mode"
+else
+    CERT_INFO=$(echo | openssl s_client -connect 127.0.0.1:443 -servername "${FQDN}" 2>/dev/null | openssl x509 -noout -subject -enddate 2>/dev/null)
+    [ -n "$CERT_INFO" ] && ok "SSL certificate: $CERT_INFO" || fail "SSL: no valid certificate on port 443"
+fi
 
 # Asterisk TLS keys
 KEY_COUNT=$(ls /etc/asterisk/keys/ 2>/dev/null | wc -l)
@@ -365,7 +392,7 @@ run_script "pbx-logs"     ""       "."
 run_script "pbx-passwords" ""      "password|mysql|admin|freepbx|asterisk"
 run_script "pbx-moh"      ""       "music|moh|class|hold"
 run_script "pbx-cdr"      ""       "."
-run_script "pbx-calls"    ""       "."
+run_script "pbx-calls"    "active" "channel|caller|dest|duration|active"
 run_script "pbx-asterisk" ""       "asterisk|module|version|channel|uptime"
 run_script "pbx-docs"     ""       "."
 
@@ -417,8 +444,8 @@ FW_VER=$(mysql -uroot ${MYSQL_PASS:+-p"${MYSQL_PASS}"} "$DB_NAME" -sNe "SELECT v
 [ -n "$FW_VER" ] && ok "FreePBX version in DB: $FW_VER" || fail "FreePBX version not found in admin table"
 
 # Admin user exists
-ADMIN_CNT=$(mysql -uroot ${MYSQL_PASS:+-p"${MYSQL_PASS}"} "$DB_NAME" -sNe "SELECT COUNT(*) FROM ampusers WHERE username='admin';" 2>/dev/null)
-[ "${ADMIN_CNT:-0}" -ge 1 ] && ok "FreePBX admin user exists in DB" || fail "FreePBX admin user missing from ampusers"
+ADMIN_CNT=$(mysql -uroot ${MYSQL_PASS:+-p"${MYSQL_PASS}"} "$DB_NAME" -sNe "SELECT COUNT(*) FROM ampusers WHERE username='${FREEPBX_USER}';" 2>/dev/null)
+[ "${ADMIN_CNT:-0}" -ge 1 ] && ok "FreePBX admin user '${FREEPBX_USER}' exists in DB" || fail "FreePBX admin user '${FREEPBX_USER}' missing from ampusers"
 
 # CDR database
 CDR_CNT=$(mysql -uroot ${MYSQL_PASS:+-p"${MYSQL_PASS}"} "asteriskcdrdb" -sNe "SELECT COUNT(*) FROM cdr;" 2>/dev/null || echo -1)

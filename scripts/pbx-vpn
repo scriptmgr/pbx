@@ -1,0 +1,123 @@
+#!/bin/bash
+set -euo pipefail
+
+SCRIPT_VERSION="${SCRIPT_VERSION:-3.0}"
+case "${1:-}" in
+    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${SCRIPT_VERSION}"; exit 0 ;;
+esac
+if [ -n "${NO_COLOR+x}" ] || [ ! -t 1 ] || [ "${TERM:-}" = "dumb" ] || [ "${CI:-}" = "true" ]; then
+    RED=""; GREEN=""; YELLOW=""; BLUE=""; CYAN=""; BOLD=""; NC=""
+else
+    RED="$(printf '\033[0;31m')"; GREEN="$(printf '\033[0;32m')"
+    YELLOW="$(printf '\033[1;33m')"; BLUE="$(printf '\033[0;34m')"
+    CYAN="$(printf '\033[0;36m')"; BOLD="$(printf '\033[1m')"; NC="$(printf '\033[0m')"
+fi
+ok()   { printf "${GREEN}%s${NC}\n"   "$*"; }
+info() { printf "${BLUE}%s${NC}\n"    "$*"; }
+warn() { printf "${YELLOW}%s${NC}\n"  "$*"; }
+err()  { printf "${RED}%s${NC}\n"     "$*" >&2; }
+hdr()  { printf "\n${BOLD}%s${NC}\n" "$*"; }
+
+[ -f /etc/pbx/.env ] && . /etc/pbx/.env
+[ "$(id -u)" -ne 0 ] && { err "Must run as root"; exit 1; }
+
+OPENVPN_DIR="/etc/openvpn/client"
+WIREGUARD_DIR="/etc/wireguard"
+
+usage() {
+    printf "Usage: pbx-vpn [options]\n\nVPN client guidance and status.\n\nOptions:\n"
+    printf "  (no args)         Show VPN client tool and config status\n"
+    printf "  --status          Show VPN client tool and config status\n"
+    printf "  --openvpn         Show OpenVPN client setup guidance\n"
+    printf "  --wireguard       Show WireGuard client setup guidance\n"
+    printf "  --paths           Show recommended client config paths\n"
+    printf "  --help (alias: -h)         Show help\n"
+    printf "  --version (alias: -V)      Show version\n"
+    exit 0
+}
+
+count_openvpn_profiles() {
+    [ -d "${OPENVPN_DIR}" ] || { echo 0; return; }
+    find "${OPENVPN_DIR}" -maxdepth 1 -type f \( -name '*.ovpn' -o -name '*.conf' \) 2>/dev/null \
+        | wc -l | awk '{print $1}'
+}
+
+count_wireguard_profiles() {
+    [ -d "${WIREGUARD_DIR}" ] || { echo 0; return; }
+    find "${WIREGUARD_DIR}" -maxdepth 1 -type f -name '*.conf' 2>/dev/null \
+        | wc -l | awk '{print $1}'
+}
+
+show_status() {
+    hdr "VPN Client Status"
+
+    if command -v openvpn >/dev/null 2>&1; then
+        ok "OpenVPN client tools installed"
+    else
+        warn "OpenVPN client tools not installed"
+    fi
+    printf "  OpenVPN config path : %s\n" "${OPENVPN_DIR}"
+    printf "  OpenVPN profiles    : %s\n" "$(count_openvpn_profiles)"
+    if command -v pgrep >/dev/null 2>&1 && pgrep -x openvpn >/dev/null 2>&1; then
+        ok "OpenVPN client process detected"
+    else
+        info "No active OpenVPN client process detected"
+    fi
+
+    echo ""
+
+    if command -v wg >/dev/null 2>&1 && command -v wg-quick >/dev/null 2>&1; then
+        ok "WireGuard client tools installed"
+    else
+        warn "WireGuard client tools not installed"
+    fi
+    printf "  WireGuard config path: %s\n" "${WIREGUARD_DIR}"
+    printf "  WireGuard profiles   : %s\n" "$(count_wireguard_profiles)"
+    if command -v wg >/dev/null 2>&1; then
+        local_interfaces=$(wg show interfaces 2>/dev/null || true)
+        if [ -n "${local_interfaces}" ]; then
+            ok "Active WireGuard interfaces: ${local_interfaces}"
+        else
+            info "No active WireGuard interfaces detected"
+        fi
+    else
+        info "WireGuard status unavailable until wg is installed"
+    fi
+}
+
+show_paths() {
+    hdr "Recommended VPN Client Paths"
+    printf "  OpenVPN   : %s\n" "${OPENVPN_DIR}"
+    printf "  WireGuard : %s\n" "${WIREGUARD_DIR}"
+}
+
+show_openvpn_help() {
+    hdr "OpenVPN Client Setup"
+    printf "1. Obtain the client profile, CA certificate, and any client key/cert files from your VPN provider or administrator.\n"
+    printf "2. Place the OpenVPN client config under %s.\n" "${OPENVPN_DIR}"
+    printf "3. Restrict private key material to root-only access, such as chmod 600 on key files.\n"
+    printf "4. Review the remote endpoint, DNS, and route settings with your VPN administrator before connecting.\n"
+    printf "5. Start the client connection using your distro's preferred OpenVPN client workflow.\n"
+    printf "6. Re-run 'pbx-vpn --status' to confirm that an OpenVPN client process is active.\n"
+}
+
+show_wireguard_help() {
+    hdr "WireGuard Client Setup"
+    printf "1. Obtain the client private key, assigned address, server public key, endpoint, and allowed IPs from your VPN provider or administrator.\n"
+    printf "2. Place the WireGuard client config under %s.\n" "${WIREGUARD_DIR}"
+    printf "3. Restrict the config file to root-only access with chmod 600.\n"
+    printf "4. Verify the [Interface] and [Peer] sections before connecting, especially keys, endpoint, and allowed IPs.\n"
+    printf "5. Start the client connection using your distro's preferred WireGuard client workflow.\n"
+    printf "6. Re-run 'pbx-vpn --status' to confirm that the WireGuard interface is active.\n"
+}
+
+case "${1:-}" in
+    --help|-h) usage ;;
+    --status|"") show_status ;;
+    --paths) show_paths ;;
+    --openvpn) show_openvpn_help ;;
+    --wireguard) show_wireguard_help ;;
+    *)
+        err "Unknown option: ${1}"
+        usage ;;
+esac

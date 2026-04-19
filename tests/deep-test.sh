@@ -33,6 +33,8 @@ ADMIN_EMAIL=""
 WEBMIN_PORT="9001"
 WEB_ROOT="/var/www/apache/pbx"
 APACHE_SERVICE="httpd"
+BEHIND_PROXY="no"
+PROXY_HTTP_PORT=""
 
 if [ -f "$ENV_FILE" ]; then
     _ev() { grep "^${1}=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'; }
@@ -45,6 +47,8 @@ if [ -f "$ENV_FILE" ]; then
     v=$(_ev ADMIN_EMAIL);                [ -n "$v" ] && ADMIN_EMAIL="$v"
     v=$(_ev WEB_ROOT);                   [ -n "$v" ] && WEB_ROOT="$v"
     v=$(_ev APACHE_SERVICE);             [ -n "$v" ] && APACHE_SERVICE="$v"
+    v=$(_ev BEHIND_PROXY);               [ -n "$v" ] && BEHIND_PROXY="$v"
+    v=$(_ev PROXY_HTTP_PORT);            [ -n "$v" ] && PROXY_HTTP_PORT="$v"
 fi
 [ -z "${MYSQL_PASS_FILE:-}" ] && MYSQL_PASS_FILE="/etc/pbx/mysql_root_password"
 [ -z "$MYSQL_PASS" ] && [ -f "$MYSQL_PASS_FILE" ] && MYSQL_PASS=$(tr -d '\r\n' < "$MYSQL_PASS_FILE" 2>/dev/null)
@@ -66,6 +70,12 @@ DB_NAME=$(php -r "include '/etc/freepbx.conf'; echo \$amp_conf['AMPDBNAME'];" 2>
 FQDN=$(hostname -f 2>/dev/null || hostname)
 HOST_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 HOST_IP=${HOST_IP:-127.0.0.1}
+
+if [ "$BEHIND_PROXY" = "yes" ] && [ -n "$PROXY_HTTP_PORT" ]; then
+    WEB_BASE_URL="http://127.0.0.1:${PROXY_HTTP_PORT}"
+else
+    WEB_BASE_URL="https://${HOST_IP}"
+fi
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -191,6 +201,29 @@ _run_mgmt() {
     fi
 }
 
+_run_help_version() {
+    local cmd="$1"
+    local out
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        skip "SCRIPT ${cmd}: not installed"
+        return
+    fi
+
+    out=$(NO_COLOR=1 timeout 15 "$cmd" --help 2>&1 || NO_COLOR=1 timeout 15 "$cmd" -h 2>&1 || true)
+    if [ -n "$out" ]; then
+        ok "SCRIPT ${cmd}: help flag works"
+    else
+        warn "SCRIPT ${cmd}: no help output"
+    fi
+
+    out=$(NO_COLOR=1 timeout 15 "$cmd" --version 2>&1 || NO_COLOR=1 timeout 15 "$cmd" -V 2>&1 || true)
+    if [ -n "$out" ]; then
+        ok "SCRIPT ${cmd}: version flag works"
+    else
+        warn "SCRIPT ${cmd}: no version output"
+    fi
+}
+
 # pbx-add-ip
 _run_mgmt "pbx-add-ip --help"          pbx-add-ip   "--help 2>&1 || true" "usage|help|ip|add"
 # pbx-asterisk
@@ -237,6 +270,8 @@ _run_mgmt "pbx-logs --help"            pbx-logs     "--help 2>&1 || true"   "hel
 _run_mgmt "pbx-moh"                    pbx-moh      "2>&1 || true"          "moh|music|hold|class|file"
 # pbx-network
 _run_mgmt "pbx-network"                pbx-network  "2>&1 || true"          "network|ip|interface|route"
+# pbx-vpn
+_run_mgmt "pbx-vpn --status"           pbx-vpn      "--status 2>&1 || true"  "vpn|openvpn|wireguard|client"
 # pbx-passwords
 _run_mgmt "pbx-passwords"              pbx-passwords "2>&1 || true"         "password|admin|mysql|secret"
 # pbx-provision --help
@@ -280,11 +315,17 @@ else
     skip "SCRIPT pbxstatus: not installed"
 fi
 
-# Count how many pbx-* scripts exist
-PBX_SCRIPT_COUNT=$(find /usr/local/bin -maxdepth 1 -name 'pbx-*' 2>/dev/null | wc -l)
-info "Total pbx-* scripts found: $PBX_SCRIPT_COUNT"
-[ "$PBX_SCRIPT_COUNT" -ge 10 ] && ok "Management scripts: $PBX_SCRIPT_COUNT scripts installed" \
-    || warn "Management scripts: only $PBX_SCRIPT_COUNT scripts (expected 16+)"
+# Generic help/version coverage for all management scripts
+for script_path in /usr/local/bin/pbx-* /usr/local/bin/pbxstatus; do
+    [ -f "${script_path}" ] || continue
+    _run_help_version "$(basename "${script_path}")"
+done
+
+# Count all management scripts, including pbxstatus alias
+PBX_SCRIPT_COUNT=$(find /usr/local/bin -maxdepth 1 \( -name 'pbx-*' -o -name 'pbxstatus' \) 2>/dev/null | wc -l)
+info "Total management scripts found: $PBX_SCRIPT_COUNT"
+[ "$PBX_SCRIPT_COUNT" -eq 33 ] && ok "Management scripts: all 33 scripts installed" \
+    || warn "Management scripts: found $PBX_SCRIPT_COUNT scripts (expected 33)"
 
 # =============================================================================
 sep "2. ASTERISK MODULES"
@@ -628,9 +669,9 @@ else
 fi
 
 # FreePBX ampusers table
-AMP_ADMIN=$(db_q "SELECT username FROM ampusers WHERE username='admin' LIMIT 1;" 2>/dev/null)
-[ "$AMP_ADMIN" = "admin" ] && ok "FreePBX ampusers: admin user exists" \
-    || warn "FreePBX ampusers: admin not found (permissions issue?)"
+AMP_ADMIN=$(db_q "SELECT username FROM ampusers WHERE username='${FREEPBX_USER}' LIMIT 1;" 2>/dev/null)
+[ "$AMP_ADMIN" = "$FREEPBX_USER" ] && ok "FreePBX ampusers: ${FREEPBX_USER} user exists" \
+    || warn "FreePBX ampusers: ${FREEPBX_USER} not found (permissions issue?)"
 
 # avantfax database
 AF_DB=$(mysql -u root ${MYSQL_PASS:+-p"${MYSQL_PASS}"} -sNe \
@@ -1007,7 +1048,7 @@ rm -f "$COOKIE_JAR" "$CURL_BODY_FILE"
 FB_LOGIN_CODE=$(curl -skL --max-time 10 \
     -c "$COOKIE_JAR" -b "$COOKIE_JAR" \
     -o "$CURL_BODY_FILE" -w "%{http_code}" \
-    "https://${HOST_IP}/admin/" 2>/dev/null || echo "000")
+    "${WEB_BASE_URL}/admin/" 2>/dev/null || echo "000")
 FB_LOGIN_BODY=$(cat "$CURL_BODY_FILE" 2>/dev/null)
 
 [ "$FB_LOGIN_CODE" != "000" ] \
@@ -1023,7 +1064,7 @@ FB_POST_CODE=$(curl -skL --max-time 10 \
     -c "$COOKIE_JAR" -b "$COOKIE_JAR" \
     -d "username=${FREEPBX_USER}&password=${FREEPBX_PASS}&action=login" \
     -o "$CURL_BODY_FILE" -w "%{http_code}" \
-    "https://${HOST_IP}/admin/config.php" 2>/dev/null || echo "000")
+    "${WEB_BASE_URL}/admin/config.php" 2>/dev/null || echo "000")
 FB_POST_BODY=$(cat "$CURL_BODY_FILE" 2>/dev/null)
 
 if echo "$FB_POST_BODY" | grep -qiE "dashboard|Logout|FreePBX Administration|pbx_admin|fpbx_username"; then
@@ -1038,9 +1079,9 @@ fi
 AF_URL=""
 for path in "/avantfax/" "/pbx/avantfax/" "/fax/"; do
     code=$(curl -skL --max-time 5 -o /dev/null -w "%{http_code}" \
-        "https://${HOST_IP}${path}" 2>/dev/null || echo "000")
+        "${WEB_BASE_URL}${path}" 2>/dev/null || echo "000")
     if [ "$code" != "000" ] && [ "$code" != "404" ]; then
-        AF_URL="https://${HOST_IP}${path}"
+        AF_URL="${WEB_BASE_URL}${path}"
         break
     fi
 done
@@ -1070,7 +1111,7 @@ fi
 REM_CODE=$(curl -skL --max-time 10 \
     -u "${FREEPBX_USER}:${FREEPBX_PASS}" \
     -o "$CURL_BODY_FILE" -w "%{http_code}" \
-    "https://${HOST_IP}/reminders/" 2>/dev/null || echo "000")
+    "${WEB_BASE_URL}/reminders/" 2>/dev/null || echo "000")
 REM_BODY=$(cat "$CURL_BODY_FILE" 2>/dev/null)
 if [ "$REM_CODE" = "200" ] && [ -n "$REM_BODY" ]; then
     ok "Reminders /reminders/ with Basic auth: HTTP 200, body present"
@@ -1086,7 +1127,7 @@ fi
 CC_CODE=$(curl -skL --max-time 10 \
     -u "${FREEPBX_USER}:${FREEPBX_PASS}" \
     -o "$CURL_BODY_FILE" -w "%{http_code}" \
-    "https://${HOST_IP}/callcenter/" 2>/dev/null || echo "000")
+    "${WEB_BASE_URL}/callcenter/" 2>/dev/null || echo "000")
 CC_BODY=$(cat "$CURL_BODY_FILE" 2>/dev/null)
 if [ "$CC_CODE" = "200" ] && [ -n "$CC_BODY" ]; then
     ok "CallCenter /callcenter/ with Basic auth: HTTP 200, body present"
@@ -1269,8 +1310,13 @@ _check_udp_port 5060  "SIP"
 _check_tcp_port 5061  "SIP/TLS"      "warn"
 _check_tcp_port 8088  "Asterisk HTTP"
 _check_udp_port 4569  "IAX2"
-_check_tcp_port 80    "HTTP"
-_check_tcp_port 443   "HTTPS"        "warn"
+if [ "$BEHIND_PROXY" = "yes" ] && [ -n "$PROXY_HTTP_PORT" ]; then
+    _check_tcp_port "$PROXY_HTTP_PORT" "Apache proxy HTTP"
+    warn "TCP port 443 (HTTPS): skipped in reverse proxy mode"
+else
+    _check_tcp_port 80    "HTTP"
+    _check_tcp_port 443   "HTTPS"        "warn"
+fi
 _check_tcp_port 5038  "AMI"
 _check_tcp_port "$WEBMIN_PORT" "Webmin"
 _check_tcp_port 25    "SMTP/Postfix"

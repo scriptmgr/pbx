@@ -22,7 +22,9 @@ hdr()  { printf "\n${BOLD}%s${NC}\n" "$*"; }
 [ "$(id -u)" -ne 0 ] && { err "Must run as root"; exit 1; }
 
 SSHD_CONFIG="/etc/ssh/sshd_config"
-AUTH_KEYS="/root/.ssh/authorized_keys"
+ROOT_HOME=$(getent passwd root 2>/dev/null | awk -F: '{print $6}' | head -1 || true)
+[ -n "${ROOT_HOME}" ] || { err "Could not determine root home directory"; exit 1; }
+AUTH_KEYS="${ROOT_HOME}/.ssh/authorized_keys"
 SSH_PORT=$(grep -E '^Port ' "$SSHD_CONFIG" 2>/dev/null | awk '{print $2}' | head -1 || true)
 SSH_PORT="${SSH_PORT:-22}"
 SESSION_IP=$(echo "${SSH_CLIENT:-}" | awk '{print $1}' || true)
@@ -76,7 +78,7 @@ case "${1:-}" in
         restart_sshd && ok "SSH port changed to ${NP}" ;;
     --add-key)
         KEY="${2:-}"; [ -z "$KEY" ] && { err "--add-key requires a public key string"; exit 1; }
-        mkdir -p /root/.ssh; chmod 700 /root/.ssh
+        mkdir -p "$(dirname "$AUTH_KEYS")"; chmod 700 "$(dirname "$AUTH_KEYS")"
         touch "$AUTH_KEYS"; chmod 600 "$AUTH_KEYS"
         echo "$KEY" >> "$AUTH_KEYS" && ok "Key added to ${AUTH_KEYS}" ;;
     *)

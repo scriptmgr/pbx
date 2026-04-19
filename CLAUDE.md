@@ -102,13 +102,13 @@ incus launch images:almalinux/9 pbx-alma9
 incus launch images:debian/12 pbx-deb12
 
 # Push installer to container
-incus file push install.sh pbx-alma9/root/install.sh
+incus file push install.sh pbx-alma9/var/tmp/install.sh
 
 # Run installation
-incus exec pbx-alma9 -- bash -c 'nohup bash /root/install.sh > /root/install.log 2>&1 &'
+incus exec pbx-alma9 -- bash -c 'nohup bash /var/tmp/install.sh > /var/log/pbx-test-install.log 2>&1 &'
 
 # Monitor progress
-incus exec pbx-alma9 -- tail -f /root/install.log
+incus exec pbx-alma9 -- tail -f /var/log/pbx-test-install.log
 
 # Clean up
 incus stop pbx-alma9 && incus delete pbx-alma9
@@ -314,8 +314,8 @@ Set `BEHIND_PROXY=yes` before installation to:
 
 ### Testing Protocol
 1. Create clean incus containers: `incus launch images:almalinux/9 pbx-alma9`
-2. Push install.sh: `incus file push install.sh pbx-alma9/root/`
-3. Run: `incus exec pbx-alma9 -- bash /root/install.sh`
+2. Push install.sh: `incus file push install.sh pbx-alma9/var/tmp/install.sh`
+3. Run: `incus exec pbx-alma9 -- bash /var/tmp/install.sh`
 4. Test re-run (idempotency)
 5. Test on Debian 12 as well
 6. Clean up: `incus stop pbx-alma9 && incus delete pbx-alma9`

@@ -6,7 +6,7 @@
 [![Asterisk](https://img.shields.io/badge/Asterisk-22_LTS-orange)](https://www.asterisk.org/)
 [![FreePBX](https://img.shields.io/badge/FreePBX-17-red)](https://www.freepbx.org/)
 
-A production-ready, fully automated installer for a complete enterprise PBX system — Asterisk 22, FreePBX 17, AvantFax, and 32 management tools. Designed for self-hosted, SMB, and enterprise use.
+A production-ready, fully automated installer for a complete enterprise PBX system — Asterisk 22, FreePBX 17, AvantFax, and 33 management tools. Designed for self-hosted, SMB, and enterprise use.
 
 **Version:** 2.0 &nbsp;|&nbsp; **Asterisk:** 22 LTS &nbsp;|&nbsp; **FreePBX:** 17
 
@@ -38,6 +38,7 @@ A production-ready, fully automated installer for a complete enterprise PBX syst
 - **Firewall** — PBX-optimised iptables rules
 - **SSH Hardening** — Secure remote access, SSH is never blocked
 - **SSL/TLS** — Let's Encrypt auto-detection + self-signed fallback
+- **VPN Client Tools** — Optional OpenVPN/WireGuard client tooling with `pbx-vpn` guidance for connecting to an existing VPN server
 - **Rate Limiting** — Protection against SIP attacks
 - **Security Audit** — Built-in vulnerability scanner (`pbx-security`)
 - **Health Endpoint** — `/health/` JSON endpoint for external monitoring
@@ -60,7 +61,7 @@ A production-ready, fully automated installer for a complete enterprise PBX syst
 - **Festival / eSpeak** — Fallback engines
 - No AI/ML — lightweight, minimal resource usage
 
-### Management Suite (32 tools)
+### Management Suite (33 tools)
 
 All in `/usr/local/bin/`, all support `--help`.
 
@@ -81,6 +82,7 @@ All in `/usr/local/bin/`, all support `--help`.
 | `pbx-services` | Service status badges |
 | `pbx-logs` | Log viewer and analysis |
 | `pbx-network` | Network diagnostics |
+| `pbx-vpn` | VPN client setup guidance and status |
 | `pbx-ssl` | SSL certificate status and management |
 | `pbx-passwords` | Credential display (masked by default) |
 | `pbx-docs` | Quick reference documentation |
@@ -109,8 +111,8 @@ All in `/usr/local/bin/`, all support `--help`.
 |---|---|---|
 | **AlmaLinux** | 8, 9 | ✅ Recommended (RHEL-compatible) |
 | **Rocky Linux** | 8, 9 | ✅ Recommended (RHEL-compatible) |
-| **Ubuntu** | 18.04, 20.04, 22.04, 24.04 LTS | ✅ Recommended (Debian-based) |
-| **Debian** | 10, 11, 12 | ✅ Fully supported |
+| **Ubuntu** | 20.04, 22.04, 24.04 LTS | ✅ Recommended (Debian-based) |
+| **Debian** | 11, 12 | ✅ Fully supported |
 | **RHEL** | 8, 9 | ✅ Requires active subscription |
 | **Oracle Linux** | 8, 9 | ✅ Supported |
 | **Fedora** | 35–42+ | ⚠️ Rapid release — dev/testing only |
@@ -129,6 +131,8 @@ Derivative distributions are auto-detected via `ID_LIKE` (Mint, Pop!_OS, CentOS 
 | CentOS 6 (legacy) | 18 LTS | 15 | 7.4 (Remi SCL) |
 
 PHP 7.4 is installed in parallel via PHP-FPM for AvantFax compatibility.
+
+Ubuntu 18.04 and Debian 10 are no longer included because their upstream PHP repositories no longer publish the package set required for FreePBX 17 in the current ecosystem.
 
 ### System Requirements
 - Fresh OS installation (no existing web or database services)
@@ -178,23 +182,32 @@ ADMIN_PASSWORD='MySecurePass123' \
 | `FAX_FROM_EMAIL` | From address for fax emails | `FROM_EMAIL` |
 | `FAX_FROM_NAME` | From name for fax emails | `PBX Fax System` |
 | `TIMEZONE` | System timezone | Auto-detected |
-| `BEHIND_PROXY` | Running behind reverse proxy (`yes`/`no`) | `no` |
-| `INSTALL_PROFILE` | `minimal` / `standard` / `advanced` | `standard` |
-| `INSTALL_AVANTFAX` | Install fax system (`1`/`0`) | `1` |
-| `FIREWALL_ENABLED` | Configure firewall (`1`/`0`) | `1` |
-| `FAIL2BAN_ENABLED` | Install fail2ban (`1`/`0`) | `1` |
-| `BACKUP_ENABLED` | Set up backup cron (`1`/`0`) | `1` |
-| `INSTALL_WEBMIN` | Install Webmin (`yes`/`no`) | profile default |
-| `INSTALL_FOP2` | FOP2 operator panel (HTML5) (`yes`/`no`) | `no` |
-| `INSTALL_KNOCKD` | Port knocking daemon (`yes`/`no`) | advanced only |
-| `INSTALL_OPENVPN` | OpenVPN server (`yes`/`no`) | advanced only |
-| `INSTALL_SNGREP` | SIP traffic monitor (`yes`/`no`) | advanced only |
+| `BEHIND_PROXY` | Running behind reverse proxy (`yes`/`no`) | `yes` |
+| `INSTALL_AVANTFAX` | Install fax system (`yes`/`no`) | `yes` |
+| `FIREWALL_ENABLED` | Configure firewall (`yes`/`no`) | `yes` |
+| `FAIL2BAN_ENABLED` | Install fail2ban (`yes`/`no`) | `yes` |
+| `BACKUP_ENABLED` | Set up backup cron (`yes`/`no`) | `yes` |
+| `INSTALL_WEBMIN` | Install Webmin (`yes`/`no`) | `yes` |
+| `INSTALL_FOP2` | FOP2 operator panel (HTML5) (`yes`/`no`) | `yes` |
+| `INSTALL_KNOCKD` | Port knocking daemon (`yes`/`no`) | `no` |
+| `INSTALL_OPENVPN` | OpenVPN client tools only (`yes`/`no`) | `yes` |
+| `INSTALL_WIREGUARD` | WireGuard client tools only (`yes`/`no`) | `yes` |
+| `INSTALL_SNGREP` | SIP traffic monitor (`yes`/`no`) | `yes` |
 | `GITHUB_REPO` | GitHub repo for management scripts | `scriptmgr/pbx` |
 | `SCRIPTS_REF` | Branch/tag for scripts | `main` |
 | `GITHUB_TOKEN` | Token for private forks | optional |
 | `NO_COLOR` | Disable colors and emojis | unset |
 
 All generated passwords are stored in `/etc/pbx/pbx_passwords` (mode 600).
+
+When `INSTALL_OPENVPN=yes` or `INSTALL_WIREGUARD=yes`, the installer only installs VPN **client** tooling. It does **not** configure or run an OpenVPN or WireGuard server, and it does not generate client example configs. Use `pbx-vpn` for connection guidance after install, and supply your own client details from an existing VPN server.
+
+```bash
+pbx-vpn --status      # Show installed VPN client tools and active client status
+pbx-vpn --openvpn     # OpenVPN client setup guidance
+pbx-vpn --wireguard   # WireGuard client setup guidance
+pbx-vpn --paths       # Recommended client config directories
+```
 
 ### SSL/TLS
 
@@ -274,7 +287,7 @@ pbx.example.com {
 └── ucp/                    # FreePBX User Control Panel
 
 /var/lib/tftpboot/          # TFTP phone provisioning
-/usr/local/bin/pbx-*        # Management scripts (32 tools)
+/usr/local/bin/pbx-*        # Management scripts (33 tools)
 /var/log/pbx/               # PBX-specific logs
 
 /mnt/backups/pbx/           # Backup storage
@@ -317,6 +330,7 @@ After installation, access your PBX through its FQDN:
 6. Test with built-in demo apps (dial `DEMO`, `123`, `*43` for echo test)
 7. Verify backups: `pbx-backup status`
 8. Run security audit: `pbx-security`
+9. If using a VPN client, review `pbx-vpn`
 
 ---
 
@@ -364,6 +378,14 @@ pbx-ssl status            # Certificate status
 pbx-ssl install           # Install Let's Encrypt cert
 ```
 
+### VPN Clients
+```bash
+pbx-vpn --status      # Show installed OpenVPN/WireGuard client tools and current status
+pbx-vpn --openvpn     # OpenVPN client setup guidance
+pbx-vpn --wireguard   # WireGuard client setup guidance
+pbx-vpn --paths       # Show recommended client config directories
+```
+
 ### Calls & Reporting
 ```bash
 pbx-calls active    # Current active calls
@@ -401,6 +423,7 @@ pbx-moh remove                                            # Remove a source
 | Network issues | `pbx-network` |
 | Disk space | `pbx-cleanup force` |
 | SSL problems | `pbx-ssl status` then `pbx-ssl install` |
+| VPN client setup | `pbx-vpn --openvpn` or `pbx-vpn --wireguard` |
 | Credential lookup | `pbx-passwords` or `/etc/pbx/pbx_passwords` |
 | SIP trunk down | `pbx-trunks` |
 | No active calls showing | `pbx-calls active` |
@@ -440,12 +463,12 @@ incus launch images:almalinux/9 pbx-alma9
 incus launch images:debian/12   pbx-deb12
 
 # Push and run
-incus file push install.sh pbx-alma9/root/install.sh
-incus exec pbx-alma9 -- bash -c 'nohup bash /root/install.sh > /root/install.log 2>&1 &'
-incus exec pbx-alma9 -- tail -f /root/install.log
+incus file push install.sh pbx-alma9/var/tmp/install.sh
+incus exec pbx-alma9 -- bash -c 'nohup bash /var/tmp/install.sh > /var/log/pbx-test-install.log 2>&1 &'
+incus exec pbx-alma9 -- tail -f /var/log/pbx-test-install.log
 
 # Run test suite
-incus exec pbx-alma9 -- bash /root/full-script-test.sh
+incus exec pbx-alma9 -- bash /var/tmp/full-script-test.sh
 ```
 
 ### Guidelines
