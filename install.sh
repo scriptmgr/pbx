@@ -171,6 +171,7 @@ INIT_SYSTEM=""
 MYSQL_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD:-}"
 ADMIN_USERNAME="${ADMIN_USERNAME:-${FREEPBX_ADMIN_USERNAME:-${FREEPBX_ADMIN_USER:-}}}"
 FREEPBX_ADMIN_USERNAME="${FREEPBX_ADMIN_USERNAME:-${ADMIN_USERNAME:-${FREEPBX_ADMIN_USER:-}}}"
+LAST_APPLIED_FREEPBX_ADMIN_USERNAME="${LAST_APPLIED_FREEPBX_ADMIN_USERNAME:-}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"          # Unified admin UI password (FreePBX, AvantFax, Reminder, CallCenter)
 FREEPBX_ADMIN_PASSWORD="${FREEPBX_ADMIN_PASSWORD:-}"  # Derived from ADMIN_PASSWORD — kept for internal use
 FREEPBX_DB_PASSWORD="${FREEPBX_DB_PASSWORD:-}"
@@ -1270,6 +1271,37 @@ ON DUPLICATE KEY UPDATE val=VALUES(val), type=VALUES(type);
 EOF
 }
 
+remove_stale_freepbx_admin_user() {
+    local current_username="${1:-}"
+    local previous_username="${2:-${LAST_APPLIED_FREEPBX_ADMIN_USERNAME:-}}"
+    local previous_sql
+    [ -n "${current_username}" ] || return 0
+    [ -n "${previous_username}" ] || previous_username=$(state_get LAST_APPLIED_FREEPBX_ADMIN_USERNAME)
+    [ -n "${previous_username}" ] || return 0
+    [ "${previous_username}" = "${current_username}" ] && return 0
+    [ -n "${MYSQL_ROOT_PASSWORD:-}" ] || load_mysql_root_password
+    [ -n "${MYSQL_ROOT_PASSWORD:-}" ] || return 1
+
+    previous_sql=$(sql_escape "${previous_username}")
+    mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk 2>/dev/null <<EOF || return 1
+DELETE FROM userman_users_settings
+WHERE uid IN (
+    SELECT id FROM (
+        SELECT id FROM userman_users WHERE username='${previous_sql}'
+    ) AS stale_admin_ids
+);
+DELETE FROM userman_users WHERE username='${previous_sql}';
+DELETE FROM ampusers WHERE username='${previous_sql}';
+EOF
+    info "Removed prior installer-managed FreePBX admin user '${previous_username}'"
+}
+
+record_freepbx_admin_username_sync() {
+    LAST_APPLIED_FREEPBX_ADMIN_USERNAME="${FREEPBX_ADMIN_USERNAME:-}"
+    [ -n "${LAST_APPLIED_FREEPBX_ADMIN_USERNAME}" ] || return 0
+    state_set LAST_APPLIED_FREEPBX_ADMIN_USERNAME "${LAST_APPLIED_FREEPBX_ADMIN_USERNAME}"
+}
+
 # FreePBX permission passes sometimes drop the executable bit from fwconsole.
 ensure_fwconsole_executable() {
     [ -e /var/lib/asterisk/bin/fwconsole ] && chmod 755 /var/lib/asterisk/bin/fwconsole 2>/dev/null || true
@@ -1411,6 +1443,7 @@ save_pbx_env() {
 MYSQL_ROOT_PASSWORD_FILE="${MYSQL_ROOT_PASSWORD_FILE:-/etc/pbx/mysql_root_password}"
 ADMIN_USERNAME="${ADMIN_USERNAME:-${FREEPBX_ADMIN_USERNAME:-}}"
 FREEPBX_ADMIN_USERNAME="${FREEPBX_ADMIN_USERNAME:-}"
+LAST_APPLIED_FREEPBX_ADMIN_USERNAME="${LAST_APPLIED_FREEPBX_ADMIN_USERNAME:-}"
 ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 FREEPBX_DB_PASSWORD="${FREEPBX_DB_PASSWORD:-}"
 AVANTFAX_DB_PASSWORD="${AVANTFAX_DB_PASSWORD:-}"
@@ -3563,8 +3596,8 @@ NOSIGEARLYEOF
     pass_hash=$(echo -n "${FREEPBX_ADMIN_PASSWORD}" | sha1sum | cut -d' ' -f1)
     mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk 2>/dev/null << ADMINEOF || true
 INSERT INTO ampusers (username, email, password_sha1, extension_low, extension_high, deptname, sections)
-VALUES ('${FREEPBX_ADMIN_USERNAME}', 'admin@localhost', '${pass_hash}', '', '', '', 'all')
-ON DUPLICATE KEY UPDATE password_sha1='${pass_hash}', sections='all';
+VALUES ('${FREEPBX_ADMIN_USERNAME}', '${ADMIN_EMAIL}', '${pass_hash}', '', '', '', 'all')
+ON DUPLICATE KEY UPDATE password_sha1='${pass_hash}', sections='all', email='${ADMIN_EMAIL}';
 ADMINEOF
     info "FreePBX admin user '${FREEPBX_ADMIN_USERNAME}' created"
 
@@ -3735,11 +3768,15 @@ NOSIGEOF
     # Force-load it after FreePBX has generated the config files.
     asterisk -rx "module load pbx_config.so" >/dev/null 2>&1 || true
 
+    remove_stale_freepbx_admin_user "${FREEPBX_ADMIN_USERNAME}" \
+        "${LAST_APPLIED_FREEPBX_ADMIN_USERNAME:-}" \
+        || warn "Failed to remove prior installer-managed FreePBX admin user"
+
     # FreePBX 17 authenticates GUI logins through User Management.
     # Sync the admin account into Userman with full PBX admin rights.
-    ensure_freepbx_gui_admin_user "${FREEPBX_ADMIN_USERNAME}" "${FREEPBX_ADMIN_PASSWORD}" "admin@localhost" \
+    ensure_freepbx_gui_admin_user "${FREEPBX_ADMIN_USERNAME}" "${FREEPBX_ADMIN_PASSWORD}" "${ADMIN_EMAIL}" \
         || warn "Failed PHP Userman sync for FreePBX GUI admin"
-    ensure_freepbx_gui_admin_user_sql_fallback "${FREEPBX_ADMIN_USERNAME}" "${FREEPBX_ADMIN_PASSWORD}" "admin@localhost" \
+    ensure_freepbx_gui_admin_user_sql_fallback "${FREEPBX_ADMIN_USERNAME}" "${FREEPBX_ADMIN_PASSWORD}" "${ADMIN_EMAIL}" \
         || warn "Failed SQL fallback sync for FreePBX GUI admin"
     # Also ensure ampusers row has correct hash and full admin sections
     # In FreePBX 17, ampusers sections='all' grants full admin access to the GUI
@@ -3747,9 +3784,10 @@ NOSIGEOF
     pass_hash_new=$(echo -n "${FREEPBX_ADMIN_PASSWORD}" | sha1sum | cut -d' ' -f1)
     mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk 2>/dev/null << ADMINEOF2 || true
 INSERT INTO ampusers (username, email, password_sha1, extension_low, extension_high, deptname, sections)
-VALUES ('${FREEPBX_ADMIN_USERNAME}', 'admin@localhost', '${pass_hash_new}', '', '', '', 'all')
-ON DUPLICATE KEY UPDATE password_sha1='${pass_hash_new}', sections='all', email='admin@localhost';
+VALUES ('${FREEPBX_ADMIN_USERNAME}', '${ADMIN_EMAIL}', '${pass_hash_new}', '', '', '', 'all')
+ON DUPLICATE KEY UPDATE password_sha1='${pass_hash_new}', sections='all', email='${ADMIN_EMAIL}';
 ADMINEOF2
+    record_freepbx_admin_username_sync
     info "FreePBX admin user '${FREEPBX_ADMIN_USERNAME}' permissions set"
 
     track_install "freepbx-config"
@@ -6183,6 +6221,7 @@ PASSWORDS_FILE="/etc/pbx/pbx_passwords"
 FREEPBX_ADMIN_USERNAME="administrator"
 sql_escape() { printf '%s' "$1" | sed "s/'/''/g"; }
 [ -f "${ENV_FILE}" ] && source "${ENV_FILE}" 2>/dev/null || true
+ADMIN_EMAIL="${ADMIN_EMAIL:-admin@localhost}"
 echo "Changing FreePBX admin password for ${FREEPBX_ADMIN_USERNAME}..."
 read -rsp "New password: " PW; echo
 MYSQL_ROOT_PASSWORD_FILE="${MYSQL_ROOT_PASSWORD_FILE:-/etc/pbx/mysql_root_password}"
@@ -6193,12 +6232,12 @@ if [ -n "${MYSQL_ROOT_PASSWORD}" ]; then
     PASS_HASH=$(printf '%s' "${PW}" | sha1sum | cut -d' ' -f1)
     mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk 2>/dev/null <<EOF || true
 INSERT INTO ampusers (username, email, password_sha1, extension_low, extension_high, deptname, sections)
-VALUES ('${FREEPBX_ADMIN_USERNAME}', 'admin@localhost', '${PASS_HASH}', '', '', '', 'all')
-ON DUPLICATE KEY UPDATE password_sha1='${PASS_HASH}', sections='all', email='admin@localhost';
+VALUES ('${FREEPBX_ADMIN_USERNAME}', '${ADMIN_EMAIL}', '${PASS_HASH}', '', '', '', 'all')
+ON DUPLICATE KEY UPDATE password_sha1='${PASS_HASH}', sections='all', email='${ADMIN_EMAIL}';
 EOF
 fi
 if [ -f /etc/freepbx.conf ]; then
-    php /dev/stdin "${FREEPBX_ADMIN_USERNAME}" "${PW}" "admin@localhost" <<'PHP'
+    php /dev/stdin "${FREEPBX_ADMIN_USERNAME}" "${PW}" "${ADMIN_EMAIL}" <<'PHP'
 <?php
 $bootstrap_settings = ['skip_astman' => true];
 require '/etc/freepbx.conf';
@@ -6238,7 +6277,7 @@ if [ -n "${MYSQL_ROOT_PASSWORD}" ]; then
     USERMAN_PW_HASH=$(php -r 'echo password_hash($argv[1], PASSWORD_BCRYPT);' "${PW}" 2>/dev/null || true)
     if [ -n "${USERMAN_PW_HASH}" ]; then
         USER_SQL=$(sql_escape "${FREEPBX_ADMIN_USERNAME}")
-        EMAIL_SQL=$(sql_escape "admin@localhost")
+        EMAIL_SQL=$(sql_escape "${ADMIN_EMAIL}")
         HASH_SQL=$(sql_escape "${USERMAN_PW_HASH}")
         USERMAN_UID=$(mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk -Nse \
             "SELECT id FROM userman_users WHERE username='${USER_SQL}' ORDER BY id LIMIT 1" 2>/dev/null || true)
