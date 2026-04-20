@@ -30,6 +30,7 @@ These apply to every piece of code, script, UI, config, and documentation in thi
 | 17 | **`TODO.md`** is the human task backlog — humans add to it, AI executes from it. **Never add items to `TODO.md` unprompted.** `TODO.AI.md` is strictly the AI's session-level working scratchpad. |
 | 18 | **Never assume or guess.** If anything is unclear, ask the user before proceeding. |
 | 19 | **Always search and read existing code** before implementing or changing anything. |
+| 20 | **Never reboot, power off, or shut down the host system.** Those actions are allowed only inside test containers or VMs. |
 
 ---
 
@@ -63,6 +64,7 @@ These apply to every piece of code, script, UI, config, and documentation in thi
 5. **Never block SSH** — SSH port must always be whitelisted before any firewall change.
 6. **No hardcoded paths that differ per distro** — Use the `PKG_*` variable map system.
 7. **Test before claiming done** — Never say something is production-ready without running the test suite.
+8. **Never reboot, power off, or shut down the host system** — those actions are allowed only inside test containers or VMs.
 
 ---
 
@@ -104,12 +106,15 @@ needed, but keep lines readable.
 - **Always test on both alma9 AND deb12** — never just one distro.
 - **Push scripts to containers:** `incus file push scripts/pbx-X pbx-alma9/usr/local/bin/pbx-X`
 - **After any install.sh change:** test idempotency (re-run must not break anything).
+- **Power actions:** never run `reboot`, `poweroff`, `shutdown`, or equivalent on the host. These are allowed only inside test containers or VMs.
 
 ---
 
 ## 🐳 Development Environment
 
 Use **incus containers** (not Docker) — better systemd support:
+
+- Host safety rule: do not reboot or power off the host system. If a test needs a reboot/power cycle, do it inside an incus container or VM only.
 
 ```bash
 incus launch images:almalinux/9 pbx-alma9

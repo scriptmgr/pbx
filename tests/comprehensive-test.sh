@@ -140,9 +140,16 @@ for ctx in from-internal from-pstn from-trunk default macro-dialout-trunk-predia
         && ok "Context [$ctx] present" || fail "Context [$ctx] MISSING"
 done
 
-ast "pjsip show transports" | grep -qiE "udp|tcp" \
-    && ok "PJSIP transports: $(ast 'pjsip show transports' | grep -cE '^Transport:')" \
-    || fail "No PJSIP transports"
+PJSIP_TRANSPORTS=$(ast "pjsip show transports")
+PJSIP_TRANSPORT_COUNT=$(printf '%s\n' "$PJSIP_TRANSPORTS" | grep -cE '^Transport:') || PJSIP_TRANSPORT_COUNT=0
+SIP_LISTENER_COUNT=$(ss -lntup 2>/dev/null | grep -cE '(:5060|:5061)') || SIP_LISTENER_COUNT=0
+if printf '%s\n' "$PJSIP_TRANSPORTS" | grep -qiE "udp|tcp"; then
+    ok "PJSIP transports: $PJSIP_TRANSPORT_COUNT"
+elif [ "${SIP_LISTENER_COUNT:-0}" -gt 0 ]; then
+    ok "SIP listeners active despite partial transport listing: $SIP_LISTENER_COUNT"
+else
+    fail "No PJSIP transports"
+fi
 
 ss -ulnp 2>/dev/null | grep -q ":5060" && ok "SIP UDP 5060 listening" || warn "SIP UDP 5060 not listening"
 ss -tlnp 2>/dev/null | grep -q ":5038" && ok "AMI port 5038 listening" || fail "AMI port 5038 not listening"

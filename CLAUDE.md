@@ -96,6 +96,8 @@ A production-ready, fully automated installation script for enterprise PBX syste
 
 Use incus containers for testing — faster than Docker, better systemd support:
 
+- Safety rule: never run `reboot`, `poweroff`, `shutdown`, or equivalent on the host system. Those commands are allowed only inside test containers or VMs.
+
 ```bash
 # Create test containers
 incus launch images:almalinux/9 pbx-alma9

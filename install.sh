@@ -511,8 +511,14 @@ detect_system() {
             ;;
     esac
 
-    # Detect init system
-    if command -v systemctl >/dev/null 2>&1 && systemctl status >/dev/null 2>&1; then
+    # Detect init system. `systemctl status` without a unit can return non-zero
+    # on some systemd distros (for example Ubuntu 24 containers), so key off the
+    # actual init environment instead of a generic status call.
+    if command -v systemctl >/dev/null 2>&1 && {
+        [ -d /run/systemd/system ] || \
+        [ "$(cat /proc/1/comm 2>/dev/null || true)" = "systemd" ] || \
+        [ "$(basename "$(readlink -f /proc/1/exe 2>/dev/null || true)")" = "systemd" ]
+    }; then
         INIT_SYSTEM="systemd"
     else
         INIT_SYSTEM="sysv"
@@ -1656,6 +1662,7 @@ sync_management_scripts() {
     step "Syncing management scripts from GitHub"
 
     local install_dir="/usr/local/bin"
+    local manifest_fresh=0
 
     # LOCAL OVERRIDE: if PBX_SCRIPTS_LOCAL is set, copy directly (dev/testing mode)
     if [ -n "${PBX_SCRIPTS_LOCAL:-}" ] && [ -d "${PBX_SCRIPTS_LOCAL}" ]; then
@@ -1727,6 +1734,7 @@ sync_management_scripts() {
             # Cache manifest for offline use
             mkdir -p "$(dirname "${SCRIPTS_MANIFEST_CACHE}")"
             cp "${manifest_tmp}" "${SCRIPTS_MANIFEST_CACHE}"
+            manifest_fresh=1
         fi
     fi
 
@@ -1761,7 +1769,7 @@ sync_management_scripts() {
     done < "${manifest_tmp}"
 
     # Remove any scripts that are no longer in the repo
-    if [ -f "${SCRIPTS_MANIFEST_CACHE}" ]; then
+    if [ "${manifest_fresh}" -eq 1 ] && [ -f "${SCRIPTS_MANIFEST_CACHE}" ]; then
         local preserve_local_helpers="pbx-backup-run pbx-health-check pbx-reminder-process pbx-status-update"
         for existing in "${install_dir}"/pbx-*; do
             [ -f "${existing}" ] || continue
@@ -1773,6 +1781,8 @@ sync_management_scripts() {
                 rm -f "${existing}"
             }
         done
+    else
+        info "Skipping obsolete-script removal: no fresh GitHub manifest available"
     fi
 
     rm -f "${manifest_tmp}" "${manifest_tmp}.sh"
@@ -3336,8 +3346,15 @@ install_asterisk() {
         info "chan_dahdi disabled: DAHDI kernel module not present"
     fi
 
-    run_logged "Asterisk: compile (this takes several minutes)" \
-        make -j"$(nproc)" || { error "Asterisk compile failed — see ${LOG_FILE}"; return 1; }
+    local make_jobs
+    make_jobs="$(nproc 2>/dev/null || echo 1)"
+    [ -n "${make_jobs}" ] || make_jobs=1
+    if ! run_logged "Asterisk: compile (this takes several minutes)" \
+        make -j"${make_jobs}"; then
+        warn "Parallel Asterisk build failed — retrying with a single job"
+        run_logged "Asterisk: compile retry (serial)" \
+            make -j1 || { error "Asterisk compile failed — see ${LOG_FILE}"; return 1; }
+    fi
     run_logged "Asterisk: install" \
         make install || { error "Asterisk install failed — see ${LOG_FILE}"; return 1; }
     make config            >> "${LOG_FILE}" 2>&1 || true
@@ -3513,20 +3530,24 @@ NOSIGEARLYEOF
     fwconsole ma installall 2>/dev/null || warn "Module installall had errors"
     patch_freepbx_logger_guard "${WEB_ROOT}/admin/libraries/BMO/Logger.class.php"
 
+    # FreePBX 17 no longer publishes several legacy/virtual modules as separate
+    # downloads. Keep the explicit loop limited to modules that remain online.
     for mod in superfecta queueprio miscdests miscapps outcnam \
                dynroute extensionsettings disa allowlist customappsreg \
-               inboundroutes outboundroutes ringgroups queues ivr \
-               timeconditions daynight miscdi callforward findmefollow \
-               donotdisturb parking paging followme callrecording \
-               recordings announcement conferences conferenceapps \
-               cidlookup directory phonebook ucp userman hotelwakeup wakeup \
-               sip; do
+               ringgroups queues ivr timeconditions daynight \
+               callforward findmefollow donotdisturb parking paging \
+               callrecording recordings announcement conferences \
+               cidlookup directory ucp userman hotelwakeup; do
         fwconsole ma downloadinstall "${mod}" 2>/dev/null || true
     done
     patch_freepbx_logger_guard "${WEB_ROOT}/admin/libraries/BMO/Logger.class.php"
 
-    fwconsole ma remove firewall    2>/dev/null || true
-    fwconsole ma remove synologyabb 2>/dev/null || true
+    local installed_modules
+    installed_modules=$(fwconsole ma list 2>/dev/null || true)
+    printf '%s\n' "${installed_modules}" | grep -qE '^firewall[[:space:]]' \
+        && fwconsole ma remove firewall 2>/dev/null || true
+    printf '%s\n' "${installed_modules}" | grep -qE '^synologyabb[[:space:]]' \
+        && fwconsole ma remove synologyabb 2>/dev/null || true
 
     local ari_user ari_pass
     ari_user="ari_$(generate_password 4 2>/dev/null | tr '[:upper:]' '[:lower:]' || echo "pbxuser")"
@@ -3676,9 +3697,11 @@ NATEOF
         fwconsole ma downloadinstall "${mod}" 2>/dev/null || true
     done
 
-    # Remove problematic/unneeded modules
-    for mod in firewall sysadmin; do
-        fwconsole ma remove "${mod}" 2>/dev/null || true
+    # Remove problematic/unneeded modules only if they are present.
+    installed_modules=$(fwconsole ma list 2>/dev/null || true)
+    for mod in firewall sysadmin synologyabb; do
+        printf '%s\n' "${installed_modules}" | grep -qE "^${mod}[[:space:]]" \
+            && fwconsole ma remove "${mod}" 2>/dev/null || true
     done
 
     # Enable CDR and queue logging
