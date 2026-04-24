@@ -57,12 +57,12 @@ fwconsole ma list 2>/dev/null | grep -q "Enabled" \
     && ok "fwconsole ma list works" || fail "fwconsole ma list failed"
 COUNT=$(fwconsole ma list 2>/dev/null | grep -c "Enabled" || echo 0)
 [ "$COUNT" -ge 50 ] && ok "FreePBX modules enabled: $COUNT" || fail "Too few modules: $COUNT"
-# FreePBX 17 module names (verified from live install)
+# FreePBX 16 module names (verified from live install path)
 for mod in core voicemail cdr backup ringgroups ivr dashboard framework sipsettings userman; do
     fwconsole ma list 2>/dev/null | grep -q "^| ${mod} " \
         && ok "FreePBX module: $mod" || fail "FreePBX module missing: $mod"
 done
-# Routing: FreePBX 17 uses dynroute + core (no separate inboundroutes module)
+# Routing: current install path uses dynroute + core (no separate inboundroutes module)
 fwconsole ma list 2>/dev/null | grep -qE "dynroute|inboundroutes" \
     && ok "FreePBX routing module present" || warn "FreePBX routing module not found"
 asterisk -rx "module show like chan_pjsip" 2>/dev/null | grep -q "Running" \

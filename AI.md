@@ -198,11 +198,11 @@ incus exec pbx-alma9 -- chmod +x /usr/local/bin/pbx-status
 
 | Decision | Choice | Reason |
 |---|---|---|
-| VoIP engine | Asterisk 22 LTS | Latest LTS; 21 for CentOS 7, 18 for CentOS 6 |
-| PBX management | FreePBX 17 | Industry standard; 70+ modules |
-| PHP main | 8.2 | Required by FreePBX 17 |
-| PHP fax | 7.4 | Required by AvantFax 3.4.1 |
-| PHP isolation | PHP-FPM sockets | Dual-version, per-app pool |
+| VoIP engine | Asterisk 20 | Highest version accepted by FreePBX 16 while keeping PHP 7.4 |
+| PBX management | FreePBX 16 | Required to keep the stack on PHP 7.4 |
+| PHP main | 7.4 | Required by FreePBX and AvantFax |
+| PHP fax | 7.4 | Shared primary runtime |
+| PHP isolation | PHP-FPM sockets | Single shared PHP 7.4 pool by default |
 | PHP-FPM user | `asterisk` | FreePBX files owned by asterisk:asterisk (660) |
 | SIP | PJSIP only | chan_sip disabled |
 | Fax | HylaFax+ + IAXmodem + AvantFax | Full fax stack, 4 virtual modems |
@@ -221,17 +221,17 @@ incus exec pbx-alma9 -- chmod +x /usr/local/bin/pbx-status
 
 | Distro | Status | Asterisk | FreePBX |
 |---|---|---|---|
-| AlmaLinux 9 | ✅ Primary | 22 | 17 |
-| Debian 12 | ✅ Primary | 22 | 17 |
-| Rocky Linux 9 | ✅ Supported | 22 | 17 |
-| Ubuntu 22.04 LTS | ✅ Supported | 22 | 17 |
-| RHEL 8/9 | ✅ Supported | 22 | 17 |
-| Oracle Linux 8/9 | ✅ Supported | 22 | 17 |
-| Fedora 35+ | ✅ Supported | 22 | 17 |
-| AlmaLinux/Rocky 8 | 🟡 Secondary | 22 | 17 |
-| Ubuntu 18.04/20.04 | 🟡 Secondary | 22 | 17 |
-| Debian 10/11 | 🟡 Secondary | 22 | 17 |
-| CentOS 7 | 🟡 Legacy | 21 | 17 |
+| AlmaLinux 9 | ✅ Primary | 20 | 16 |
+| Debian 12 | ✅ Primary | 20 | 16 |
+| Rocky Linux 9 | ✅ Supported | 20 | 16 |
+| Ubuntu 22.04 LTS | ✅ Supported | 20 | 16 |
+| RHEL 8/9 | ✅ Supported | 20 | 16 |
+| Oracle Linux 8/9 | ✅ Supported | 20 | 16 |
+| Fedora 35+ | ✅ Supported | 20 | 16 |
+| AlmaLinux/Rocky 8 | 🟡 Secondary | 20 | 16 |
+| Ubuntu 18.04/20.04 | 🟡 Secondary | 20 | 16 |
+| Debian 10/11 | 🟡 Secondary | 20 | 16 |
+| CentOS 7 | 🟡 Legacy | 20 | 16 |
 | CentOS 6 | 🟡 Legacy | 18 | 15 |
 
 ---
@@ -261,7 +261,7 @@ incus exec pbx-alma9 -- chmod +x /usr/local/bin/pbx-status
 ## 🔧 Known Gotchas
 
 1. **PHP-FPM pool user must be `asterisk`** — default `www-data`/`apache` causes HTTP 500 on FreePBX.
-2. **FreePBX admin user** — `fwconsole userman --add` removed in FP17; use direct SQL INSERT with SHA1 hash.
+2. **FreePBX admin user** — use direct SQL INSERT with SHA1 hash for unattended provisioning.
 3. **freepbx.service is oneshot** — must be started via `systemctl`, not directly; direct start leaves orphaned socket.
 4. **HylaFax binary path differs** — source-compiled: `/usr/local/sbin/faxq`; packages: `/usr/sbin/faxq`. Auto-detect with `command -v`.
 5. **HylaFax spool ownership** — `/var/spool/hylafax/` must be `uucp:uucp` for FIFO creation.

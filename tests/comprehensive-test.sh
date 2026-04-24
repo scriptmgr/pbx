@@ -118,7 +118,7 @@ sep "2. SERVICES"
 check_svc "Asterisk"    asterisk freepbx
 check_svc "MariaDB"     mariadb mysql
 check_svc "Web server"  httpd apache2
-check_svc "PHP-FPM"     php-fpm php8.2-fpm php7.4-fpm
+check_svc "PHP-FPM"     php-fpm php7.4-fpm php74-php-fpm
 check_svc "Postfix"     postfix
 check_svc "Fail2ban"    fail2ban
 check_svc "HylaFAX"     hylafax "hylafax+"

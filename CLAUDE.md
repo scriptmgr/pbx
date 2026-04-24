@@ -2,12 +2,12 @@
 
 ## Project Status: Active Development
 
-A production-ready, fully automated installation script for enterprise PBX systems with Asterisk 22, FreePBX 17, and comprehensive management tools.
+A production-ready, fully automated installation script for enterprise PBX systems with Asterisk 20, FreePBX 16, and comprehensive management tools.
 
 ## 🎯 Current Version: 2.0
 
 ### Latest Updates
-- ✅ Asterisk 22 LTS (21 for CentOS 7, 18 for CentOS 6)
+- ✅ Asterisk 20 (18 for CentOS 6)
 - ✅ Full idempotency — script can be re-run safely (state in /etc/pbx/state.json)
 - ✅ 70+ FreePBX modules automatic installation (explicit list via loop)
 - ✅ Comprehensive demo applications (DEMO, 123, 947, 951, LENNY, etc.)
@@ -23,7 +23,7 @@ A production-ready, fully automated installation script for enterprise PBX syste
 - ✅ Fax-to-email automatic forwarding configuration
 - ✅ 32 management scripts in /usr/local/bin/pbx-*
 - ✅ PHP-FPM runs as `asterisk` user (required for FreePBX file permissions)
-- ✅ FreePBX admin user created via direct SQL (fwconsole userman removed in FP17)
+- ✅ FreePBX admin user created via direct SQL for unattended installs
 - ✅ HylaFax service detects binary path (package vs source-compiled)
 - ✅ /var/spool/hylafax owned by uucp for FIFO creation
 - ✅ freepbx.service (oneshot, RemainAfterExit=yes) started via systemd in finalize
@@ -46,12 +46,12 @@ A production-ready, fully automated installation script for enterprise PBX syste
 ## 🏗️ Architecture
 
 ### Core Components
-1. **Asterisk 22 LTS** - VoIP engine with PJSIP (chan_sip disabled)
-2. **FreePBX 17** - Web-based PBX management with 70+ modules
+1. **Asterisk 20** - VoIP engine with PJSIP (chan_sip disabled)
+2. **FreePBX 16** - Web-based PBX management with 70+ modules
 3. **MariaDB** - Database backend
 4. **Apache/HTTPD** - Web server with reverse proxy support
-5. **PHP 8.2** - Primary PHP version
-6. **PHP 7.4** - For AvantFax compatibility
+5. **PHP 7.4** - Primary PHP version for FreePBX and AvantFax
+6. **PHP-FPM** - Runs the shared PHP 7.4 web runtime
 
 ### Additional Features
 - **AvantFax + IAXmodem** - 4 virtual fax modems with HylaFax+
@@ -151,7 +151,7 @@ docker run -it --privileged rockylinux:9 /bin/bash
 - Fedora 35+
 
 ### Legacy Support
-- **CentOS 7** — Asterisk 21 LTS, FreePBX 17, PHP 8.2 via Remi
+- **CentOS 7** — Asterisk 20, FreePBX 16, PHP 7.4 via Remi
 - **CentOS 6** — Asterisk 18 LTS, FreePBX 15, PHP 7.4 via Remi SCL, SysV init
 
 ## 🔧 Key Features in Detail
@@ -270,7 +270,7 @@ Set `BEHIND_PROXY=yes` before installation to:
    - Status: ✅ Fixed
 
 2. **FreePBX admin user creation**
-   - `fwconsole userman --add` removed in FreePBX 17
+   - Use direct SQL INSERT into `ampusers` for unattended provisioning
    - Fix: Direct SQL INSERT into `ampusers` with SHA1 password hash
    - Status: ✅ Fixed
 
@@ -351,7 +351,7 @@ fi
 3. Repository setup (EPEL, Remi, NodeSource)
 4. Core dependencies (build tools, libraries)
 5. Database (MariaDB)
-6. PHP (8.2 + 7.4)
+6. PHP 7.4
 7. Apache/HTTPD
 8. SSL/TLS configuration (Let's Encrypt detection)
 9. Reverse proxy configuration

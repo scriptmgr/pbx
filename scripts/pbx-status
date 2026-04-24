@@ -91,7 +91,7 @@ done
 
 # Detect PHP-FPM service name
 _fpm='php-fpm'
-for _s in php8.2-fpm php8.1-fpm php8.0-fpm php-fpm; do
+for _s in php7.4-fpm php74-php-fpm php-fpm; do
     printf '%s\n' "$_UNITS" | grep -q "^${_s}\.service" && { _fpm="$_s"; break; } || true
 done
 

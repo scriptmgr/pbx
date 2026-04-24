@@ -80,9 +80,10 @@ trap ':' HUP
 # =============================================================================
 
 ASTERISK_VERSION=""       # set by version_select()
-FREEPBX_VERSION="17.0"
+FREEPBX_VERSION="16.0"
 PHP_VERSION=""            # set by version_select()
 PHP_AVANTFAX_VERSION=""   # set by version_select()
+NODEJS_MAJOR=""           # set by version_select()
 
 INSTALL_AVANTFAX="${INSTALL_AVANTFAX:-yes}"
 NUMBER_OF_MODEMS="${NUMBER_OF_MODEMS:-4}"
@@ -121,8 +122,8 @@ PACKAGES_DISTRO_BUILD=""         # compiler + build tools
 PACKAGES_DISTRO_ASTERISK_DEPS="" # Asterisk compile-time dependencies
 PACKAGES_DISTRO_WEBSERVER=""     # web server (apache2 / httpd)
 PACKAGES_DISTRO_WEBSERVER_OPT="" # optional web modules (installed one-by-one)
-PACKAGES_DISTRO_PHP=""           # PHP 8.2 + common extensions
-PACKAGES_DISTRO_PHP74=""         # PHP 7.4 for AvantFax
+PACKAGES_DISTRO_PHP=""           # Primary PHP runtime + common extensions
+PACKAGES_DISTRO_PHP74=""         # Optional secondary PHP runtime for split-pool installs
 PACKAGES_DISTRO_MEDIA_OPT=""     # optional media helpers
 PACKAGES_DISTRO_MAIL_CLIENT=""   # mailx-compatible client
 PACKAGES_DISTRO_MARIADB=""       # MariaDB server + client
@@ -527,19 +528,30 @@ detect_system() {
 
     # Network information — distinguish primary interface addresses from
     # truly private RFC1918/ULA addresses and public internet-routable ones.
-    PRIMARY_IP=$(detect_primary_ipv4 || true)
-    PRIMARY_IP6=$(detect_primary_ipv6 || true)
-    PRIVATE_IP=$(detect_private_ipv4 || true)
-    PRIVATE_IP6=$(detect_private_ipv6 || true)
-    PUBLIC_IP=$(detect_public_ipv4 || true)
-    PUBLIC_IP6=$(detect_public_ipv6 || true)
-    [ -z "${PUBLIC_IP:-}" ] && is_public_ipv4 "${PRIMARY_IP:-}" && PUBLIC_IP="${PRIMARY_IP}"
-    [ -z "${PUBLIC_IP6:-}" ] && is_public_ipv6 "${PRIMARY_IP6:-}" && PUBLIC_IP6="${PRIMARY_IP6}"
-    EXTERNAL_IP="${PUBLIC_IP:-${PUBLIC_IP6:-${PRIMARY_IP:-${PRIMARY_IP6:-}}}}"
-    [ -z "${PRIMARY_IP}" ] && [ -z "${PRIMARY_IP6}" ] && {
-        error "Could not determine a usable primary IPv4 or IPv6 address"
-        exit 1
-    }
+    # Fresh containers can briefly come up before DHCP/SLAAC settles, so retry
+    # for a short window instead of failing immediately on the first probe.
+    local net_detect_tries=0
+    while :; do
+        PRIMARY_IP=$(detect_primary_ipv4 || true)
+        PRIMARY_IP6=$(detect_primary_ipv6 || true)
+        PRIVATE_IP=$(detect_private_ipv4 || true)
+        PRIVATE_IP6=$(detect_private_ipv6 || true)
+        PUBLIC_IP=$(detect_public_ipv4 || true)
+        PUBLIC_IP6=$(detect_public_ipv6 || true)
+        [ -z "${PUBLIC_IP:-}" ] && is_public_ipv4 "${PRIMARY_IP:-}" && PUBLIC_IP="${PRIMARY_IP}"
+        [ -z "${PUBLIC_IP6:-}" ] && is_public_ipv6 "${PRIMARY_IP6:-}" && PUBLIC_IP6="${PRIMARY_IP6}"
+        EXTERNAL_IP="${PUBLIC_IP:-${PUBLIC_IP6:-${PRIMARY_IP:-${PRIMARY_IP6:-}}}}"
+        if [ -n "${PRIMARY_IP}" ] || [ -n "${PRIMARY_IP6}" ]; then
+            break
+        fi
+        net_detect_tries=$((net_detect_tries + 1))
+        if [ "${net_detect_tries}" -ge 15 ]; then
+            error "Could not determine a usable primary IPv4 or IPv6 address"
+            exit 1
+        fi
+        [ "${net_detect_tries}" -eq 1 ] && warn "No usable primary IP detected yet — waiting for network..."
+        sleep 2
+    done
 
     SYSTEM_FQDN=$(hostname -f 2>/dev/null || hostname 2>/dev/null || echo "pbx.local")
     SYSTEM_DOMAIN=$(echo "${SYSTEM_FQDN}" | cut -d. -f2- 2>/dev/null || echo "local")
@@ -566,27 +578,31 @@ version_select() {
         1)
             ASTERISK_VERSION="18"
             FREEPBX_VERSION="15"
-            PHP_VERSION="7.2"
-            PHP_AVANTFAX_VERSION="7.2"
+            PHP_VERSION="7.4"
+            PHP_AVANTFAX_VERSION="7.4"
+            NODEJS_MAJOR="14"
             warn "CentOS 6 is EOL. Installing degraded component versions."
             ;;
         2)
-            ASTERISK_VERSION="21"
-            FREEPBX_VERSION="17.0"
-            PHP_VERSION="8.2"
+            ASTERISK_VERSION="20"
+            FREEPBX_VERSION="16.0"
+            PHP_VERSION="7.4"
             PHP_AVANTFAX_VERSION="7.4"
+            NODEJS_MAJOR="14"
             ;;
         3)
-            ASTERISK_VERSION="22"
-            FREEPBX_VERSION="17.0"
-            PHP_VERSION="8.2"
+            ASTERISK_VERSION="20"
+            FREEPBX_VERSION="16.0"
+            PHP_VERSION="7.4"
             PHP_AVANTFAX_VERSION="7.4"
+            NODEJS_MAJOR="14"
             ;;
         *)
-            ASTERISK_VERSION="21"
-            FREEPBX_VERSION="17.0"
-            PHP_VERSION="8.2"
+            ASTERISK_VERSION="20"
+            FREEPBX_VERSION="16.0"
+            PHP_VERSION="7.4"
             PHP_AVANTFAX_VERSION="7.4"
+            NODEJS_MAJOR="14"
             ;;
     esac
     info "Asterisk: ${ASTERISK_VERSION} | FreePBX: ${FREEPBX_VERSION} | PHP: ${PHP_VERSION}"
@@ -599,13 +615,13 @@ validate_supported_release() {
     case "${DETECTED_OS}" in
         ubuntu)
             if [ "${DETECTED_VERSION}" = "18.04" ]; then
-                error "Ubuntu 18.04 is no longer installable with FreePBX 17: ondrej/php no longer publishes usable PHP packages for bionic"
+                error "Ubuntu 18.04 is no longer installable with the PHP 7.4 baseline: ondrej/php no longer publishes usable PHP packages for bionic"
                 exit 1
             fi
             ;;
         debian)
             if [ "${major_ver}" -eq 10 ] 2>/dev/null; then
-                error "Debian 10 is no longer installable with FreePBX 17: buster is archived and packages.sury.org no longer publishes usable PHP packages for buster"
+                error "Debian 10 is no longer installable with the PHP 7.4 baseline: buster is archived and packages.sury.org no longer publishes usable PHP packages for buster"
                 exit 1
             fi
             ;;
@@ -626,13 +642,13 @@ setup_pkg_map() {
             PACKAGES_DISTRO_WEBSERVER="apache2 apache2-utils"
             # Optional apache modules — installed one-by-one so a missing name never blocks apache2
             PACKAGES_DISTRO_WEBSERVER_OPT="libapache2-mod-fcgid"
-            PACKAGES_DISTRO_PHP="php${PHP_VERSION} php${PHP_VERSION}-fpm php${PHP_VERSION}-cli php${PHP_VERSION}-common php${PHP_VERSION}-mysql php${PHP_VERSION}-gd php${PHP_VERSION}-xml php${PHP_VERSION}-curl php${PHP_VERSION}-zip php${PHP_VERSION}-mbstring php${PHP_VERSION}-intl php${PHP_VERSION}-bcmath php${PHP_VERSION}-opcache php${PHP_VERSION}-soap php${PHP_VERSION}-ldap php${PHP_VERSION}-imap"
+            PACKAGES_DISTRO_PHP="php${PHP_VERSION} php${PHP_VERSION}-fpm php${PHP_VERSION}-cli php${PHP_VERSION}-common php${PHP_VERSION}-mysql php${PHP_VERSION}-gd php${PHP_VERSION}-xml php${PHP_VERSION}-curl php${PHP_VERSION}-zip php${PHP_VERSION}-mbstring php${PHP_VERSION}-intl php${PHP_VERSION}-bcmath php${PHP_VERSION}-opcache php${PHP_VERSION}-soap php${PHP_VERSION}-ldap php${PHP_VERSION}-imap php-pear"
             PACKAGES_DISTRO_PHP74="php${PHP_AVANTFAX_VERSION} php${PHP_AVANTFAX_VERSION}-fpm php${PHP_AVANTFAX_VERSION}-cli php${PHP_AVANTFAX_VERSION}-common php${PHP_AVANTFAX_VERSION}-mysql php${PHP_AVANTFAX_VERSION}-gd php${PHP_AVANTFAX_VERSION}-xml php${PHP_AVANTFAX_VERSION}-curl php${PHP_AVANTFAX_VERSION}-zip php${PHP_AVANTFAX_VERSION}-mbstring php${PHP_AVANTFAX_VERSION}-intl php${PHP_AVANTFAX_VERSION}-bcmath php${PHP_AVANTFAX_VERSION}-soap php${PHP_AVANTFAX_VERSION}-imap php-pear"
             PACKAGES_DISTRO_MEDIA_OPT="libsox-fmt-all"
             PACKAGES_DISTRO_MAIL_CLIENT="bsd-mailx"
             PACKAGES_DISTRO_MARIADB="mariadb-server mariadb-client"
             PACKAGES_DISTRO_PYTHON="python3-dev python3-pip"
-            PACKAGES_DISTRO_NODE="nodejs"
+            PACKAGES_DISTRO_NODE="nodejs npm"
             PACKAGES_DISTRO_SYSTEM="chrony pkg-config iptables-persistent cron"
             PACKAGES_DISTRO_KNOCKD="knockd"
             PACKAGES_DISTRO_FAX="hylafax-server iaxmodem"
@@ -701,6 +717,13 @@ setup_pkg_map() {
             fi
             ;;
     esac
+
+    if [ "${PHP_AVANTFAX_VERSION}" = "${PHP_VERSION}" ]; then
+        PACKAGES_DISTRO_PHP74=""
+        PHP74_FPM_SERVICE="${PHP_FPM_SERVICE}"
+        PHP74_FPM_SOCK="${PHP_FPM_SOCK}"
+        PHP74_FPM_PORT="${PHP_FPM_PORT}"
+    fi
 
     success "Package map configured for ${DISTRO_FAMILY}"
 }
@@ -990,6 +1013,24 @@ normalize_admin_vars() {
     return 0
 }
 
+ensure_python3_executable() {
+    local pybin="" pytarget=""
+    pybin="$(command -v python3 2>/dev/null || true)"
+    [ -n "${pybin}" ] || return 0
+
+    pytarget="$(readlink -f "${pybin}" 2>/dev/null || printf '%s' "${pybin}")"
+    [ -e "${pytarget}" ] || return 0
+    [ -x "${pytarget}" ] && return 0
+    [ -r "${pytarget}" ] || return 0
+
+    warn "python3 interpreter is not executable; repairing ${pytarget}"
+    chmod 755 "${pytarget}" 2>/dev/null || {
+        warn "Failed to repair python3 interpreter permissions: ${pytarget}"
+        return 0
+    }
+    success "python3 interpreter permissions repaired"
+}
+
 sql_escape() {
     printf '%s' "${1:-}" | sed "s/'/''/g"
 }
@@ -1081,24 +1122,33 @@ PY
 }
 
 ensure_freepbx_manager_credentials() {
-    local mgr_user mgr_pass mgr_user_sql mgr_pass_sql
-    [ -f /etc/asterisk/manager.conf ] || return 0
+    local mgr_user_sql mgr_pass_sql
     [ -n "${MYSQL_ROOT_PASSWORD:-}" ] || load_mysql_root_password
     [ -n "${MYSQL_ROOT_PASSWORD:-}" ] || return 1
 
-    mgr_user=$(awk -F'[][]' '/^\[[^]]+\]/{if ($2 != "general") {print $2; exit}}' /etc/asterisk/manager.conf 2>/dev/null || true)
-    mgr_pass=$(awk -F= '/^secret/{gsub(/ /,"",$2); print $2; exit}' /etc/asterisk/manager.conf 2>/dev/null || true)
-    [ -n "${mgr_user}" ] || return 1
-    [ -n "${mgr_pass}" ] || return 1
+    load_asterisk_manager_credentials || return 1
 
-    mgr_user_sql=$(sql_escape "${mgr_user}")
-    mgr_pass_sql=$(sql_escape "${mgr_pass}")
+    mgr_user_sql=$(sql_escape "${ASTERISK_MANAGER_USER}")
+    mgr_pass_sql=$(sql_escape "${ASTERISK_MANAGER_PASS}")
     mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk 2>/dev/null <<EOF || return 1
 INSERT INTO freepbx_settings (keyword, value, type)
 VALUES ('AMPMGRUSER', '${mgr_user_sql}', 'text'),
        ('AMPMGRPASS', '${mgr_pass_sql}', 'text')
 ON DUPLICATE KEY UPDATE value=VALUES(value), type=VALUES(type);
 EOF
+}
+
+load_asterisk_manager_credentials() {
+    ASTERISK_MANAGER_USER=""
+    ASTERISK_MANAGER_PASS=""
+    [ -f /etc/asterisk/manager.conf ] || return 1
+    ASTERISK_MANAGER_USER=$(awk -F'[][]' '/^\[[^]]+\]/{if ($2 != "general") {print $2; exit}}' \
+        /etc/asterisk/manager.conf 2>/dev/null || true)
+    ASTERISK_MANAGER_PASS=$(awk -F= '/^secret/{gsub(/ /,"",$2); print $2; exit}' \
+        /etc/asterisk/manager.conf 2>/dev/null || true)
+    [ -n "${ASTERISK_MANAGER_USER}" ] || return 1
+    [ -n "${ASTERISK_MANAGER_PASS}" ] || return 1
+    return 0
 }
 
 ensure_pjsip_include_stubs() {
@@ -1218,6 +1268,8 @@ foreach ((array)$defaultGroups as $gid) {
 
 $userman->setGlobalSettingByID($uid, 'pbx_login', true);
 $userman->setGlobalSettingByID($uid, 'pbx_admin', true);
+$userman->setGlobalSettingByID($uid, 'pbx_low', '');
+$userman->setGlobalSettingByID($uid, 'pbx_high', '');
 $userman->setGlobalSettingByID($uid, 'pbx_modules', ['*']);
 $userman->setGlobalSettingByID($uid, 'pbx_landing', 'index');
 PHP
@@ -1265,6 +1317,8 @@ EOF
 INSERT INTO userman_users_settings (uid, module, \`key\`, val, type) VALUES
 (${uid}, 'global', 'pbx_login', '1', NULL),
 (${uid}, 'global', 'pbx_admin', '1', NULL),
+(${uid}, 'global', 'pbx_low', '', NULL),
+(${uid}, 'global', 'pbx_high', '', NULL),
 (${uid}, 'global', 'pbx_modules', '["*"]', 'json-arr'),
 (${uid}, 'global', 'pbx_landing', 'index', NULL)
 ON DUPLICATE KEY UPDATE val=VALUES(val), type=VALUES(type);
@@ -2019,7 +2073,7 @@ setup_repositories() {
 
             # NodeSource
             if ! repo_exists "nodesource"; then
-                curl -fsSL https://deb.nodesource.com/setup_18.x | bash - 2>/dev/null || true
+                curl -fsSL "https://deb.nodesource.com/setup_${NODEJS_MAJOR}.x" | bash - 2>/dev/null || true
                 info "Added NodeSource repository"
             fi
 
@@ -2069,7 +2123,7 @@ setup_repositories() {
 
             # NodeSource
             if ! repo_exists "nodesource"; then
-                curl -fsSL https://rpm.nodesource.com/setup_18.x | bash - 2>/dev/null || true
+                curl -fsSL "https://rpm.nodesource.com/setup_${NODEJS_MAJOR}.x" | bash - 2>/dev/null || true
                 info "Added NodeSource repository"
             fi
 
@@ -2106,7 +2160,7 @@ VAULTEOF
                 info "Added Remi repository for Fedora"
             fi
             if ! repo_exists "nodesource"; then
-                curl -fsSL https://rpm.nodesource.com/setup_18.x | bash - 2>/dev/null || true
+                curl -fsSL "https://rpm.nodesource.com/setup_${NODEJS_MAJOR}.x" | bash - 2>/dev/null || true
             fi
             ;;
     esac
@@ -2126,6 +2180,7 @@ install_core_dependencies() {
     disable_anacron_if_present
     pkg_install_one_by_one $PACKAGES_DISTRO_ASTERISK_DEPS
     pkg_install_one_by_one $PACKAGES_DISTRO_PYTHON
+    ensure_python3_executable
     pkg_install_one_by_one $PACKAGES_DISTRO_NODE
     pkg_install_one_by_one $ODBC_DEV_PKG $ODBC_DRIVER_PKG
 
@@ -2362,14 +2417,16 @@ install_php() {
                     fi
                     ;;
                 1)
-                    ln -sf /opt/remi/php72/root/usr/bin/php /usr/bin/php 2>/dev/null || true
+                    ln -sf /opt/remi/php74/root/usr/bin/php /usr/bin/php 2>/dev/null || true
                     ;;
             esac
             ;;
     esac
 
     pkg_install $PACKAGES_DISTRO_PHP
-    pkg_install $PACKAGES_DISTRO_PHP74    # AvantFax PHP
+    if [ -n "${PACKAGES_DISTRO_PHP74:-}" ] && [ "${PACKAGES_DISTRO_PHP74}" != "${PACKAGES_DISTRO_PHP}" ]; then
+        pkg_install $PACKAGES_DISTRO_PHP74
+    fi
 
     if ! command -v php >/dev/null 2>&1; then
         error "PHP installation failed — php binary not found"
@@ -2447,17 +2504,19 @@ install_php() {
                     sed -i "s|^listen = .*|listen = 127.0.0.1:${PHP74_FPM_PORT}|" "${fpm74_www}"
                 fi
             fi
-            # Remove Remi's PHP 7.4 catch-all Apache config (overrides PHP 8.2 for all .php files)
+            # Remove Remi's catch-all PHP 7.4 handler so Apache always uses our explicit FPM proxy config
             rm -f /etc/httpd/conf.d/php74-php.conf 2>/dev/null || true
             ;;
     esac
 
     svc_enable  "${PHP_FPM_SERVICE}"
     svc_restart "${PHP_FPM_SERVICE}"
-    svc_enable  "${PHP74_FPM_SERVICE}" 2>/dev/null || true
-    svc_restart "${PHP74_FPM_SERVICE}" 2>/dev/null || true
+    if [ -n "${PHP74_FPM_SERVICE:-}" ] && [ "${PHP74_FPM_SERVICE}" != "${PHP_FPM_SERVICE}" ]; then
+        svc_enable  "${PHP74_FPM_SERVICE}" 2>/dev/null || true
+        svc_restart "${PHP74_FPM_SERVICE}" 2>/dev/null || true
+    fi
 
-    # Disable ionCube loader — FreePBX 17 is fully open source and does NOT need ionCube.
+    # Disable ionCube loader — current FreePBX releases are fully open source and do not need ionCube.
     # Some PHP repos (sury.org, ondrej/php) ship ionCube pre-configured and it must load
     # first in php.ini or PHP refuses to start — disabling avoids this conflict entirely.
     for ioncube_ini in \
@@ -2481,6 +2540,11 @@ install_php() {
 install_avantfax_php() {
     step "🐘 Installing PHP ${PHP_AVANTFAX_VERSION} for AvantFax..."
 
+    if [ "${PHP_AVANTFAX_VERSION}" = "${PHP_VERSION}" ]; then
+        success "AvantFax uses the primary PHP ${PHP_VERSION} runtime"
+        return 0
+    fi
+
     # Packages already installed by install_php() — just configure FPM
     case "${DISTRO_FAMILY}" in
         rhel|fedora)
@@ -2501,8 +2565,10 @@ install_avantfax_php() {
             ;;
     esac
 
-    svc_enable  "${PHP74_FPM_SERVICE}" 2>/dev/null || true
-    svc_restart "${PHP74_FPM_SERVICE}" 2>/dev/null || true
+    if [ -n "${PHP74_FPM_SERVICE:-}" ] && [ "${PHP74_FPM_SERVICE}" != "${PHP_FPM_SERVICE}" ]; then
+        svc_enable  "${PHP74_FPM_SERVICE}" 2>/dev/null || true
+        svc_restart "${PHP74_FPM_SERVICE}" 2>/dev/null || true
+    fi
 
     success "PHP ${PHP_AVANTFAX_VERSION} for AvantFax installed"
 }
@@ -2553,7 +2619,7 @@ configure_apache_phpfpm() {
             a2enmod proxy_fcgi setenvif 2>/dev/null || true
             ;;
         rhel|fedora)
-            # Remove Remi's catch-all PHP 7.4 handler so it doesn't override PHP 8.2
+            # Remove Remi's catch-all PHP handler so it doesn't override our explicit FPM proxy config
             rm -f /etc/httpd/conf.d/php74-php.conf 2>/dev/null || true
             ;;
     esac
@@ -2828,31 +2894,32 @@ generate_apache_vhost_config() {
     fi
 
     # PHP handler strings
-    local php82_handler php74_handler=""
+    local php_handler php74_handler="" avantfax_handler=""
     if [ -n "${PHP_FPM_SOCK:-}" ]; then
-        php82_handler="proxy:unix:${PHP_FPM_SOCK}|fcgi://localhost"
+        php_handler="proxy:unix:${PHP_FPM_SOCK}|fcgi://localhost"
     else
-        php82_handler="proxy:fcgi://127.0.0.1:${PHP_FPM_PORT:-9000}"
+        php_handler="proxy:fcgi://127.0.0.1:${PHP_FPM_PORT:-9000}"
     fi
-    if [ -n "${PHP74_FPM_SOCK:-}" ]; then
+    if [ -n "${PHP74_FPM_SOCK:-}" ] && [ "${PHP74_FPM_SOCK}" != "${PHP_FPM_SOCK:-}" ]; then
         php74_handler="proxy:unix:${PHP74_FPM_SOCK}|fcgi://localhost"
-    elif [ -n "${PHP74_FPM_PORT:-}" ]; then
+    elif [ -n "${PHP74_FPM_PORT:-}" ] && [ "${PHP74_FPM_PORT}" != "${PHP_FPM_PORT:-}" ]; then
         php74_handler="proxy:fcgi://127.0.0.1:${PHP74_FPM_PORT}"
     fi
+    avantfax_handler="${php74_handler:-${php_handler}}"
 
     local chain_line=""
     [ -n "${chain_file:-}" ] && chain_line="    SSLCertificateChainFile ${chain_file}"
 
     # AvantFax alias block (reused in both vhosts)
     local avantfax_block=""
-    if [ "${INSTALL_AVANTFAX:-yes}" = "yes" ] && [ -n "${php74_handler:-}" ]; then
+    if [ "${INSTALL_AVANTFAX:-yes}" = "yes" ] && [ -n "${avantfax_handler:-}" ]; then
         avantfax_block="
     Alias /avantfax ${AVANTFAX_WEB_DIR}
     <Directory ${AVANTFAX_WEB_DIR}>
         AllowOverride All
         Require all granted
         <FilesMatch \\.php\$>
-            SetHandler \"${php74_handler}\"
+            SetHandler \"${avantfax_handler}\"
         </FilesMatch>
     </Directory>"
     fi
@@ -2876,7 +2943,7 @@ ServerTokens Prod
 
 # PHP ${PHP_VERSION} via FPM (default handler for all .php files)
 <FilesMatch \\.php\$>
-    SetHandler "${php82_handler}"
+    SetHandler "${php_handler}"
 </FilesMatch>
 MAINEOF
             fi
@@ -2898,30 +2965,37 @@ MAINEOF
                 # Reverse proxy mode — HTTP only, bind loopback only
                 # Update ports.conf to listen on loopback:port only
                 if [ -f /etc/apache2/ports.conf ]; then
-                    python3 - "${proxy_bind}" /etc/apache2/ports.conf << 'PYEOF'
-import sys, re
-bind, path = sys.argv[1], sys.argv[2]
-with open(path) as f: lines = f.readlines()
-out = []
-skip_block = False
-for line in lines:
-    stripped = line.strip()
-    if re.match(r'<IfModule\s+(ssl_module|mod_ssl\.c|mod_gnutls\.c)', stripped):
-        skip_block = True
-    if re.match(r'</IfModule>', stripped) and skip_block:
-        skip_block = False
-        continue
-    if skip_block:
-        continue
-    if re.match(r'Listen\s+(80|443)\b', stripped):
-        continue
-    out.append(line)
-# Ensure our bind is listed exactly once
-bind_line = 'Listen ' + bind + '\n'
-if bind_line not in out:
-    out.insert(0, bind_line)
-with open(path, 'w') as f: f.writelines(out)
-PYEOF
+                    local ports_tmp
+                    ports_tmp=$(mktemp) || return 1
+                    {
+                        printf 'Listen %s\n' "${proxy_bind}"
+                        awk '
+BEGIN { skip_block = 0 }
+{
+    stripped = $0
+    sub(/^[[:space:]]+/, "", stripped)
+    if (stripped ~ /^<IfModule[[:space:]]+(ssl_module|mod_ssl\.c|mod_gnutls\.c)/) {
+        skip_block = 1
+        next
+    }
+    if (skip_block && stripped ~ /^<\/IfModule>/) {
+        skip_block = 0
+        next
+    }
+    if (skip_block) {
+        next
+    }
+    if (stripped ~ /^Listen[[:space:]]+(80|443)([[:space:]]|$)/) {
+        next
+    }
+    if ($0 == "Listen '"${proxy_bind}"'") {
+        next
+    }
+    print
+}
+' /etc/apache2/ports.conf
+                    } > "${ports_tmp}"
+                    mv "${ports_tmp}" /etc/apache2/ports.conf
                 fi
                 cat > "${vhost_conf}" << PROXYVHEOF
 # PBX vhost config (reverse proxy mode — loopback ${proxy_bind})
@@ -2957,7 +3031,25 @@ PROXYVHEOF
 
 <VirtualHost *:80>
     ServerName ${SYSTEM_FQDN}
-    Redirect permanent / https://${SYSTEM_FQDN}/
+    DocumentRoot ${WEB_ROOT}
+
+    RewriteEngine On
+    RewriteCond %{REQUEST_URI} !^/\.well-known/acme-challenge/
+    RewriteCond %{REQUEST_URI} !^/\.freepbx-known/
+    RewriteRule ^ https://${SYSTEM_FQDN}%{REQUEST_URI} [R=301,L]
+
+    <Directory ${WEB_ROOT}>
+        AllowOverride All
+        Require all granted
+    </Directory>
+    <Directory ${WEB_ROOT}/.well-known>
+        AllowOverride None
+        Require all granted
+    </Directory>
+    <Directory ${WEB_ROOT}/.freepbx-known>
+        AllowOverride None
+        Require all granted
+    </Directory>
 </VirtualHost>
 
 <VirtualHost *:443>
@@ -3029,7 +3121,7 @@ ServerTokens Prod
 
 # PHP ${PHP_VERSION} via FPM (default handler for all .php files)
 <FilesMatch \\.php\$>
-    SetHandler "${php82_handler}"
+    SetHandler "${php_handler}"
 </FilesMatch>
 MAINEOF
             fi
@@ -3083,7 +3175,25 @@ PROXYVHEOF
 
 <VirtualHost *:80>
     ServerName ${SYSTEM_FQDN}
-    Redirect permanent / https://${SYSTEM_FQDN}/
+    DocumentRoot ${WEB_ROOT}
+
+    RewriteEngine On
+    RewriteCond %{REQUEST_URI} !^/\.well-known/acme-challenge/
+    RewriteCond %{REQUEST_URI} !^/\.freepbx-known/
+    RewriteRule ^ https://${SYSTEM_FQDN}%{REQUEST_URI} [R=301,L]
+
+    <Directory ${WEB_ROOT}>
+        AllowOverride All
+        Require all granted
+    </Directory>
+    <Directory ${WEB_ROOT}/.well-known>
+        AllowOverride None
+        Require all granted
+    </Directory>
+    <Directory ${WEB_ROOT}/.freepbx-known>
+        AllowOverride None
+        Require all granted
+    </Directory>
 </VirtualHost>
 
 <VirtualHost *:443>
@@ -3448,8 +3558,8 @@ install_freepbx() {
     fi
 
     cd "${WORK_DIR}"
-    local fpbx_url="http://mirror.freepbx.org/modules/packages/freepbx/freepbx-17.0-latest.tgz"
-    local fpbx_tar="freepbx-17.0-latest.tgz"
+    local fpbx_url="http://mirror.freepbx.org/modules/packages/freepbx/freepbx-${FREEPBX_VERSION}-latest.tgz"
+    local fpbx_tar="freepbx-${FREEPBX_VERSION}-latest.tgz"
 
     if [ ! -f "${fpbx_tar}" ]; then
         info "Downloading FreePBX..."
@@ -3461,9 +3571,6 @@ install_freepbx() {
     local fpbx_dir="${WORK_DIR}/freepbx"
     [ -d "${fpbx_dir}" ] || error "FreePBX source not found after extraction"
     cd "${fpbx_dir}"
-
-    local logger_class="${fpbx_dir}/amp_conf/htdocs/admin/libraries/BMO/Logger.class.php"
-    patch_freepbx_logger_guard "${logger_class}"
 
     # Create minimal modules.conf if missing — Asterisk won't start without it
     # FreePBX will overwrite this with its own version after installation
@@ -3537,7 +3644,6 @@ XMPPEOF
         return 1
     fi
     ensure_fwconsole_executable
-    patch_freepbx_logger_guard "${WEB_ROOT}/admin/libraries/BMO/Logger.class.php"
 
     # FreePBX installer stores AMPWEBROOT=/var/www/html as default in freepbx_settings,
     # ignoring the --webroot flag we passed. Update it to match our actual webroot so
@@ -3561,10 +3667,9 @@ NOSIGEARLYEOF
     fwconsole ma enablerepo extended    2>/dev/null || true
     fwconsole ma enablerepo unsupported 2>/dev/null || true
     fwconsole ma installall 2>/dev/null || warn "Module installall had errors"
-    patch_freepbx_logger_guard "${WEB_ROOT}/admin/libraries/BMO/Logger.class.php"
 
-    # FreePBX 17 no longer publishes several legacy/virtual modules as separate
-    # downloads. Keep the explicit loop limited to modules that remain online.
+    # Several legacy/virtual modules are no longer published as separate downloads.
+    # Keep the explicit loop limited to modules that remain online.
     for mod in superfecta queueprio miscdests miscapps outcnam \
                dynroute extensionsettings disa allowlist customappsreg \
                ringgroups queues ivr timeconditions daynight \
@@ -3573,7 +3678,6 @@ NOSIGEARLYEOF
                cidlookup directory ucp userman hotelwakeup; do
         fwconsole ma downloadinstall "${mod}" 2>/dev/null || true
     done
-    patch_freepbx_logger_guard "${WEB_ROOT}/admin/libraries/BMO/Logger.class.php"
 
     local installed_modules
     installed_modules=$(fwconsole ma list 2>/dev/null || true)
@@ -3591,7 +3695,7 @@ NOSIGEARLYEOF
     fwconsole setting HTTPBINDADDRESS    "127.0.0.1:8088" 2>/dev/null || true
     seed_freepbx_module_defaults || warn "Failed to refresh FreePBX module defaults"
 
-    # Create FreePBX admin user via SQL (fwconsole userman --add removed in FreePBX 17)
+    # Create the initial FreePBX admin user via SQL for consistent unattended installs.
     local pass_hash
     pass_hash=$(echo -n "${FREEPBX_ADMIN_PASSWORD}" | sha1sum | cut -d' ' -f1)
     mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk 2>/dev/null << ADMINEOF || true
@@ -3642,7 +3746,6 @@ FPBXSVCEOF
 
 configure_freepbx() {
     step "⚙️  Configuring FreePBX settings..."
-    patch_freepbx_logger_guard "${WEB_ROOT}/admin/libraries/BMO/Logger.class.php"
     ensure_pjsip_include_stubs
 
     # Wait for Asterisk to be ready (up to 2 minutes)
@@ -3709,14 +3812,16 @@ ANONEOF
 
     chown asterisk:asterisk /etc/asterisk/pjsip_custom.conf
 
-    # Use INSERT ... ON DUPLICATE KEY UPDATE so existing rows get updated, new rows get proper type
+    # Keep these installer-managed NAT rows hidden from Advanced Settings; when
+    # the rows are created without full FreePBX metadata, exposing them causes
+    # PHP 8 deprecation noise in page.advancedsettings.php.
     mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk << NATEOF 2>/dev/null || true
-INSERT INTO freepbx_settings (keyword,value,type,emptyok) VALUES ('EXTERNALIP','${EXTERNAL_IP:-${PUBLIC_IP:-${PRIMARY_IP}}}','text',1)
-  ON DUPLICATE KEY UPDATE value='${EXTERNAL_IP:-${PUBLIC_IP:-${PRIMARY_IP}}}';
-INSERT INTO freepbx_settings (keyword,value,type,emptyok) VALUES ('LOCALNET','${PRIVATE_IP:+${PRIVATE_IP}/255.255.255.0}','text',1)
-  ON DUPLICATE KEY UPDATE value='${PRIVATE_IP:+${PRIVATE_IP}/255.255.255.0}';
-INSERT INTO freepbx_settings (keyword,value,type,emptyok) VALUES ('SIPNAT','yes','bool',1)
-  ON DUPLICATE KEY UPDATE value='yes';
+INSERT INTO freepbx_settings (keyword,value,type,emptyok,level,readonly,hidden) VALUES ('EXTERNALIP','${EXTERNAL_IP:-${PUBLIC_IP:-${PRIMARY_IP}}}','text',1,0,0,1)
+  ON DUPLICATE KEY UPDATE value='${EXTERNAL_IP:-${PUBLIC_IP:-${PRIMARY_IP}}}', emptyok=1, level=0, readonly=0, hidden=1;
+INSERT INTO freepbx_settings (keyword,value,type,emptyok,level,readonly,hidden) VALUES ('LOCALNET','${PRIVATE_IP:+${PRIVATE_IP}/255.255.255.0}','text',1,0,0,1)
+  ON DUPLICATE KEY UPDATE value='${PRIVATE_IP:+${PRIVATE_IP}/255.255.255.0}', emptyok=1, level=0, readonly=0, hidden=1;
+INSERT INTO freepbx_settings (keyword,value,type,emptyok,level,readonly,hidden) VALUES ('SIPNAT','yes','bool',1,0,0,1)
+  ON DUPLICATE KEY UPDATE value='yes', emptyok=1, level=0, readonly=0, hidden=1;
 NATEOF
 
     if [ -f /etc/asterisk/modules.conf ]; then
@@ -3736,33 +3841,32 @@ NATEOF
         printf '%s\n' "${installed_modules}" | grep -qE "^${mod}[[:space:]]" \
             && fwconsole ma remove "${mod}" 2>/dev/null || true
     done
+    if ! lsmod 2>/dev/null | grep -q "^dahdi"; then
+        for mod in dahdi dahdichandids; do
+            printf '%s\n' "${installed_modules}" | grep -qE "^${mod}[[:space:]]" \
+                && fwconsole ma remove "${mod}" 2>/dev/null || true
+        done
+        rm -rf /etc/dahdi 2>/dev/null || true
+        rm -f /etc/asterisk/dahdi* 2>/dev/null || true
+    fi
 
     # Enable CDR and queue logging
     fwconsole setting ASTRUNDIR /var/run/asterisk 2>/dev/null || true
     ensure_freepbx_manager_credentials || warn "Failed to sync FreePBX manager credentials"
+    fwconsole setting FREEPBX_SYSTEM_IDENT "${FROM_NAME}" 2>/dev/null || true
+    fwconsole setting DASHBOARD_FREEPBX_BRAND "${FROM_NAME}" 2>/dev/null || true
+    fwconsole setting RSSFEEDS "" 2>/dev/null || true
+    fwconsole setting BROWSER_STATS 0 2>/dev/null || true
 
-    # Disable module signature checking — prevents security warnings for community/unsigned modules
-    fwconsole setting SIGNATURECHECK 0 2>/dev/null || true
-    mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk 2>/dev/null << 'NOSIGEOF' || true
-INSERT INTO admin (variable, value) VALUES ('SIGNATURECHECK', '0')
-ON DUPLICATE KEY UPDATE value='0';
-NOSIGEOF
-
-    # Patch Config.class.php to cast null to string before str_replace (PHP 8.1+ deprecation)
-    # This affects Fedora 42+ and any distro with strict PHP deprecation handling
-    local cfg_class
-    cfg_class=$(find "${FREEPBX_WEB_DIR:-/var/www/apache/pbx/admin}" \
-        -name 'Config.class.php' -path '*/BMO/*' 2>/dev/null | head -1)
-    if [ -n "${cfg_class}" ] && [ -f "${cfg_class}" ]; then
-        patch_freepbx_config_php82 "${cfg_class}"
-        # Clear PHP opcode cache so the patch takes immediate effect
-        svc_restart php-fpm 2>/dev/null || svc_restart php8.2-fpm 2>/dev/null || \
-            svc_restart php8.1-fpm 2>/dev/null || true
-    fi
+    # Re-enable signature checking after module installation so the finished
+    # system doesn't retain a permanent security warning.
+    fwconsole setting SIGNATURECHECK 1 2>/dev/null || true
+    mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk 2>/dev/null << 'SIGEOF' || true
+INSERT INTO admin (variable, value) VALUES ('SIGNATURECHECK', '1')
+ON DUPLICATE KEY UPDATE value='1';
+SIGEOF
 
     fwconsole reload --skip-registry-checks >/dev/null 2>&1 || true
-    # fwconsole reload may fail on some distros (PHP null deprecation in Config.class.php)
-    # but config files are written; ensure Asterisk picks them up with a direct reload.
     asterisk -rx "core reload" 2>/dev/null || true
     # pbx_config.so (dialplan loader) can fail to preload if extensions.conf didn't exist yet.
     # Force-load it after FreePBX has generated the config files.
@@ -3772,21 +3876,25 @@ NOSIGEOF
         "${LAST_APPLIED_FREEPBX_ADMIN_USERNAME:-}" \
         || warn "Failed to remove prior installer-managed FreePBX admin user"
 
-    # FreePBX 17 authenticates GUI logins through User Management.
-    # Sync the admin account into Userman with full PBX admin rights.
+    # Sync the admin account into User Management with full PBX admin rights.
     ensure_freepbx_gui_admin_user "${FREEPBX_ADMIN_USERNAME}" "${FREEPBX_ADMIN_PASSWORD}" "${ADMIN_EMAIL}" \
         || warn "Failed PHP Userman sync for FreePBX GUI admin"
     ensure_freepbx_gui_admin_user_sql_fallback "${FREEPBX_ADMIN_USERNAME}" "${FREEPBX_ADMIN_PASSWORD}" "${ADMIN_EMAIL}" \
         || warn "Failed SQL fallback sync for FreePBX GUI admin"
-    # Also ensure ampusers row has correct hash and full admin sections
-    # In FreePBX 17, ampusers sections='all' grants full admin access to the GUI
+    # Also ensure ampusers row has correct hash and full admin sections.
+    # sections='all' grants full PBX admin access to the GUI.
     local pass_hash_new
     pass_hash_new=$(echo -n "${FREEPBX_ADMIN_PASSWORD}" | sha1sum | cut -d' ' -f1)
     mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk 2>/dev/null << ADMINEOF2 || true
 INSERT INTO ampusers (username, email, password_sha1, extension_low, extension_high, deptname, sections)
-VALUES ('${FREEPBX_ADMIN_USERNAME}', '${ADMIN_EMAIL}', '${pass_hash_new}', '', '', '', 'all')
-ON DUPLICATE KEY UPDATE password_sha1='${pass_hash_new}', sections='all', email='${ADMIN_EMAIL}';
+    VALUES ('${FREEPBX_ADMIN_USERNAME}', '${ADMIN_EMAIL}', '${pass_hash_new}', '', '', '', 'all')
+    ON DUPLICATE KEY UPDATE password_sha1='${pass_hash_new}', sections='all', email='${ADMIN_EMAIL}';
 ADMINEOF2
+    fwconsole notifications --delete api key-regenerated >/dev/null 2>&1 || true
+    fwconsole notifications --delete framework BROWSER_STATS >/dev/null 2>&1 || true
+    fwconsole notifications --delete core general_notice_bindaddress >/dev/null 2>&1 || true
+    fwconsole notifications --delete core EXTENSIONS_MOVE >/dev/null 2>&1 || true
+    fwconsole notifications --delete freepbx SIGNATURE_CHECK >/dev/null 2>&1 || true
     record_freepbx_admin_username_sync
     info "FreePBX admin user '${FREEPBX_ADMIN_USERNAME}' permissions set"
 
@@ -3878,24 +3986,23 @@ install_hylafax() {
     step "📠 Installing HylaFAX+..."
 
     if command_exists faxstat; then
-        info "HylaFAX already installed, skipping"
-        return 0
-    fi
+        info "HylaFAX binaries already installed — ensuring config and services"
+    else
+        # Try package install first
+        if [ -n "${PACKAGES_DISTRO_FAX:-}" ]; then
+            pkg_install_one_by_one $PACKAGES_DISTRO_FAX
+        fi
 
-    # Try package install first
-    if [ -n "${PACKAGES_DISTRO_FAX:-}" ]; then
-        pkg_install_one_by_one $PACKAGES_DISTRO_FAX
-    fi
+        # On RHEL/Fedora, hylafax+ has no package in EPEL9/10 — compile from source
+        if ! command_exists faxstat && [ "${DISTRO_FAMILY}" = "rhel" -o "${DISTRO_FAMILY}" = "fedora" ]; then
+            info "HylaFAX+ package not available — compiling from source..."
+            _compile_hylafax_source || warn "HylaFAX+ source compile failed"
+        fi
 
-    # On RHEL/Fedora, hylafax+ has no package in EPEL9 — compile from source
-    if ! command_exists faxstat && [ "${DISTRO_FAMILY}" = "rhel" -o "${DISTRO_FAMILY}" = "fedora" ]; then
-        info "HylaFAX+ package not available — compiling from source..."
-        _compile_hylafax_source || warn "HylaFAX+ source compile failed"
-    fi
-
-    if ! command_exists faxstat; then
-        warn "HylaFAX not installed — fax functionality unavailable"
-        return 0
+        if ! command_exists faxstat; then
+            warn "HylaFAX not installed — fax functionality unavailable"
+            return 0
+        fi
     fi
 
     # Ensure uucp user/group exists — required by HylaFAX (faxq runs as uucp).
@@ -3984,6 +4091,7 @@ _compile_hylafax_source() {
     # Use /latest/download to always get the current release
     local url="https://sourceforge.net/projects/hylafax/files/latest/download"
     local src_tar="hylafax-latest.tar.gz"
+    local tiffbin_dir=""
 
     # Build dependencies
     pkg_install libtiff-devel libtiff-tools libjpeg-turbo-devel openssl-devel \
@@ -4005,7 +4113,12 @@ _compile_hylafax_source() {
     [ -d "${src_dir:-}" ] || return 1
 
     cd "${src_dir}"
-    run_logged "HylaFAX+: configure" ./configure --nointeractive --quiet || return 1
+    tiffbin_dir=$(_prepare_hylafax_tiffbin_dir)
+    if [ -n "${tiffbin_dir}" ]; then
+        run_logged "HylaFAX+: configure" env TIFFBIN="${tiffbin_dir}" ./configure --nointeractive --quiet || return 1
+    else
+        run_logged "HylaFAX+: configure" ./configure --nointeractive --quiet || return 1
+    fi
     run_logged "HylaFAX+: build port"  bash -c "cd port && make" || return 1
     run_logged "HylaFAX+: build util"  bash -c "cd util && make" || return 1
     run_logged "HylaFAX+: build+install" bash -c "make -j1 && make install" || return 1
@@ -4013,6 +4126,36 @@ _compile_hylafax_source() {
     command -v faxstat >/dev/null 2>&1 || return 1
     cd "${WORK_DIR}"
     return 0
+}
+
+_prepare_hylafax_tiffbin_dir() {
+    local existing_tiff2ps=""
+    existing_tiff2ps=$(command -v tiff2ps 2>/dev/null || true)
+    if [ -n "${existing_tiff2ps}" ]; then
+        dirname "${existing_tiff2ps}"
+        return 0
+    fi
+
+    if ! command -v convert >/dev/null 2>&1 && ! command -v magick >/dev/null 2>&1; then
+        return 1
+    fi
+
+    local wrapper_dir="/usr/local/libexec/hylafax-tiffbin"
+    mkdir -p "${wrapper_dir}"
+    for tool in tiffcp tiffdump tiffinfo tiffset tiffsplit; do
+        if command -v "${tool}" >/dev/null 2>&1; then
+            ln -sf "$(command -v "${tool}")" "${wrapper_dir}/${tool}"
+        fi
+    done
+    cat > "${wrapper_dir}/tiff2ps" <<'TIFF2PSEOF'
+#!/bin/sh
+if command -v convert >/dev/null 2>&1; then
+    exec convert "$@" ps:-
+fi
+exec magick "$@" ps:-
+TIFF2PSEOF
+    chmod 755 "${wrapper_dir}/tiff2ps"
+    printf '%s\n' "${wrapper_dir}"
 }
 
 # =============================================================================
@@ -4160,41 +4303,40 @@ install_avantfax() {
     step "📠 Installing AvantFax..."
     [ "${INSTALL_AVANTFAX}" != "yes" ] && return 0
 
-    if [ -f "${AVANTFAX_WEB_DIR}/index.php" ]; then
-        info "AvantFax already installed, skipping"
-        return 0
-    fi
-
+    local avantfax_dir="" avantfax_web_src="${AVANTFAX_WEB_DIR}"
     install_avantfax_php
 
-    cd "${WORK_DIR}"
-    local avantfax_url="https://sourceforge.net/projects/avantfax/files/avantfax-3.4.1.tgz/download"
-    local avantfax_tar="avantfax-3.4.1.tgz"
+    if [ ! -f "${AVANTFAX_WEB_DIR}/index.php" ]; then
+        cd "${WORK_DIR}"
+        local avantfax_url="https://sourceforge.net/projects/avantfax/files/avantfax-3.4.1.tgz/download"
+        local avantfax_tar="avantfax-3.4.1.tgz"
 
-    if [ ! -f "${avantfax_tar}" ]; then
-        info "Downloading AvantFax 3.4.1 from SourceForge..."
-        download_file "${avantfax_url}" "${avantfax_tar}" 120 \
-            || { warn "Could not download AvantFax, skipping"; return 0; }
+        if [ ! -f "${avantfax_tar}" ]; then
+            info "Downloading AvantFax 3.4.1 from SourceForge..."
+            download_file "${avantfax_url}" "${avantfax_tar}" 120 \
+                || { warn "Could not download AvantFax, skipping"; return 0; }
+        fi
+
+        tar -xzf "${avantfax_tar}" 2>/dev/null
+        avantfax_dir=$(ls -d "${WORK_DIR}"/avantfax-*/ 2>/dev/null | head -1 || true)
+        if [ ! -d "${avantfax_dir:-}" ]; then
+            warn "AvantFax extraction failed, skipping"
+            return 0
+        fi
+
+        # The tarball structure is: avantfax-3.4.1/avantfax/ (PHP app is in subdirectory)
+        avantfax_web_src="${avantfax_dir}avantfax"
+        if [ ! -d "${avantfax_web_src}" ]; then
+            # Fallback: try the top level (older releases may differ)
+            avantfax_web_src="${avantfax_dir}"
+        fi
+
+        mkdir -p "${AVANTFAX_WEB_DIR}"
+        cp -r "${avantfax_web_src}"/* "${AVANTFAX_WEB_DIR}/"
+        chown -R "${APACHE_USER}":"${APACHE_GROUP}" "${AVANTFAX_WEB_DIR}"
+    else
+        info "AvantFax web files already present — refreshing config and admin user"
     fi
-
-    tar -xzf "${avantfax_tar}" 2>/dev/null
-    local avantfax_dir
-    avantfax_dir=$(ls -d "${WORK_DIR}"/avantfax-*/ 2>/dev/null | head -1 || true)
-    if [ ! -d "${avantfax_dir:-}" ]; then
-        warn "AvantFax extraction failed, skipping"
-        return 0
-    fi
-
-    # The tarball structure is: avantfax-3.4.1/avantfax/ (PHP app is in subdirectory)
-    local avantfax_web_src="${avantfax_dir}avantfax"
-    if [ ! -d "${avantfax_web_src}" ]; then
-        # Fallback: try the top level (older releases may differ)
-        avantfax_web_src="${avantfax_dir}"
-    fi
-
-    mkdir -p "${AVANTFAX_WEB_DIR}"
-    cp -r "${avantfax_web_src}"/* "${AVANTFAX_WEB_DIR}/"
-    chown -R "${APACHE_USER}":"${APACHE_GROUP}" "${AVANTFAX_WEB_DIR}"
 
     # Create DB and initialize schema
     mysql -u root -p"${MYSQL_ROOT_PASSWORD}" << AVFAXSQLEOF 2>/dev/null || true
@@ -4203,7 +4345,7 @@ GRANT ALL PRIVILEGES ON avantfax.* TO 'avantfax'@'localhost' IDENTIFIED BY '${AV
 FLUSH PRIVILEGES;
 AVFAXSQLEOF
     # Load schema from extracted tarball (avantfax_dir contains SQL files at top level)
-    if [ -f "${avantfax_dir}create_tables.sql" ]; then
+    if [ -n "${avantfax_dir:-}" ] && [ -f "${avantfax_dir}create_tables.sql" ]; then
         mysql -u root -p"${MYSQL_ROOT_PASSWORD}" avantfax \
             < "${avantfax_dir}create_tables.sql" 2>/dev/null || true
     fi
@@ -4212,10 +4354,16 @@ AVFAXSQLEOF
     local af_admin_md5
     af_admin_md5=$(printf '%s' "${AVANTFAX_ADMIN_PASSWORD}" | md5sum | cut -c1-32)
     mysql -u root -p"${MYSQL_ROOT_PASSWORD}" avantfax 2>/dev/null << AFADMINSQL || true
--- Insert admin user if not exists, then update password regardless
-INSERT INTO UserAccount (username, password, email, admin, active, wasreset)
-VALUES ('${AVANTFAX_ADMIN_USERNAME}', '${af_admin_md5}', 'admin@localhost', 1, 1, 0)
-ON DUPLICATE KEY UPDATE password='${af_admin_md5}', admin=1, active=1, wasreset=0;
+UPDATE UserAccount
+SET name='PBX Administrator', password='${af_admin_md5}', email='${ADMIN_EMAIL}',
+    superuser=1, is_admin=1, wasreset=0, acc_enabled=1, deleted=0, any_modem=1
+WHERE username='${AVANTFAX_ADMIN_USERNAME}';
+INSERT INTO UserAccount (name, username, password, email, superuser, is_admin, wasreset, acc_enabled, deleted, any_modem)
+SELECT 'PBX Administrator', '${AVANTFAX_ADMIN_USERNAME}', '${af_admin_md5}', '${ADMIN_EMAIL}', 1, 1, 0, 1, 0, 1
+WHERE NOT EXISTS (SELECT 1 FROM UserAccount WHERE username='${AVANTFAX_ADMIN_USERNAME}');
+UPDATE UserAccount
+SET password='${af_admin_md5}', email='${ADMIN_EMAIL}', superuser=1, is_admin=1, wasreset=0, acc_enabled=1, deleted=0, any_modem=1
+WHERE username='admin';
 AFADMINSQL
     info "AvantFax admin user '${AVANTFAX_ADMIN_USERNAME}' configured"
 
@@ -6268,6 +6416,8 @@ if (!empty($existing['id'])) {
 if (!empty($uid)) {
     $userman->setGlobalSettingByID($uid, 'pbx_login', true);
     $userman->setGlobalSettingByID($uid, 'pbx_admin', true);
+    $userman->setGlobalSettingByID($uid, 'pbx_low', '');
+    $userman->setGlobalSettingByID($uid, 'pbx_high', '');
     $userman->setGlobalSettingByID($uid, 'pbx_modules', ['*']);
     $userman->setGlobalSettingByID($uid, 'pbx_landing', 'index');
 }
@@ -6307,6 +6457,8 @@ EOF
 INSERT INTO userman_users_settings (uid, module, \`key\`, val, type) VALUES
 (${USERMAN_UID}, 'global', 'pbx_login', '1', NULL),
 (${USERMAN_UID}, 'global', 'pbx_admin', '1', NULL),
+(${USERMAN_UID}, 'global', 'pbx_low', '', NULL),
+(${USERMAN_UID}, 'global', 'pbx_high', '', NULL),
 (${USERMAN_UID}, 'global', 'pbx_modules', '["*"]', 'json-arr'),
 (${USERMAN_UID}, 'global', 'pbx_landing', 'index', NULL)
 ON DUPLICATE KEY UPDATE val=VALUES(val), type=VALUES(type);
@@ -6401,36 +6553,97 @@ install_asteridex() {
     step "📒 Installing Asteridex phonebook..."
 
     local asteridex_dir="${WEB_ROOT}/asteridex"
-    if [ -d "${asteridex_dir}" ]; then
-        info "Asteridex already installed, skipping"
-        return 0
-    fi
-
-    cd "${WORK_DIR}"
-    if download_file \
-        "https://bestof.nerdvittles.com/applications/asteridex4/asteridex4.zip" \
-        asteridex4.zip 60 2>/dev/null; then
-        local extract_dir="${WORK_DIR}/asteridex-extract"
-        local payload_dir=""
-        rm -rf "${extract_dir}" "${asteridex_dir}"
-        mkdir -p "${extract_dir}" "${asteridex_dir}"
-        if unzip -oq asteridex4.zip -d "${extract_dir}" >/dev/null 2>&1; then
-            payload_dir="${extract_dir}"
-            if [ ! -f "${payload_dir}/index.php" ] && [ ! -f "${payload_dir}/admin.php" ]; then
-                payload_dir=$(find "${extract_dir}" -mindepth 1 -maxdepth 1 -type d | head -1 || true)
-            fi
-            if [ -n "${payload_dir}" ] && { [ -f "${payload_dir}/index.php" ] || [ -f "${payload_dir}/admin.php" ]; }; then
-                cp -a "${payload_dir}/." "${asteridex_dir}/"
-                chown -R "${APACHE_USER}":"${APACHE_GROUP}" "${asteridex_dir}"
-                info "Asteridex installed at ${asteridex_dir}"
+    if [ ! -d "${asteridex_dir}" ]; then
+        cd "${WORK_DIR}"
+        if download_file \
+            "https://bestof.nerdvittles.com/applications/asteridex4/asteridex4.zip" \
+            asteridex4.zip 60 2>/dev/null; then
+            local extract_dir="${WORK_DIR}/asteridex-extract"
+            local payload_dir=""
+            rm -rf "${extract_dir}" "${asteridex_dir}"
+            mkdir -p "${extract_dir}" "${asteridex_dir}"
+            if unzip -oq asteridex4.zip -d "${extract_dir}" >/dev/null 2>&1; then
+                payload_dir="${extract_dir}"
+                if [ ! -f "${payload_dir}/index.php" ] && [ ! -f "${payload_dir}/admin.php" ]; then
+                    payload_dir=$(find "${extract_dir}" -mindepth 1 -maxdepth 1 -type d | head -1 || true)
+                fi
+                if [ -n "${payload_dir}" ] && { [ -f "${payload_dir}/index.php" ] || [ -f "${payload_dir}/admin.php" ]; }; then
+                    cp -a "${payload_dir}/." "${asteridex_dir}/"
+                    info "Asteridex installed at ${asteridex_dir}"
+                else
+                    warn "Asteridex extraction failed"
+                fi
             else
                 warn "Asteridex extraction failed"
             fi
         else
-            warn "Asteridex extraction failed"
+            warn "Could not download Asteridex (phonebook unavailable)"
         fi
     else
-        warn "Could not download Asteridex (phonebook unavailable)"
+        info "Asteridex web files already present — refreshing config"
+    fi
+
+    if [ -d "${asteridex_dir}" ] && [ -f "${asteridex_dir}/mysql/asteridex.sql" ]; then
+        mysql -u root -p"${MYSQL_ROOT_PASSWORD}" <<EOF 2>/dev/null || true
+CREATE DATABASE IF NOT EXISTS asteridex CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER IF NOT EXISTS 'asteridex'@'localhost' IDENTIFIED BY '${FREEPBX_DB_PASSWORD}';
+ALTER USER 'asteridex'@'localhost' IDENTIFIED BY '${FREEPBX_DB_PASSWORD}';
+GRANT ALL PRIVILEGES ON asteridex.* TO 'asteridex'@'localhost';
+FLUSH PRIVILEGES;
+EOF
+        sed -e 's/TYPE=MyISAM/ENGINE=MyISAM/g' \
+            -e '/^CREATE DATABASE/d' \
+            -e '/^USE asteridex;/d' \
+            "${asteridex_dir}/mysql/asteridex.sql" \
+            | mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asteridex 2>/dev/null || true
+
+        cat > "${asteridex_dir}/config.inc.php" << 'ASTERIDEXCONF'
+<?php
+$title = "Nerd Vittles AsteriDex";
+$sub_title = "Welcome to AsteriDex -- The Poor Man's Rolodex";
+$local_net = "192.168.";
+$INtrunk = "PJSIP";
+$defaultExt = "PJSIP/201";
+$LDprefix = "1";
+$CallerID = "5551234567";
+$dbhost = "localhost";
+$dbpass = "__ASTERIDEX_DB_PASSWORD__";
+$dbuser = "asteridex";
+$dbname = "asteridex";
+if (!function_exists('mysql_connect')) {
+    $__asteridex_link = null;
+    function mysql_connect($host, $user, $pass) { global $__asteridex_link; $__asteridex_link = mysqli_connect($host, $user, $pass); return $__asteridex_link; }
+    function mysql_select_db($dbname, $link = null) { global $__asteridex_link; $link = $link ?: $__asteridex_link; return mysqli_select_db($link, $dbname); }
+    function mysql_query($query, $link = null) { global $__asteridex_link; $link = $link ?: $__asteridex_link; return mysqli_query($link, $query); }
+    function mysql_fetch_array($result) { return mysqli_fetch_array($result, MYSQLI_BOTH); }
+    function mysql_close($link = null) { global $__asteridex_link; $link = $link ?: $__asteridex_link; return $link ? mysqli_close($link) : true; }
+}
+$dbconnection = mysql_connect($dbhost, $dbuser, $dbpass) or die("Database connection failed");
+mysql_select_db($dbname) or die("data base open failed");
+if (isset($_POST['submit'])) {
+    $INdefault = $_POST['sipID'];
+    setcookie("asteridex[sipID]", $INdefault, time()+99999999);
+} else {
+    if (isset($_COOKIE['asteridex'])) {
+        $INdefault = $_COOKIE['asteridex']['sipID'];
+    } else {
+        $INdefault = $defaultExt;
+        setcookie("asteridex[sipID]", $INdefault, time()+99999999);
+    }
+}
+?>
+ASTERIDEXCONF
+        sed -i "s|__ASTERIDEX_DB_PASSWORD__|${FREEPBX_DB_PASSWORD}|g" \
+            "${asteridex_dir}/config.inc.php"
+
+        load_asterisk_manager_credentials && {
+            sed -i "s|Username: .*\\\\r\\\\n|Username: ${ASTERISK_MANAGER_USER}\\\\r\\\\n|" \
+                "${asteridex_dir}/callboth.php" 2>/dev/null || true
+            sed -i "s|Secret: .*\\\\r\\\\n|Secret: ${ASTERISK_MANAGER_PASS}\\\\r\\\\n|" \
+                "${asteridex_dir}/callboth.php" 2>/dev/null || true
+        }
+
+        chown -R "${APACHE_USER}":"${APACHE_GROUP}" "${asteridex_dir}" 2>/dev/null || true
     fi
     cd /
     track_install "asteridex"
@@ -6731,178 +6944,83 @@ HEALTHEOF
 
     # Cron script that runs as root and writes /var/lib/pbx/status.json every minute
     cat > /usr/local/bin/pbx-status-update << 'STATUSUPDATEOF'
-#!/bin/bash
-# Write PBX status JSON — called by root cron every minute
-# Output is public-safe: no private IPs, no passwords, no credentials
-set -euo pipefail
+#!/usr/bin/env python3
+import json
+import subprocess
+import datetime
+from pathlib import Path
 
-OUT_FILE="/var/lib/pbx/status.json"
-TMP_FILE="${OUT_FILE}.tmp.$$"
-mkdir -p /var/lib/pbx
+OUT = Path('/var/lib/pbx/status.json')
+OUT.parent.mkdir(parents=True, exist_ok=True)
 
-# Source env for feature flags (no credentials exposed in output)
-set +u
-[ -f /etc/pbx/.env ] && . /etc/pbx/.env 2>/dev/null || true
-set -u
+def sh(cmd: str) -> str:
+    return subprocess.run(
+        cmd,
+        shell=True,
+        universal_newlines=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    ).stdout.strip()
 
-# ---------------------------------------------------------------------------
-# Service status
-# ---------------------------------------------------------------------------
-CORE_SERVICES=(asterisk mariadb mysql httpd apache2)
-ALL_SERVICES=(asterisk freepbx mariadb mysql httpd apache2 php-fpm php8.2-fpm php7.4-fpm fail2ban postfix hylafax iaxmodem webmin tftp tftpd-hpa tftp.socket xinetd)
-declare -A SVC_STATUS
-overall="ok"
+def service_state(name: str) -> str:
+    state = sh(f'systemctl is-active {name} 2>/dev/null || true')
+    return 'running' if state == 'active' else (state or 'inactive')
 
-for svc in "${ALL_SERVICES[@]}"; do
-    state=$(systemctl is-active "${svc}" 2>/dev/null || true)
-    [ -n "${state}" ] || state="inactive"
-    [ "${state}" = "active" ] && SVC_STATUS["${svc}"]="running" || SVC_STATUS["${svc}"]="${state}"
-done
+services = {}
+for name in ['asterisk','freepbx','mariadb','httpd','nginx','php-fpm','php7.4-fpm','php74-php-fpm','fail2ban','postfix','hylafax','webmin']:
+    state = service_state(name)
+    if state != 'inactive':
+        services[name] = state
 
-# Mark degraded if any core service is not active
-for svc in "${CORE_SERVICES[@]}"; do
-    st="${SVC_STATUS[$svc]:-inactive}"
-    [ "${st}" != "running" ] && [ "${st}" != "inactive" ] && overall="degraded" && break
-    [ "${st}" = "inactive" ] || true  # inactive = not installed, not degraded
-done
+overall = 'ok'
+for core in ['asterisk','freepbx','mariadb','httpd']:
+    if services.get(core, 'inactive') not in ('running', 'inactive'):
+        overall = 'degraded'
+        break
 
-# ---------------------------------------------------------------------------
-# Asterisk info (with timeouts to avoid hanging)
-# ---------------------------------------------------------------------------
-ast_ver=$(timeout 5 asterisk -rx "core show version" 2>/dev/null | head -1 | grep -oE 'Asterisk [0-9.]+' || echo "")
-ast_uptime=$(timeout 5 asterisk -rx "core show uptime" 2>/dev/null | grep "System uptime" | sed 's/System uptime: //' || echo "")
-active_calls=$(timeout 5 asterisk -rx "core show channels count" 2>/dev/null | awk '/active channel/{print $1}' | head -1 || echo "0")
-active_calls="${active_calls:-0}"
-reg_endpoints=$(timeout 5 asterisk -rx "pjsip show endpoints" 2>/dev/null | grep -cE "^[A-Za-z0-9].*Avail" 2>/dev/null || echo "0")
-total_endpoints=$(timeout 5 asterisk -rx "pjsip show endpoints" 2>/dev/null | grep -cE "^[A-Za-z0-9]" 2>/dev/null || echo "0")
+def num(cmd: str) -> int:
+    out = sh(cmd)
+    try:
+        return int(out)
+    except Exception:
+        return 0
 
-# FreePBX version — read from module XML (no PHP class loading)
-fpbx_ver=$(grep -oP '(?<=<version>)[^<]+' /var/www/html/admin/modules/framework/module.xml 2>/dev/null | head -1 || echo "")
-
-# PHP version
-php_ver=$(php -r "echo PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION.'.'.PHP_RELEASE_VERSION;" 2>/dev/null || echo "")
-
-# ---------------------------------------------------------------------------
-# Fax / IAX modems
-# ---------------------------------------------------------------------------
-hfaxd_state="${SVC_STATUS[hylafax]:-inactive}"
-iaxmodem_count=$(pgrep -x iaxmodem 2>/dev/null | wc -l | tr -d ' ' || echo "0")
-
-# ---------------------------------------------------------------------------
-# System metrics (all from /proc — fast, no external commands)
-# ---------------------------------------------------------------------------
-mem_total_kb=$(awk '/MemTotal/{print $2}' /proc/meminfo 2>/dev/null || echo "0")
-mem_avail_kb=$(awk '/MemAvailable/{print $2}' /proc/meminfo 2>/dev/null || echo "0")
-mem_used_kb=$(( mem_total_kb - mem_avail_kb ))
-mem_total_mb=$(( mem_total_kb / 1024 ))
-mem_used_mb=$(( mem_used_kb / 1024 ))
-mem_free_mb=$(( mem_avail_kb / 1024 ))
-
-disk_total_kb=$(df -k / 2>/dev/null | awk 'NR==2{print $2}')
-disk_used_kb=$(df -k / 2>/dev/null | awk 'NR==2{print $3}')
-disk_free_kb=$(df -k / 2>/dev/null | awk 'NR==2{print $4}')
-disk_pct=$(df / 2>/dev/null | awk 'NR==2{print $5}' | tr -d '%')
-disk_total_gb=$(( ${disk_total_kb:-0} / 1048576 ))
-disk_used_gb=$(( ${disk_used_kb:-0} / 1048576 ))
-disk_free_gb=$(( ${disk_free_kb:-0} / 1048576 ))
-
-load_1=$(cut -d' ' -f1 /proc/loadavg 2>/dev/null || echo "0")
-load_5=$(cut -d' ' -f2 /proc/loadavg 2>/dev/null || echo "0")
-load_15=$(cut -d' ' -f3 /proc/loadavg 2>/dev/null || echo "0")
-
-uptime_secs=$(awk '{print int($1)}' /proc/uptime 2>/dev/null || echo "0")
-
-os_name=$(. /etc/os-release 2>/dev/null && echo "${PRETTY_NAME:-}" || echo "")
-kernel=$(uname -r 2>/dev/null || echo "")
-
-# ---------------------------------------------------------------------------
-# Feature flags (from env — which optional components are installed)
-# ---------------------------------------------------------------------------
-feat_fax="false"; systemctl is-active hylafax >/dev/null 2>&1 && feat_fax="true"
-feat_tts="false"; command -v flite >/dev/null 2>&1 && feat_tts="true"
-feat_festival="false"; command -v festival >/dev/null 2>&1 && feat_festival="true"
-feat_webmin="false"; systemctl is-active webmin >/dev/null 2>&1 && feat_webmin="true"
-feat_tftp="false"; { systemctl is-active tftpd-hpa >/dev/null 2>&1 || systemctl is-active tftp.socket >/dev/null 2>&1 || systemctl is-active tftp >/dev/null 2>&1 || systemctl is-active xinetd >/dev/null 2>&1; } && feat_tftp="true"
-feat_fail2ban="false"; systemctl is-active fail2ban >/dev/null 2>&1 && feat_fail2ban="true"
-
-# ---------------------------------------------------------------------------
-# Build JSON via python3 (or bash heredoc fallback)
-# ---------------------------------------------------------------------------
-python3 - << PEOF 2>/dev/null > "${TMP_FILE}" || true
-import json, datetime
-
-# Build services dict — only include installed (non-inactive) ones
-raw_svcs = {
-$(for svc in "${!SVC_STATUS[@]}"; do
-    st="${SVC_STATUS[$svc]:-inactive}"
-    [ "${st}" != "inactive" ] && printf '    "%s": "%s",\n' "${svc}" "${st}"
-done)
-}
-
-data = {
-    "status": "${overall}",
-    "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
-    "hostname": open("/etc/hostname").read().strip(),
-    "os": "${os_name}",
-    "kernel": "${kernel}",
-    "uptime_seconds": int("${uptime_secs}" or 0),
-    "pbx": {
-        "asterisk_version": "${ast_ver}".strip(),
-        "asterisk_uptime": "${ast_uptime}".strip(),
-        "freepbx_version": "${fpbx_ver}",
-        "php_version": "${php_ver}",
-        "active_calls": int("${active_calls}" or 0),
-        "registered_endpoints": int("${reg_endpoints}" or 0),
-        "total_endpoints": int("${total_endpoints}" or 0),
+status = {
+    'status': overall,
+    'timestamp': datetime.datetime.utcnow().isoformat() + 'Z',
+    'hostname': sh('hostname -s') or 'pbx',
+    'os': sh('. /etc/os-release && echo ${PRETTY_NAME:-}') or '',
+    'kernel': sh('uname -r') or '',
+    'uptime_seconds': num("awk '{print int($1)}' /proc/uptime"),
+    'pbx': {
+        'asterisk_version': sh("timeout 5 asterisk -rx 'core show version' 2>/dev/null | head -1 | grep -oE 'Asterisk [0-9.]+' || true"),
+        'asterisk_uptime': sh("timeout 5 asterisk -rx 'core show uptime' 2>/dev/null | sed -n 's/System uptime: //p' | head -1"),
+        'freepbx_version': sh("grep -oP '(?<=<version>)[^<]+' /var/www/apache/pbx/admin/modules/framework/module.xml 2>/dev/null | head -1") or sh("grep -oP '(?<=<version>)[^<]+' /var/www/html/admin/modules/framework/module.xml 2>/dev/null | head -1"),
+        'php_version': sh("php -r 'echo PHP_MAJOR_VERSION,\".\",PHP_MINOR_VERSION,\".\",PHP_RELEASE_VERSION;' 2>/dev/null"),
+        'active_calls': num("timeout 5 asterisk -rx 'core show channels count' 2>/dev/null | awk '/active channel/{print $1; exit}'"),
+        'registered_endpoints': num("timeout 5 asterisk -rx 'pjsip show endpoints' 2>/dev/null | grep -cE '^[A-Za-z0-9].*Avail' || true"),
+        'total_endpoints': num("timeout 5 asterisk -rx 'pjsip show endpoints' 2>/dev/null | grep -cE '^[A-Za-z0-9]' || true"),
     },
-    "services": {k: v for k, v in raw_svcs.items()},
-    "fax": {
-        "enabled": ${feat_fax},
-        "hfaxd_state": "${hfaxd_state}",
-        "iaxmodem_count": int("${iaxmodem_count}" or 0),
+    'services': services,
+    'features': {
+        'fax': services.get('hylafax') == 'running',
+        'webmin': services.get('webmin') == 'running',
+        'fail2ban': services.get('fail2ban') == 'running',
     },
-    "features": {
-        "fax":      ${feat_fax},
-        "tts_flite":    ${feat_tts},
-        "tts_festival": ${feat_festival},
-        "webmin":   ${feat_webmin},
-        "tftp":     ${feat_tftp},
-        "fail2ban": ${feat_fail2ban},
-    },
-    "system": {
-        "load_1min":    "${load_1}",
-        "load_5min":    "${load_5}",
-        "load_15min":   "${load_15}",
-        "mem_total_mb": ${mem_total_mb},
-        "mem_used_mb":  ${mem_used_mb},
-        "mem_free_mb":  ${mem_free_mb},
-        "disk_total_gb": ${disk_total_gb},
-        "disk_used_gb":  ${disk_used_gb},
-        "disk_free_gb":  ${disk_free_gb},
-        "disk_used_pct": int("${disk_pct}" or 0),
+    'system': {
+        'load_1min': sh("cut -d' ' -f1 /proc/loadavg") or '0',
+        'load_5min': sh("cut -d' ' -f2 /proc/loadavg") or '0',
+        'load_15min': sh("cut -d' ' -f3 /proc/loadavg") or '0',
+        'mem_total_mb': num("awk '/MemTotal/{print int($2/1024)}' /proc/meminfo"),
+        'mem_used_mb': max(num("awk '/MemTotal/{t=int($2/1024)} /MemAvailable/{a=int($2/1024)} END{print t-a}' /proc/meminfo"), 0),
+        'mem_free_mb': num("awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo"),
+        'disk_total_gb': num("df -BG / | awk 'NR==2{gsub(/G/,\"\",$2); print $2}'"),
+        'disk_used_gb': num("df -BG / | awk 'NR==2{gsub(/G/,\"\",$3); print $3}'"),
+        'disk_free_gb': num("df -BG / | awk 'NR==2{gsub(/G/,\"\",$4); print $4}'"),
+        'disk_used_pct': num("df / | awk 'NR==2{gsub(/%/,\"\",$5); print $5}'"),
     },
 }
-print(json.dumps(data, indent=2))
-PEOF
-
-# Fallback: write minimal valid JSON if python3 failed
-if [ ! -s "${TMP_FILE}" ]; then
-    cat > "${TMP_FILE}" << JEOF
-{
-  "status": "${overall}",
-  "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-  "hostname": "$(hostname -s 2>/dev/null)",
-  "system": {
-    "load_1min": "${load_1}",
-    "mem_free_mb": ${mem_free_mb},
-    "disk_free_gb": ${disk_free_gb}
-  }
-}
-JEOF
-fi
-
-mv -f "${TMP_FILE}" "${OUT_FILE}"
-chmod 644 "${OUT_FILE}"
+OUT.write_text(json.dumps(status, indent=2) + '\n')
 STATUSUPDATEOF
     chmod 755 /usr/local/bin/pbx-status-update
 
@@ -6962,8 +7080,40 @@ install_telephone_reminder() {
     local reminder_dir="${WEB_ROOT}/reminder"
     mkdir -p "${reminder_dir}"
 
+    cat > "${reminder_dir}/_auth.php" << 'REMAUTHEOF'
+<?php
+$bootstrap_settings = ['skip_astman' => true];
+require '/etc/freepbx.conf';
+require_once FreePBX::Config()->get('AMPWEBROOT') . '/admin/libraries/ampuser.class.php';
+if (!class_exists('\\FreePBX\\modules\\Userman')) {
+    $hint = FreePBX::Config()->get('AMPWEBROOT') . '/admin/modules/userman/Userman.class.php';
+    if (is_file($hint)) {
+        try {
+            FreePBX::create()->injectClass('Userman', $hint);
+        } catch (Exception $e) {
+        }
+    }
+}
+session_start();
+$uid = !empty($_SESSION['AMP_user']->id) ? (int)$_SESSION['AMP_user']->id : 0;
+if ($uid <= 0) {
+    header('Location: /admin/config.php');
+    exit;
+}
+$freepbx = FreePBX::create();
+$userman = $freepbx->Userman;
+$has_login = $userman->getCombinedGlobalSettingByID($uid, 'pbx_login') ? true : false;
+$has_admin = $userman->getCombinedGlobalSettingByID($uid, 'pbx_admin') ? true : false;
+if ($has_login !== true || $has_admin !== true) {
+    http_response_code(403);
+    echo 'Forbidden';
+    exit;
+}
+REMAUTHEOF
+
     cat > "${reminder_dir}/index.php" << 'REMEOF'
 <?php
+require_once __DIR__ . '/_auth.php';
 $reminders_file = '/etc/asterisk/reminders.txt';
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $phone = preg_replace('/[^0-9*#]/', '', $_POST['phone'] ?? '');
@@ -7024,18 +7174,7 @@ REMINDEREOF
     chown "asterisk:${APACHE_GROUP:-www-data}" /etc/asterisk/reminders.txt
     chmod 664 /etc/asterisk/reminders.txt
 
-    # Apache alias with Basic Auth using ADMIN_PASSWORD
-    local rem_conf htpasswd_file="/etc/pbx/.htpasswd-pbx"
-    # Create/update shared htpasswd file for pbx web apps (reminder, callcenter)
-    if command -v htpasswd >/dev/null 2>&1; then
-        # Create with FREEPBX_ADMIN_USERNAME
-        htpasswd -bc "${htpasswd_file}" "${FREEPBX_ADMIN_USERNAME}" "${ADMIN_PASSWORD}" 2>/dev/null || true
-        # If admin username differs from 'admin', also add 'admin' as alias
-        [ "${FREEPBX_ADMIN_USERNAME}" != "admin" ] && \
-            htpasswd -b "${htpasswd_file}" admin "${ADMIN_PASSWORD}" 2>/dev/null || true
-        chmod 640 "${htpasswd_file}"
-        chown root:"${APACHE_GROUP:-www-data}" "${htpasswd_file}" 2>/dev/null || true
-    fi
+    local rem_conf
     case "${DISTRO_FAMILY}" in
         debian) rem_conf="/etc/apache2/conf-available/reminder.conf" ;;
         *) rem_conf="/etc/httpd/conf.d/reminder.conf" ;;
@@ -7045,10 +7184,7 @@ Alias /reminder ${WEB_ROOT}/reminder
 <Directory ${WEB_ROOT}/reminder>
     Options -Indexes
     AllowOverride None
-    AuthType Basic
-    AuthName "PBX Reminder"
-    AuthUserFile /etc/pbx/.htpasswd-pbx
-    Require valid-user
+    Require all granted
 </Directory>
 REMCEOF
     [ "${DISTRO_FAMILY}" = "debian" ] && a2enconf reminder 2>/dev/null || true
@@ -7106,12 +7242,49 @@ CCEOF
     fi
 
     local cc_conf htpasswd_file="/etc/pbx/.htpasswd-pbx"
-    # Ensure htpasswd file exists (reminder may have created it; create here if not)
-    if command -v htpasswd >/dev/null 2>&1 && [ ! -f "${htpasswd_file}" ]; then
-        htpasswd -bc "${htpasswd_file}" admin "${ADMIN_PASSWORD}" 2>/dev/null || true
+    if command -v htpasswd >/dev/null 2>&1; then
+        htpasswd -bc "${htpasswd_file}" "${FREEPBX_ADMIN_USERNAME}" "${ADMIN_PASSWORD}" 2>/dev/null || true
+        [ "${FREEPBX_ADMIN_USERNAME}" != "admin" ] && \
+            htpasswd -b "${htpasswd_file}" admin "${ADMIN_PASSWORD}" 2>/dev/null || true
         chmod 640 "${htpasswd_file}"
         chown root:"${APACHE_GROUP:-www-data}" "${htpasswd_file}" 2>/dev/null || true
     fi
+
+    if [ -n "${asternic_root:-}" ] && [ -f "${asternic_root}/sql/qstats.sql" ]; then
+        mysql -u root -p"${MYSQL_ROOT_PASSWORD}" < "${asternic_root}/sql/qstats.sql" 2>/dev/null || true
+        mysql -u root -p"${MYSQL_ROOT_PASSWORD}" <<EOF 2>/dev/null || true
+CREATE USER IF NOT EXISTS 'qstatsliteuser'@'localhost' IDENTIFIED BY '${FREEPBX_DB_PASSWORD}';
+ALTER USER 'qstatsliteuser'@'localhost' IDENTIFIED BY '${FREEPBX_DB_PASSWORD}';
+GRANT SELECT,INSERT,UPDATE,DELETE ON qstatslite.* TO 'qstatsliteuser'@'localhost';
+FLUSH PRIVILEGES;
+EOF
+
+        [ -f "${asternic_dir}/config.php" ] && {
+            sed -i "s|\\\$dbpass = '.*';|\\\$dbpass = '${FREEPBX_DB_PASSWORD}';|" \
+                "${asternic_dir}/config.php" 2>/dev/null || true
+            load_asterisk_manager_credentials && {
+                sed -i "s|\\\$manager_user *= *\\\".*\\\";|\\\$manager_user   = \\\"${ASTERISK_MANAGER_USER}\\\";|" \
+                    "${asternic_dir}/config.php" 2>/dev/null || true
+                sed -i "s|\\\$manager_secret *= *\\\".*\\\";|\\\$manager_secret = \\\"${ASTERISK_MANAGER_PASS}\\\";|" \
+                    "${asternic_dir}/config.php" 2>/dev/null || true
+            }
+        }
+
+        if [ -d "${asternic_root}/parselog" ]; then
+            rm -rf /usr/local/parseloglite
+            mkdir -p /usr/local/parseloglite
+            cp -a "${asternic_root}/parselog/." /usr/local/parseloglite/
+            [ -f /usr/local/parseloglite/config.php ] && \
+                sed -i "s|\\\$dbpass = '.*';|\\\$dbpass = '${FREEPBX_DB_PASSWORD}';|" \
+                    /usr/local/parseloglite/config.php 2>/dev/null || true
+            chmod -R 755 /usr/local/parseloglite 2>/dev/null || true
+            echo "*/5 * * * * root cd /usr/local/parseloglite && php -q ./parselog.php convertlocal >/dev/null 2>&1" \
+                > /etc/cron.d/qstatslite
+            chmod 644 /etc/cron.d/qstatslite
+            ( cd /usr/local/parseloglite && php -q ./parselog.php convertlocal >/dev/null 2>&1 ) || true
+        fi
+    fi
+
     case "${DISTRO_FAMILY}" in
         debian) cc_conf="/etc/apache2/conf-available/callcenter.conf" ;;
         *) cc_conf="/etc/httpd/conf.d/callcenter.conf" ;;

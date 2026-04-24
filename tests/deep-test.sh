@@ -975,14 +975,12 @@ WW_ASTERISK=$(find /etc/asterisk -maxdepth 1 -perm -o+w -type f 2>/dev/null | wc
 sep "12. PHP CONFIGURATION"
 # =============================================================================
 
-# PHP 8.2
+# PHP 7.4
 PHP_VERSION=$(php -v 2>/dev/null | head -1)
-if echo "$PHP_VERSION" | grep -qE "PHP 8\.[2-9]"; then
-    ok "PHP version: $PHP_VERSION"
-elif echo "$PHP_VERSION" | grep -qE "PHP [89]"; then
+if echo "$PHP_VERSION" | grep -qE "PHP 7\.4"; then
     ok "PHP version: $PHP_VERSION"
 else
-    warn "PHP version: $PHP_VERSION (expected 8.2+)"
+    warn "PHP version: $PHP_VERSION (expected 7.4)"
 fi
 
 # Required extensions
@@ -1525,14 +1523,14 @@ if [ -n "$FWCONSOLE_LIST" ]; then
         && ok "FreePBX modules: $MOD_INSTALLED enabled (>= 20)" \
         || warn "FreePBX modules: only $MOD_INSTALLED enabled (expected 20+)"
 
-    # Core modules — FreePBX 17 uses 'sipsettings' (not 'pjsip') for PJSIP management
+    # Core modules — current FreePBX releases use 'sipsettings' (not 'pjsip') for PJSIP management
     for coremod in framework core voicemail sipsettings; do
         echo "$FWCONSOLE_LIST" | grep -qiE "^\| *${coremod} " \
             && ok "FreePBX module ${coremod}: in module list" \
             || warn "FreePBX module ${coremod}: NOT in module list"
     done
 
-    # Routing modules — in FreePBX 17 routing is part of core; check for related modules
+    # Routing modules — routing is largely handled in core; check the related modules we install
     for routemod in ivr ringgroups queues timeconditions; do
         echo "$FWCONSOLE_LIST" | grep -qiE "^\| *${routemod} " \
             && ok "FreePBX routing module ${routemod}: in module list" \

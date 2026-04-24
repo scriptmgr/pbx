@@ -3,20 +3,20 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![GitHub](https://img.shields.io/badge/GitHub-scriptmgr%2Fpbx-blue)](https://github.com/scriptmgr/pbx)
 [![Platform](https://img.shields.io/badge/Platform-Linux-green)](https://www.linux.org/)
-[![Asterisk](https://img.shields.io/badge/Asterisk-22_LTS-orange)](https://www.asterisk.org/)
-[![FreePBX](https://img.shields.io/badge/FreePBX-17-red)](https://www.freepbx.org/)
+[![Asterisk](https://img.shields.io/badge/Asterisk-20-orange)](https://www.asterisk.org/)
+[![FreePBX](https://img.shields.io/badge/FreePBX-16-red)](https://www.freepbx.org/)
 
-A production-ready, fully automated installer for a complete enterprise PBX system — Asterisk 22, FreePBX 17, AvantFax, and 33 management tools. Designed for self-hosted, SMB, and enterprise use.
+A production-ready, fully automated installer for a complete enterprise PBX system — Asterisk 20, FreePBX 16, AvantFax, and 33 management tools. Designed for self-hosted, SMB, and enterprise use.
 
-**Version:** 2.0 &nbsp;|&nbsp; **Asterisk:** 22 LTS &nbsp;|&nbsp; **FreePBX:** 17
+**Version:** 2.0 &nbsp;|&nbsp; **Asterisk:** 20 &nbsp;|&nbsp; **FreePBX:** 16
 
 ---
 
 ## 🌟 Features
 
 ### Core PBX System
-- **Asterisk 22 LTS** — Enterprise VoIP engine with full SIP/IAX support
-- **FreePBX 17** — Modern web-based PBX management interface
+- **Asterisk 20** — VoIP engine with full SIP/IAX support
+- **FreePBX 16** — Web-based PBX management interface
 - **70+ Modules** — All standard modules included and auto-installed
 - **PJSIP** — UDP, TCP, and TLS transports (chan_sip disabled)
 - **WebRTC** — Browser-based calling via FreePBX UCP (WSS port 8089)
@@ -125,14 +125,14 @@ Derivative distributions are auto-detected via `ID_LIKE` (Mint, Pop!_OS, CentOS 
 
 | Distribution | Asterisk | FreePBX | PHP |
 |---|---|---|---|
-| RHEL/Alma/Rocky 9, Ubuntu 22+, Debian 12 | **22 LTS** | **17** | 8.2 |
-| RHEL/Alma/Rocky 8, Ubuntu 20, Debian 11 | 22 LTS | 17 | 8.2 |
-| CentOS 7 | 21 LTS | 17 | 8.2 (Remi) |
+| RHEL/Alma/Rocky 9, Ubuntu 22+, Debian 12 | **20** | **16** | 7.4 |
+| RHEL/Alma/Rocky 8, Ubuntu 20, Debian 11 | 20 | 16 | 7.4 |
+| CentOS 7 | 20 | 16 | 7.4 (Remi) |
 | CentOS 6 (legacy) | 18 LTS | 15 | 7.4 (Remi SCL) |
 
-PHP 7.4 is installed in parallel via PHP-FPM for AvantFax compatibility.
+PHP 7.4 is the primary runtime for both FreePBX and AvantFax. The installer does not intentionally install PHP 8+.
 
-Ubuntu 18.04 and Debian 10 are no longer included because their upstream PHP repositories no longer publish the package set required for FreePBX 17 in the current ecosystem.
+Ubuntu 18.04 and Debian 10 are no longer included because their upstream PHP 7.4 repositories no longer publish the package set required by the current installer.
 
 ### System Requirements
 - Fresh OS installation (no existing web or database services)
@@ -234,6 +234,8 @@ pbx-ssl
 
 TLS is enabled for PJSIP (port 5061) and Asterisk HTTPS Manager (ports 8088/8089).
 
+Direct Apache installs automatically leave `/.well-known/acme-challenge/` and `/.freepbx-known/` on plain HTTP so FreePBX Certificate Management can complete HTTP-01 validation.
+
 ### Reverse Proxy
 
 To run behind Nginx, Caddy, Traefik, or Apache:
@@ -244,8 +246,31 @@ BEHIND_PROXY=yes ./install.sh
 
 Apache binds to the loopback interface on a random port, persisted as `PROXY_HTTP_PORT` in `/etc/pbx/.env`.
 
+When using a reverse proxy, do **not** blanket-redirect every HTTP request to HTTPS. Leave `/.well-known/acme-challenge/` and `/.freepbx-known/` on port 80 so FreePBX Certman and Let's Encrypt HTTP-01 validation can succeed.
+
 **Nginx example:**
 ```nginx
+server {
+    listen 80;
+    server_name pbx.example.com;
+
+    location ^~ /.freepbx-known/ {
+        alias /var/www/apache/pbx/.freepbx-known/;
+        default_type text/plain;
+        try_files $uri =404;
+    }
+
+    location ^~ /.well-known/acme-challenge/ {
+        alias /var/www/apache/pbx/.well-known/acme-challenge/;
+        default_type text/plain;
+        try_files $uri =404;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
 server {
     listen 443 ssl http2;
     server_name pbx.example.com;

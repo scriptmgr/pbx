@@ -15,7 +15,7 @@ Progress tracker for the complete v3.0 rewrite.
 - [x] `version-select` — Version selection by distro generation
 - [x] `pkg-map` — Package mapping system (`PKG_*` vars, no hardcoded names)
 - [x] `repo-setup` — Repository setup for all distros (EPEL, Remi, Ondrej, Sury, NodeSource)
-- [x] `php-versions` — PHP version matrix per distro (8.2 main + 7.4 AvantFax)
+- [x] `php-versions` — PHP 7.4 runtime matrix per distro
 - [x] `init-compat` — SysV init compatibility layer for CentOS 6
 - [x] `output-formatting` — NO_COLOR-compliant output system (colors + emojis off when NO_COLOR set)
 - [x] `install-profiles` — Installation profiles: minimal / standard / advanced
@@ -38,12 +38,12 @@ Progress tracker for the complete v3.0 rewrite.
 - [x] `ntp-setup` — NTP/time sync (chrony vs ntp per distro)
 - [x] `disable-ipv6` — Disable IPv6 via sysctl (skip in containers)
 - [x] `mysql-user` — MariaDB + dedicated `asterisk` DB user (not root)
-- [x] `install-php` — PHP 8.2 + all required modules, per distro
-- [x] `install-avantfax-php` — PHP 7.4 parallel install for AvantFax
+- [x] `install-php` — PHP 7.4 + all required modules, per distro
+- [x] `install-avantfax-php` — AvantFax uses the primary PHP 7.4 runtime
 - [x] `odbc-config` — ODBC for CDR (path differs per arch/distro)
 - [x] `install-asterisk` — Asterisk compilation for version matrix (18/21/22)
-- [x] `install-freepbx` — FreePBX install for version matrix (15/17)
-- [x] `freepbx-module-list` — Explicit module install list for FreePBX 17 (70+ modules via loop)
+- [x] `install-freepbx` — FreePBX install for version matrix (15/16)
+- [x] `freepbx-module-list` — Explicit module install list for FreePBX 16 (70+ modules via loop)
 - [x] `freepbx-modules` — Remove unsupported, install all supported modules
 - [x] `web-root` — Web root at `/var/www/apache/pbx/` everywhere
 - [x] `install-postfix` — Postfix mail server + voicemail-to-email
