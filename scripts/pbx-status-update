@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+"""
+pbx-status-update — write /var/lib/pbx/status.json once.
+
+Runs every minute from /etc/cron.d/pbx-status. The file is consumed by
+the public /status/ and /health/ endpoints, so it must always be
+parseable JSON — every shell call below is wrapped to swallow errors
+and fall back to a sane default.
+"""
+import json
+import subprocess
+import datetime
+from pathlib import Path
+
+OUT = Path('/var/lib/pbx/status.json')
+OUT.parent.mkdir(parents=True, exist_ok=True)
+
+
+def sh(cmd: str) -> str:
+    return subprocess.run(
+        cmd,
+        shell=True,
+        universal_newlines=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    ).stdout.strip()
+
+
+def service_state(name: str) -> str:
+    state = sh(f'systemctl is-active {name} 2>/dev/null || true')
+    return 'running' if state == 'active' else (state or 'inactive')
+
+
+services = {}
+for name in [
+    'asterisk', 'freepbx', 'mariadb',
+    'httpd', 'nginx',
+    'php-fpm', 'php7.4-fpm', 'php74-php-fpm', 'php8.2-fpm', 'php82-php-fpm',
+    'fail2ban', 'postfix', 'hylafax', 'webmin',
+]:
+    state = service_state(name)
+    if state != 'inactive':
+        services[name] = state
+
+overall = 'ok'
+for core in ['asterisk', 'freepbx', 'mariadb', 'httpd']:
+    if services.get(core, 'inactive') not in ('running', 'inactive'):
+        overall = 'degraded'
+        break
+
+
+def num(cmd: str) -> int:
+    out = sh(cmd)
+    try:
+        return int(out)
+    except Exception:
+        return 0
+
+
+status = {
+    'status': overall,
+    'timestamp': datetime.datetime.utcnow().isoformat() + 'Z',
+    'hostname': sh('hostname -s') or 'pbx',
+    'os': sh('. /etc/os-release && echo ${PRETTY_NAME:-}') or '',
+    'kernel': sh('uname -r') or '',
+    'uptime_seconds': num("awk '{print int($1)}' /proc/uptime"),
+    'pbx': {
+        'asterisk_version': sh("timeout 5 asterisk -rx 'core show version' 2>/dev/null | head -1 | grep -oE 'Asterisk [0-9.]+' || true"),
+        'asterisk_uptime': sh("timeout 5 asterisk -rx 'core show uptime' 2>/dev/null | sed -n 's/System uptime: //p' | head -1"),
+        'freepbx_version': sh("grep -oP '(?<=<version>)[^<]+' /var/www/apache/pbx/admin/modules/framework/module.xml 2>/dev/null | head -1") or sh("grep -oP '(?<=<version>)[^<]+' /var/www/html/admin/modules/framework/module.xml 2>/dev/null | head -1"),
+        'php_version': sh("php -r 'echo PHP_MAJOR_VERSION,\".\",PHP_MINOR_VERSION,\".\",PHP_RELEASE_VERSION;' 2>/dev/null"),
+        'active_calls': num("timeout 5 asterisk -rx 'core show channels count' 2>/dev/null | awk '/active channel/{print $1; exit}'"),
+        'registered_endpoints': num("timeout 5 asterisk -rx 'pjsip show endpoints' 2>/dev/null | grep -cE '^[A-Za-z0-9].*Avail' || true"),
+        'total_endpoints': num("timeout 5 asterisk -rx 'pjsip show endpoints' 2>/dev/null | grep -cE '^[A-Za-z0-9]' || true"),
+    },
+    'services': services,
+    'features': {
+        'fax': services.get('hylafax') == 'running',
+        'webmin': services.get('webmin') == 'running',
+        'fail2ban': services.get('fail2ban') == 'running',
+    },
+    'system': {
+        'load_1min': sh("cut -d' ' -f1 /proc/loadavg") or '0',
+        'load_5min': sh("cut -d' ' -f2 /proc/loadavg") or '0',
+        'load_15min': sh("cut -d' ' -f3 /proc/loadavg") or '0',
+        'mem_total_mb': num("awk '/MemTotal/{print int($2/1024)}' /proc/meminfo"),
+        'mem_used_mb': max(num("awk '/MemTotal/{t=int($2/1024)} /MemAvailable/{a=int($2/1024)} END{print t-a}' /proc/meminfo"), 0),
+        'mem_free_mb': num("awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo"),
+        'disk_total_gb': num("df -BG / | awk 'NR==2{gsub(/G/,\"\",$2); print $2}'"),
+        'disk_used_gb': num("df -BG / | awk 'NR==2{gsub(/G/,\"\",$3); print $3}'"),
+        'disk_free_gb': num("df -BG / | awk 'NR==2{gsub(/G/,\"\",$4); print $4}'"),
+        'disk_used_pct': num("df / | awk 'NR==2{gsub(/%/,\"\",$5); print $5}'"),
+    },
+}
+OUT.write_text(json.dumps(status, indent=2) + '\n')

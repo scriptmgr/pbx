@@ -1,0 +1,158 @@
+#!/bin/bash
+# admin-pw-change — reset the FreePBX administrator password.
+#
+# Updates three places so /admin and /ucp + the saved env all stay in sync:
+#   1. ampusers (legacy admin login table)        — SHA1 hash
+#   2. userman_users (modern UCP/Userman record)  — bcrypt hash
+#   3. /etc/pbx/.env + /etc/pbx/pbx_passwords    — plain text (root-only)
+# Plus the Userman global flags (pbx_login, pbx_admin) so the user can sign in.
+set -eu
+
+SCRIPT_VERSION="${SCRIPT_VERSION:-3.0}"
+case "${1:-}" in
+    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${SCRIPT_VERSION}"; exit 0 ;;
+    --help|-h)
+        printf "Usage: admin-pw-change\n\n"
+        printf "Interactive: prompts for the new admin password.\n"
+        printf "Updates ampusers, userman_users, /etc/pbx/.env, /etc/pbx/pbx_passwords.\n"
+        exit 0 ;;
+esac
+
+[ "$(id -u)" -ne 0 ] && { echo "Must run as root" >&2; exit 1; }
+
+ENV_FILE="/etc/pbx/.env"
+PASSWORDS_FILE="/etc/pbx/pbx_passwords"
+FREEPBX_ADMIN_USERNAME="${FREEPBX_ADMIN_USERNAME:-administrator}"
+
+sql_escape() { printf '%s' "$1" | sed "s/'/''/g"; }
+
+[ -f "${ENV_FILE}" ] && . "${ENV_FILE}" 2>/dev/null || true
+ADMIN_EMAIL="${ADMIN_EMAIL:-admin@localhost}"
+
+echo "Changing FreePBX admin password for ${FREEPBX_ADMIN_USERNAME}..."
+read -rsp "New password: " PW; echo
+[ -z "${PW}" ] && { echo "Empty password — aborting." >&2; exit 1; }
+
+MYSQL_ROOT_PASSWORD_FILE="${MYSQL_ROOT_PASSWORD_FILE:-/etc/pbx/mysql_root_password}"
+MYSQL_ROOT_PASSWORD=""
+[ -f "${MYSQL_ROOT_PASSWORD_FILE}" ] && \
+    MYSQL_ROOT_PASSWORD=$(tr -d '\r\n' < "${MYSQL_ROOT_PASSWORD_FILE}")
+[ -z "${MYSQL_ROOT_PASSWORD}" ] && [ -f "${ENV_FILE}" ] && \
+    MYSQL_ROOT_PASSWORD=$(grep '^MYSQL_ROOT_PASSWORD=' "${ENV_FILE}" | cut -d= -f2- | tr -d '"')
+
+# 1. ampusers — SHA1 hash, simple admin login table.
+if [ -n "${MYSQL_ROOT_PASSWORD}" ]; then
+    PASS_HASH=$(printf '%s' "${PW}" | sha1sum | cut -d' ' -f1)
+    USER_SQL=$(sql_escape "${FREEPBX_ADMIN_USERNAME}")
+    EMAIL_SQL=$(sql_escape "${ADMIN_EMAIL}")
+    mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk 2>/dev/null <<EOF || true
+INSERT INTO ampusers (username, email, password_sha1, extension_low, extension_high, deptname, sections)
+VALUES ('${USER_SQL}', '${EMAIL_SQL}', '${PASS_HASH}', '', '', '', 'all')
+ON DUPLICATE KEY UPDATE password_sha1='${PASS_HASH}', sections='all', email='${EMAIL_SQL}';
+EOF
+fi
+
+# 2a. Userman via PHP API — keeps profile/extras consistent.
+if [ -f /etc/freepbx.conf ]; then
+    php /dev/stdin "${FREEPBX_ADMIN_USERNAME}" "${PW}" "${ADMIN_EMAIL}" <<'PHP' || true
+<?php
+$bootstrap_settings = ['skip_astman' => true];
+require '/etc/freepbx.conf';
+$username = $argv[1] ?? '';
+$password = $argv[2] ?? '';
+$email    = $argv[3] ?? 'admin@localhost';
+if ($username === '' || $password === '') exit(1);
+
+$freepbx = FreePBX::create();
+$userman = $freepbx->Userman;
+$existing = $userman->getUserByUsername($username);
+$extra = [
+    'email'       => $email,
+    'displayname' => $username,
+    'fname'       => 'PBX',
+    'lname'       => 'Administrator',
+];
+if (!empty($existing['id'])) {
+    $uid = (int)$existing['id'];
+    $defaultExt = !empty($existing['default_extension']) ? $existing['default_extension'] : 'none';
+    $userman->updateUser($uid, $username, $username, $defaultExt, 'PBX Administrator', $extra, $password, true);
+} else {
+    $r = $userman->addUser($username, $password, 'none', 'PBX Administrator', $extra, true);
+    $uid = (int)($r['id'] ?? 0);
+}
+if (!empty($uid)) {
+    $userman->setGlobalSettingByID($uid, 'pbx_login',   true);
+    $userman->setGlobalSettingByID($uid, 'pbx_admin',   true);
+    $userman->setGlobalSettingByID($uid, 'pbx_low',     '');
+    $userman->setGlobalSettingByID($uid, 'pbx_high',    '');
+    $userman->setGlobalSettingByID($uid, 'pbx_modules', ['*']);
+    $userman->setGlobalSettingByID($uid, 'pbx_landing', 'index');
+}
+PHP
+fi
+
+# 2b. userman_users direct SQL — belt-and-braces in case the PHP API
+#     can't reach Userman (e.g. broken module install). Mirrors the
+#     bcrypt hash + the global flags written by the PHP block above.
+if [ -n "${MYSQL_ROOT_PASSWORD}" ]; then
+    USERMAN_PW_HASH=$(php -r 'echo password_hash($argv[1], PASSWORD_BCRYPT);' "${PW}" 2>/dev/null || true)
+    if [ -n "${USERMAN_PW_HASH}" ]; then
+        USER_SQL=$(sql_escape "${FREEPBX_ADMIN_USERNAME}")
+        EMAIL_SQL=$(sql_escape "${ADMIN_EMAIL}")
+        HASH_SQL=$(sql_escape "${USERMAN_PW_HASH}")
+        USERMAN_UID=$(mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk -Nse \
+            "SELECT id FROM userman_users WHERE username='${USER_SQL}' ORDER BY id LIMIT 1" 2>/dev/null || true)
+        if [ -n "${USERMAN_UID}" ]; then
+            mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk 2>/dev/null <<EOF || true
+UPDATE userman_users
+SET auth='1',
+    description='PBX Administrator',
+    password='${HASH_SQL}',
+    default_extension='none',
+    fname='PBX',
+    lname='Administrator',
+    displayname='${USER_SQL}',
+    email='${EMAIL_SQL}'
+WHERE id=${USERMAN_UID};
+EOF
+        else
+            mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk 2>/dev/null <<EOF || true
+INSERT INTO userman_users (auth, username, description, password, default_extension, fname, lname, displayname, email)
+VALUES ('1', '${USER_SQL}', 'PBX Administrator', '${HASH_SQL}', 'none', 'PBX', 'Administrator', '${USER_SQL}', '${EMAIL_SQL}');
+EOF
+            USERMAN_UID=$(mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk -Nse \
+                "SELECT id FROM userman_users WHERE username='${USER_SQL}' ORDER BY id LIMIT 1" 2>/dev/null || true)
+        fi
+        if [ -n "${USERMAN_UID}" ]; then
+            mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk 2>/dev/null <<EOF || true
+INSERT INTO userman_users_settings (uid, module, \`key\`, val, type) VALUES
+(${USERMAN_UID}, 'global', 'pbx_login',   '1', NULL),
+(${USERMAN_UID}, 'global', 'pbx_admin',   '1', NULL),
+(${USERMAN_UID}, 'global', 'pbx_low',     '', NULL),
+(${USERMAN_UID}, 'global', 'pbx_high',    '', NULL),
+(${USERMAN_UID}, 'global', 'pbx_modules', '["*"]', 'json-arr'),
+(${USERMAN_UID}, 'global', 'pbx_landing', 'index', NULL)
+ON DUPLICATE KEY UPDATE val=VALUES(val), type=VALUES(type);
+EOF
+        fi
+    fi
+fi
+
+# 3. Persisted plaintext copies (root-readable only) — used by other
+#    install-time tooling and for operator recovery.
+if [ -f "${ENV_FILE}" ]; then
+    if grep -q '^ADMIN_PASSWORD=' "${ENV_FILE}" 2>/dev/null; then
+        sed -i "s|^ADMIN_PASSWORD=.*|ADMIN_PASSWORD=\"${PW}\"|" "${ENV_FILE}"
+    else
+        printf 'ADMIN_PASSWORD="%s"\n' "${PW}" >> "${ENV_FILE}"
+    fi
+fi
+if [ -f "${PASSWORDS_FILE}" ]; then
+    if grep -q '^ADMIN_PASSWORD=' "${PASSWORDS_FILE}" 2>/dev/null; then
+        sed -i "s|^ADMIN_PASSWORD=.*|ADMIN_PASSWORD=${PW}|" "${PASSWORDS_FILE}"
+    else
+        printf 'ADMIN_PASSWORD=%s\n' "${PW}" >> "${PASSWORDS_FILE}"
+    fi
+fi
+
+echo "Password updated"

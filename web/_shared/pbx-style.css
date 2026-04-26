@@ -1,0 +1,186 @@
+/* PBX shared stylesheet — used by every custom page (portal, reminder, etc.).
+   System font stack, accessible color contrast, mobile-first.
+   Updated by install.sh: do not edit on the server, edit web/_shared/pbx-style.css. */
+
+:root {
+    --pbx-bg:        #f4f6fa;
+    --pbx-card:      #ffffff;
+    --pbx-fg:        #1d2433;
+    --pbx-muted:     #6b7280;
+    --pbx-border:    #e2e6ee;
+    --pbx-accent:    #2563eb;
+    --pbx-accent-fg: #ffffff;
+    --pbx-accent-h:  #1d4ed8;
+    --pbx-ok:        #16a34a;
+    --pbx-warn:      #d97706;
+    --pbx-err:       #dc2626;
+    --pbx-radius:    8px;
+    --pbx-shadow:    0 1px 2px rgba(15, 23, 42, .04), 0 4px 12px rgba(15, 23, 42, .06);
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --pbx-bg:     #0f172a;
+        --pbx-card:   #1e293b;
+        --pbx-fg:     #e2e8f0;
+        --pbx-muted:  #94a3b8;
+        --pbx-border: #334155;
+        --pbx-accent: #3b82f6;
+        --pbx-accent-h: #2563eb;
+    }
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--pbx-bg);
+    color: var(--pbx-fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                 "Helvetica Neue", Arial, "Noto Sans", sans-serif,
+                 "Apple Color Emoji", "Segoe UI Emoji";
+    font-size: 15px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+}
+
+a { color: var(--pbx-accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.pbx-shell {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 24px 20px 64px;
+}
+
+.pbx-topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 20px;
+    background: var(--pbx-card);
+    border-bottom: 1px solid var(--pbx-border);
+    box-shadow: var(--pbx-shadow);
+}
+.pbx-topbar .pbx-brand {
+    display: flex; align-items: center; gap: 10px;
+    font-weight: 600; font-size: 16px;
+}
+.pbx-topbar .pbx-brand .pbx-logo {
+    width: 28px; height: 28px;
+    border-radius: 6px;
+    background: var(--pbx-accent);
+    color: var(--pbx-accent-fg);
+    display: inline-flex; align-items: center; justify-content: center;
+    font-weight: 700;
+}
+.pbx-topbar .pbx-nav { display: flex; gap: 18px; align-items: center; }
+.pbx-topbar .pbx-nav a { color: var(--pbx-muted); font-size: 14px; }
+.pbx-topbar .pbx-nav a:hover { color: var(--pbx-fg); text-decoration: none; }
+.pbx-topbar .pbx-user {
+    font-size: 13px; color: var(--pbx-muted);
+    padding-left: 18px; border-left: 1px solid var(--pbx-border);
+    margin-left: 6px;
+}
+
+.pbx-card {
+    background: var(--pbx-card);
+    border: 1px solid var(--pbx-border);
+    border-radius: var(--pbx-radius);
+    box-shadow: var(--pbx-shadow);
+    padding: 24px;
+    margin-bottom: 20px;
+}
+
+h1, h2, h3 { margin: 0 0 12px; line-height: 1.25; }
+h1 { font-size: 22px; }
+h2 { font-size: 18px; }
+h3 { font-size: 15px; color: var(--pbx-muted); text-transform: uppercase; letter-spacing: .05em; }
+
+label {
+    display: block;
+    font-weight: 600;
+    margin: 14px 0 6px;
+    font-size: 13px;
+}
+
+input[type=text], input[type=tel], input[type=email],
+input[type=password], input[type=datetime-local],
+input[type=number], textarea, select {
+    width: 100%;
+    padding: 9px 12px;
+    background: var(--pbx-card);
+    color: var(--pbx-fg);
+    border: 1px solid var(--pbx-border);
+    border-radius: var(--pbx-radius);
+    font-size: 14px;
+    font-family: inherit;
+    transition: border-color .15s, box-shadow .15s;
+}
+input:focus, textarea:focus, select:focus {
+    outline: none;
+    border-color: var(--pbx-accent);
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, .15);
+}
+
+.pbx-btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: var(--pbx-accent);
+    color: var(--pbx-accent-fg);
+    padding: 10px 22px;
+    border: 0;
+    border-radius: var(--pbx-radius);
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background .15s;
+}
+.pbx-btn:hover { background: var(--pbx-accent-h); text-decoration: none; }
+.pbx-btn.pbx-btn-ghost {
+    background: transparent;
+    color: var(--pbx-fg);
+    border: 1px solid var(--pbx-border);
+}
+.pbx-btn.pbx-btn-ghost:hover { background: var(--pbx-bg); }
+
+.pbx-msg { padding: 10px 14px; border-radius: var(--pbx-radius); margin-bottom: 14px; font-size: 14px; }
+.pbx-msg.ok   { background: #ecfdf5; color: #065f46; border: 1px solid #a7f3d0; }
+.pbx-msg.warn { background: #fffbeb; color: #92400e; border: 1px solid #fde68a; }
+.pbx-msg.err  { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
+@media (prefers-color-scheme: dark) {
+    .pbx-msg.ok   { background: #064e3b; color: #d1fae5; border-color: #065f46; }
+    .pbx-msg.warn { background: #78350f; color: #fef3c7; border-color: #92400e; }
+    .pbx-msg.err  { background: #7f1d1d; color: #fee2e2; border-color: #991b1b; }
+}
+
+.pbx-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 14px;
+}
+.pbx-tile {
+    display: block;
+    padding: 18px;
+    background: var(--pbx-card);
+    border: 1px solid var(--pbx-border);
+    border-radius: var(--pbx-radius);
+    color: var(--pbx-fg);
+    transition: transform .12s, border-color .12s, box-shadow .12s;
+}
+.pbx-tile:hover {
+    text-decoration: none;
+    transform: translateY(-1px);
+    border-color: var(--pbx-accent);
+    box-shadow: var(--pbx-shadow);
+}
+.pbx-tile .pbx-tile-icon { font-size: 22px; margin-bottom: 6px; }
+.pbx-tile .pbx-tile-title { font-weight: 600; font-size: 14px; }
+.pbx-tile .pbx-tile-sub   { color: var(--pbx-muted); font-size: 12px; margin-top: 4px; }
+
+.pbx-foot {
+    text-align: center;
+    color: var(--pbx-muted);
+    font-size: 12px;
+    margin-top: 32px;
+}

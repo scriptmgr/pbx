@@ -1,0 +1,48 @@
+#!/bin/bash
+# enable-gmail-smarthost — point Postfix at Gmail's submission relay.
+#
+# Required env vars: GMAIL_USER, GMAIL_PASS (Gmail "App Password",
+# NOT your account password). 2FA must be enabled on the Google account
+# for app passwords to be available.
+set -euo pipefail
+
+SCRIPT_VERSION="${SCRIPT_VERSION:-3.0}"
+case "${1:-}" in
+    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${SCRIPT_VERSION}"; exit 0 ;;
+    --help|-h)
+        printf "Usage: GMAIL_USER=you@gmail.com GMAIL_PASS=app-password enable-gmail-smarthost\n\n"
+        printf "Reconfigures Postfix to relay outbound mail through smtp.gmail.com:587.\n"
+        printf "Use a Google App Password — your real account password will not work.\n"
+        exit 0 ;;
+esac
+
+[ "$(id -u)" -ne 0 ] && { echo "Must run as root" >&2; exit 1; }
+
+GMAIL_USER="${GMAIL_USER:-}"
+GMAIL_PASS="${GMAIL_PASS:-}"
+if [ -z "${GMAIL_USER}" ] || [ -z "${GMAIL_PASS}" ]; then
+    echo "Set GMAIL_USER and GMAIL_PASS first." >&2
+    echo "Example: GMAIL_USER=you@gmail.com GMAIL_PASS='app-pw' enable-gmail-smarthost" >&2
+    exit 1
+fi
+
+CA_FILE="/etc/ssl/certs/ca-certificates.crt"
+[ -f "${CA_FILE}" ] || CA_FILE="/etc/pki/tls/certs/ca-bundle.crt"
+
+postconf -e "relayhost = [smtp.gmail.com]:587"
+postconf -e "smtp_sasl_auth_enable = yes"
+postconf -e "smtp_sasl_security_options = noanonymous"
+postconf -e "smtp_sasl_password_maps = hash:/etc/postfix/sasl_passwd"
+postconf -e "smtp_use_tls = yes"
+postconf -e "smtp_tls_security_level = encrypt"
+postconf -e "smtp_tls_CAfile = ${CA_FILE}"
+
+umask 077
+cat > /etc/postfix/sasl_passwd <<EOF
+[smtp.gmail.com]:587 ${GMAIL_USER}:${GMAIL_PASS}
+EOF
+chmod 600 /etc/postfix/sasl_passwd
+postmap /etc/postfix/sasl_passwd
+
+systemctl restart postfix
+echo "Gmail relay configured for ${GMAIL_USER}"

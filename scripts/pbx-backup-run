@@ -1,0 +1,84 @@
+#!/bin/bash
+# pbx-backup-run — automated full PBX backup
+#
+# Runs daily from /etc/crontab. Picks daily/weekly/monthly bucket based on
+# day-of-week and day-of-month, then dumps:
+#   - FreePBX backup (or raw /etc/asterisk fallback)
+#   - MySQL databases (asterisk, asteriskcdrdb, avantfax)
+#   - Web root /admin tree
+#   - /etc/pbx/.env
+# Computes SHA-256 for every artifact, optionally GPG-encrypts when
+# BACKUP_ENCRYPT=yes + BACKUP_GPG_KEY are set in /etc/pbx/.env, and
+# prunes old backups per retention policy.
+set -euo pipefail
+
+PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin${PATH:+:$PATH}"
+export PATH
+
+SCRIPT_VERSION="${SCRIPT_VERSION:-3.0}"
+case "${1:-}" in
+    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${SCRIPT_VERSION}"; exit 0 ;;
+    --help|-h)
+        printf "Usage: pbx-backup-run\n\nRun a full PBX backup (daily/weekly/monthly).\n"
+        exit 0 ;;
+esac
+
+[ -f /etc/pbx/.env ] && . /etc/pbx/.env 2>/dev/null || true
+
+BACKUP_BASE="${BACKUP_BASE:-/mnt/backups/pbx}"
+TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+DAY=$(date +%u)    # 1=Mon 7=Sun
+HOUR=$(date +%H)
+RETAIN_DAILY="${BACKUP_RETAIN_DAILY:-7}"
+RETAIN_WEEKLY="${BACKUP_RETAIN_WEEKLY:-4}"
+RETAIN_MONTHLY="${BACKUP_RETAIN_MONTHLY:-3}"
+
+if   [ "${HOUR}" = "02" ] && [ "${DAY}" = "7" ]; then  TYPE="weekly"
+elif [ "${HOUR}" = "02" ] && [ "$(date +%d)" = "01" ]; then TYPE="monthly"
+else TYPE="daily"
+fi
+
+DEST="${BACKUP_BASE}/${TYPE}/${TIMESTAMP}"
+mkdir -p "${DEST}"
+
+# FreePBX config backup (preferred), raw etc fallback otherwise.
+fwconsole backup --backup-name="auto-${TIMESTAMP}" 2>/dev/null \
+    || cp -r /etc/asterisk "${DEST}/asterisk-etc" 2>/dev/null || true
+
+# MySQL databases
+MYSQL_ROOT_PASSWORD_FILE="${MYSQL_ROOT_PASSWORD_FILE:-/etc/pbx/mysql_root_password}"
+[ -z "${MYSQL_ROOT_PASSWORD:-}" ] && [ -f "${MYSQL_ROOT_PASSWORD_FILE}" ] && \
+    MYSQL_ROOT_PASSWORD=$(tr -d '\r\n' < "${MYSQL_ROOT_PASSWORD_FILE}" 2>/dev/null)
+MYSQL_OPTS=""; [ -n "${MYSQL_ROOT_PASSWORD:-}" ] && MYSQL_OPTS="-p${MYSQL_ROOT_PASSWORD}"
+# shellcheck disable=SC2086
+mysqldump -u root $MYSQL_OPTS --databases asterisk asteriskcdrdb avantfax \
+    > "${DEST}/mysql-pbx.sql" 2>/dev/null || true
+
+# Web root
+tar -czf "${DEST}/webroot.tar.gz" "${WEB_ROOT:-/var/www/apache/pbx}/admin" 2>/dev/null || true
+
+# PBX env
+cp /etc/pbx/.env "${DEST}/" 2>/dev/null || true
+
+# Per-archive integrity hash
+for f in "${DEST}"/*.tar.gz "${DEST}"/*.sql; do
+    [ -f "${f}" ] && sha256sum "${f}" > "${f}.sha256" 2>/dev/null || true
+done
+
+# Optional GPG encryption (asymmetric, recipient = BACKUP_GPG_KEY).
+if [ "${BACKUP_ENCRYPT:-no}" = "yes" ] && [ -n "${BACKUP_GPG_KEY:-}" ]; then
+    for f in "${DEST}"/*.tar.gz "${DEST}"/*.sql; do
+        [ -f "${f}" ] || continue
+        gpg --batch --yes --encrypt --recipient "${BACKUP_GPG_KEY}" \
+            --output "${f}.gpg" "${f}" 2>/dev/null \
+            && rm -f "${f}" "${f}.sha256" \
+            && sha256sum "${f}.gpg" > "${f}.gpg.sha256" 2>/dev/null || true
+    done
+fi
+
+# Retention pruning
+find "${BACKUP_BASE}/daily"   -maxdepth 1 -type d -mtime +"${RETAIN_DAILY}"           -exec rm -rf {} + 2>/dev/null || true
+find "${BACKUP_BASE}/weekly"  -maxdepth 1 -type d -mtime +$(( RETAIN_WEEKLY * 7 ))   -exec rm -rf {} + 2>/dev/null || true
+find "${BACKUP_BASE}/monthly" -maxdepth 1 -type d -mtime +$(( RETAIN_MONTHLY * 30 )) -exec rm -rf {} + 2>/dev/null || true
+
+echo "Backup complete: ${DEST}"

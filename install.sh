@@ -1864,12 +1864,10 @@ sync_management_scripts() {
 
     # Remove any scripts that are no longer in the repo
     if [ "${manifest_fresh}" -eq 1 ] && [ -f "${SCRIPTS_MANIFEST_CACHE}" ]; then
-        local preserve_local_helpers="pbx-backup-run pbx-health-check pbx-reminder-process pbx-status-update"
         for existing in "${install_dir}"/pbx-*; do
             [ -f "${existing}" ] || continue
             local bname
             bname=$(basename "${existing}")
-            echo " ${preserve_local_helpers} " | grep -q " ${bname} " && continue
             grep -q "^${bname}	" "${SCRIPTS_MANIFEST_CACHE}" || {
                 info "Removing obsolete script: ${bname}"
                 rm -f "${existing}"
@@ -1881,6 +1879,190 @@ sync_management_scripts() {
 
     rm -f "${manifest_tmp}" "${manifest_tmp}.sh"
     success "Scripts synced: ${updated} updated, ${skipped} unchanged, ${failed} failed"
+}
+
+# =============================================================================
+# SECTION 7f: WEB ASSET DEPLOYER (./web → /etc/pbx/web)
+# =============================================================================
+#
+# Deploys the static page templates that used to live as heredocs inside
+# install.sh (portal, reminder, status, shared CSS, FreePBX-session auth
+# shim). Mirrors sync_management_scripts: local override → ./web/ next to
+# install.sh → curl from GitHub.
+#
+# Layout on disk after sync:
+#   /etc/pbx/web/_shared/pbx-style.css       (web-served via Alias /pbx-assets/)
+#   /etc/pbx/web/_shared/pbx-auth.php        (require'd from PHP, never web-served)
+#   /etc/pbx/web/_shared/pbx-layout.php      (require'd from PHP, never web-served)
+#   /etc/pbx/web/_shared/pbx-layout-foot.php (require'd from PHP, never web-served)
+#   /etc/pbx/web/_shared/auth-shim.php       (FPM auto_prepend_file target)
+#   /etc/pbx/web/portal/index.php
+#   /etc/pbx/web/reminder/index.php
+#
+# Apache routes: see configure_pbx_web_routes() (called from web setup steps).
+
+PBX_WEB_DIR="${PBX_WEB_DIR:-/etc/pbx/web}"
+WEB_FILES="_shared/pbx-style.css _shared/pbx-auth.php _shared/pbx-layout.php _shared/pbx-layout-foot.php _shared/auth-shim.php portal/index.php reminder/index.php"
+
+sync_web_assets() {
+    step "🌐 Syncing web templates → ${PBX_WEB_DIR}"
+
+    mkdir -p "${PBX_WEB_DIR}"/_shared "${PBX_WEB_DIR}"/portal "${PBX_WEB_DIR}"/reminder
+    chmod 755 "${PBX_WEB_DIR}" "${PBX_WEB_DIR}"/_shared "${PBX_WEB_DIR}"/portal "${PBX_WEB_DIR}"/reminder
+
+    local source_mode="" source_path=""
+
+    # LOCAL OVERRIDE (dev/testing).
+    if [ -n "${PBX_WEB_LOCAL:-}" ] && [ -d "${PBX_WEB_LOCAL}" ]; then
+        source_mode="local-env"; source_path="${PBX_WEB_LOCAL}"
+    else
+        # AUTO-DETECT: ./web/ alongside install.sh
+        local web_dir
+        web_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/web"
+        [ -d "${web_dir}" ] && { source_mode="local-auto"; source_path="${web_dir}"; }
+    fi
+
+    if [ -n "${source_path}" ]; then
+        info "Installing web templates from ${source_mode}: ${source_path}"
+        local count=0
+        for rel in ${WEB_FILES}; do
+            local src="${source_path}/${rel}"
+            local dst="${PBX_WEB_DIR}/${rel}"
+            if [ ! -f "${src}" ]; then
+                warn "Missing web template: ${rel}"
+                continue
+            fi
+            install -m 644 "${src}" "${dst}"
+            count=$(( count + 1 ))
+        done
+        success "Web templates installed: ${count} files"
+    else
+        info "Fetching web templates from GitHub: ${GITHUB_REPO}@${SCRIPTS_REF}"
+        local raw_base="https://raw.githubusercontent.com/${GITHUB_REPO}/${SCRIPTS_REF}/web"
+        local count=0 failed=0
+        for rel in ${WEB_FILES}; do
+            local dst="${PBX_WEB_DIR}/${rel}"
+            if curl -q -fsSL "${raw_base}/${rel}" -o "${dst}.tmp" 2>/dev/null; then
+                chmod 644 "${dst}.tmp"
+                mv "${dst}.tmp" "${dst}"
+                count=$(( count + 1 ))
+            else
+                rm -f "${dst}.tmp"
+                warn "Failed to fetch web template: ${rel}"
+                failed=$(( failed + 1 ))
+            fi
+        done
+        success "Web templates fetched: ${count} ok, ${failed} failed"
+    fi
+
+    # The shared dir is required from PHP; deny direct serving of its .php files.
+    chown -R "root:${APACHE_GROUP:-root}" "${PBX_WEB_DIR}" 2>/dev/null || true
+}
+
+# Apache routing for the deployed web templates. Idempotent — safe to re-run.
+configure_pbx_web_routes() {
+    local conf_dir conf_file enabler=""
+    case "${DISTRO_FAMILY}" in
+        debian)
+            conf_dir="/etc/apache2/conf-available"
+            conf_file="${conf_dir}/pbx-web.conf"
+            enabler="a2enconf pbx-web"
+            ;;
+        *)
+            conf_dir="/etc/httpd/conf.d"
+            conf_file="${conf_dir}/pbx-web.conf"
+            ;;
+    esac
+    mkdir -p "${conf_dir}"
+
+    # The FPM handler must be wired explicitly under /etc/pbx/web because
+    # the global SetHandler in /etc/httpd/conf.d/pbx.conf is scoped to a
+    # <Directory> on WEB_ROOT only — without this, PHP requests to aliased
+    # paths return 502 "Primary script unknown".
+    local fpm_sock="${PHP_FPM_SOCK:-/run/php-fpm/www.sock}"
+
+    cat > "${conf_file}" << PBXWEBEOF
+# Routing for /etc/pbx/web — deployed by install.sh sync_web_assets().
+# Edit the templates upstream in the scriptmgr/pbx repo, not here.
+
+# Hand any .php under /etc/pbx/web to the primary FPM pool. The auto_prepend
+# auth-shim runs there and gates per-prefix.
+<Directory ${PBX_WEB_DIR}>
+    <FilesMatch "\\.php\$">
+        SetHandler "proxy:unix:${fpm_sock}|fcgi://localhost"
+    </FilesMatch>
+</Directory>
+
+# Static assets (CSS only — .php deny rule below blocks the layout partials).
+Alias /pbx-assets/ ${PBX_WEB_DIR}/_shared/
+<Directory ${PBX_WEB_DIR}/_shared>
+    Options -Indexes
+    AllowOverride None
+    Require all granted
+    <FilesMatch "\\.php\$">
+        Require all denied
+    </FilesMatch>
+</Directory>
+
+# Telephone reminder — auth enforced by FPM auto_prepend_file (auth-shim.php).
+Alias /reminder ${PBX_WEB_DIR}/reminder
+<Directory ${PBX_WEB_DIR}/reminder>
+    Options -Indexes
+    AllowOverride None
+    Require all granted
+    DirectoryIndex index.php
+</Directory>
+
+# Portal landing page — also served as DirectoryIndex on /.
+Alias /portal.php ${PBX_WEB_DIR}/portal/index.php
+<Directory ${PBX_WEB_DIR}/portal>
+    Options -Indexes
+    AllowOverride None
+    Require all granted
+    DirectoryIndex index.php
+</Directory>
+PBXWEBEOF
+
+    [ -n "${enabler}" ] && ${enabler} >/dev/null 2>&1 || true
+}
+
+# Inject the FreePBX-session auth shim into every PHP-FPM pool so any
+# request matching a path prefix in PBX_GATED_PATHS (auth-shim.php) is
+# gated on a logged-in FreePBX user. Idempotent — re-runnable.
+#
+# We use php_admin_value[auto_prepend_file] which fires on every PHP
+# request handled by the pool. The shim itself is path-aware and is a
+# no-op for /admin, /ucp, /avantfax, etc. — so wiring it pool-wide is
+# safe.
+configure_php_fpm_auth_shim() {
+    local shim="${PBX_WEB_DIR}/_shared/auth-shim.php"
+    [ -f "${shim}" ] || { warn "auth-shim.php missing — skipping FPM gate"; return 0; }
+
+    local marker="; pbx-auth-shim"
+    local directive="php_admin_value[auto_prepend_file] = ${shim}"
+    local restart_pools=""
+
+    for pool in \
+        /etc/php-fpm.d/www.conf \
+        /etc/opt/remi/php74/php-fpm.d/www.conf \
+        /etc/php/*/fpm/pool.d/www.conf \
+    ; do
+        [ -f "${pool}" ] || continue
+        if grep -q "^${marker}" "${pool}" 2>/dev/null; then
+            # Already wired — refresh the path in case PBX_WEB_DIR changed.
+            sed -i "/^${marker}/,/^php_admin_value\\[auto_prepend_file\\]/c\\${marker}\\n${directive}" "${pool}"
+        else
+            printf "\n%s\n%s\n" "${marker}" "${directive}" >> "${pool}"
+        fi
+        restart_pools="${restart_pools} ${pool}"
+    done
+
+    # Restart whichever FPM services we touched.
+    [ -n "${PHP_FPM_SERVICE:-}" ]   && svc_restart "${PHP_FPM_SERVICE}"   2>/dev/null || true
+    [ -n "${PHP74_FPM_SERVICE:-}" ] && [ "${PHP74_FPM_SERVICE}" != "${PHP_FPM_SERVICE:-}" ] \
+        && svc_restart "${PHP74_FPM_SERVICE}" 2>/dev/null || true
+
+    [ -n "${restart_pools}" ] && info "FPM auth shim wired into:${restart_pools}"
 }
 
 # =============================================================================
@@ -4025,27 +4207,9 @@ HCEOF
         warn "postconf not found — skipping postfix configuration (postfix not installed?)"
     fi
 
-    cat > /usr/local/bin/enable-gmail-smarthost << 'GMAILEOF'
-#!/bin/bash
-# Enable Gmail relay for Postfix — set GMAIL_USER and GMAIL_PASS first
-GMAIL_USER="${GMAIL_USER:-your@gmail.com}"
-GMAIL_PASS="${GMAIL_PASS:-your-app-password}"
-postconf -e "relayhost = [smtp.gmail.com]:587"
-postconf -e "smtp_sasl_auth_enable = yes"
-postconf -e "smtp_sasl_security_options = noanonymous"
-postconf -e "smtp_sasl_password_maps = hash:/etc/postfix/sasl_passwd"
-postconf -e "smtp_use_tls = yes"
-postconf -e "smtp_tls_security_level = encrypt"
-postconf -e "smtp_tls_CAfile = /etc/ssl/certs/ca-certificates.crt"
-cat > /etc/postfix/sasl_passwd << EOF
-[smtp.gmail.com]:587 ${GMAIL_USER}:${GMAIL_PASS}
-EOF
-chmod 600 /etc/postfix/sasl_passwd
-postmap /etc/postfix/sasl_passwd
-systemctl restart postfix
-echo "Gmail relay configured for ${GMAIL_USER}"
-GMAILEOF
-    chmod +x /usr/local/bin/enable-gmail-smarthost
+    # enable-gmail-smarthost is deployed via scripts/ directory.
+    [ -x /usr/local/bin/enable-gmail-smarthost ] || \
+        warn "enable-gmail-smarthost not in /usr/local/bin (deployed via scripts/)"
 
     mark_done postfix
     success "Postfix installed"
@@ -4458,6 +4622,29 @@ AFADMINSQL
         info "AvantFax config.php updated with database credentials"
     fi
 
+    # Override AvantFAX's hard-coded MAX_USERNAME_SIZE / MAX_PASSWD_SIZE
+    # of 15 chars — that limit silently truncates passwords in the
+    # browser form (form maxlength + server-side FormRules), which makes
+    # any ADMIN_PASSWORD longer than 15 chars fail to log in. Define
+    # the wider limits in local_config.php (loaded BEFORE config.php's
+    # defaults) so the rest of AvantFax's own settings stay untouched.
+    local lcfg="${AVANTFAX_WEB_DIR}/includes/local_config.php"
+    if [ -d "${AVANTFAX_WEB_DIR}/includes" ]; then
+        cat > "${lcfg}" << 'AFLCFGEOF'
+<?php
+// AvantFAX overrides — managed by scriptmgr/pbx install.sh.
+// Loaded before config.php's defaults; only redefine what we need here.
+// Database credentials, paths, etc. stay in config.php (auto-patched
+// by the installer). Re-runnable: this file is overwritten on each install.
+
+if (!defined('MAX_USERNAME_SIZE')) define('MAX_USERNAME_SIZE', 64);
+if (!defined('MAX_PASSWD_SIZE'))   define('MAX_PASSWD_SIZE',   64);
+AFLCFGEOF
+        chown "${APACHE_USER:-www-data}:${APACHE_GROUP:-www-data}" "${lcfg}" 2>/dev/null || true
+        chmod 644 "${lcfg}"
+        info "AvantFax local_config.php written (MAX_*_SIZE=64 for long admin passwords)"
+    fi
+
     svc_reload "${APACHE_SERVICE}" 2>/dev/null || true
 
     mark_done avantfax
@@ -4470,21 +4657,12 @@ configure_email_to_fax() {
     [ -z "${EMAIL_TO_FAX_ALIAS}" ] && generate_fax_alias
     save_pbx_env
 
-    cat > /usr/local/bin/email-to-fax.sh << 'ETFEOF'
-#!/bin/bash
-# Email-to-fax handler — called by MTA on incoming email to fax alias
-set -e
-SPOOL_DIR="/var/spool/fax/email"
-mkdir -p "${SPOOL_DIR}"
-EMAIL_FILE="${SPOOL_DIR}/fax-$(date +%s)-$$.eml"
-cat > "${EMAIL_FILE}"
-FAX_NUM=$(grep -i "^Subject:" "${EMAIL_FILE}" | grep -oP '\d{7,15}' | head -1 || true)
-if [ -n "${FAX_NUM}" ]; then
-    sendfax -n -d "${FAX_NUM}" "${EMAIL_FILE}" 2>/dev/null || true
-fi
-rm -f "${EMAIL_FILE}"
-ETFEOF
-    chmod +x /usr/local/bin/email-to-fax.sh
+    # email-to-fax.sh is deployed via scripts/ directory.
+    [ -x /usr/local/bin/email-to-fax.sh ] || \
+        warn "email-to-fax.sh not in /usr/local/bin (deployed via scripts/)"
+    # Pre-create the spool dir the script writes into, so the MTA can
+    # pipe the message even before the script's first invocation.
+    mkdir -p /var/spool/fax/email
 
     success "Email-to-fax configured (alias: ${EMAIL_TO_FAX_ALIAS})"
 }
@@ -4495,27 +4673,11 @@ configure_fax_to_email() {
     [ -z "${FAX_FROM_EMAIL}" ]       && FAX_FROM_EMAIL="${FROM_EMAIL:-no-reply@localhost}"
     [ -z "${FAX_FROM_NAME}" ]        && FAX_FROM_NAME="${FROM_NAME:-PBX Fax System}"
 
-    cat > /usr/local/bin/fax-to-email.sh << FTEEOF
-#!/bin/bash
-# Fax-to-email forwarder — called when HylaFAX receives a fax
-FAX_FILE="\$1"
-FAX_FROM="\$2"
-FAX_PAGES="\$3"
-TO="${FAX_TO_EMAIL_ADDRESS}"
-MAIL_FROM="${FAX_FROM_EMAIL}"
-MAIL_FROM_NAME="${FAX_FROM_NAME}"
-[ -z "\${FAX_FILE}" ] && exit 1
-SUBJECT="Incoming Fax from \${FAX_FROM} (\${FAX_PAGES} pages)"
-BODY="You have received a fax from \${FAX_FROM}. See attachment."
-if command -v uuencode >/dev/null 2>&1; then
-    (echo "\${BODY}"; uuencode "\${FAX_FILE}" fax.pdf) | mail -s "\${SUBJECT}" \
-        -a "From: \${MAIL_FROM_NAME} <\${MAIL_FROM}>" "\${TO}" 2>/dev/null || true
-elif command -v mutt >/dev/null 2>&1; then
-    echo "\${BODY}" | mutt -s "\${SUBJECT}" -e "my_hdr From: \${MAIL_FROM_NAME} <\${MAIL_FROM}>" \
-        -a "\${FAX_FILE}" -- "\${TO}" 2>/dev/null || true
-fi
-FTEEOF
-    chmod +x /usr/local/bin/fax-to-email.sh
+    # fax-to-email.sh is deployed via scripts/ directory and reads
+    # FAX_TO_EMAIL_ADDRESS / FAX_FROM_EMAIL / FAX_FROM_NAME from
+    # /etc/pbx/.env at runtime — no install-time interpolation.
+    [ -x /usr/local/bin/fax-to-email.sh ] || \
+        warn "fax-to-email.sh not in /usr/local/bin (deployed via scripts/)"
 
     # Register with HylaFAX FaxDispatch if present
     if [ -f /var/spool/hylafax/etc/FaxDispatch ]; then
@@ -5993,76 +6155,11 @@ setup_backup_system() {
 
     mkdir -p "${BACKUP_BASE}"/{daily,weekly,monthly}
 
-    cat > /usr/local/bin/pbx-backup-run << 'BKPEOF'
-#!/bin/bash
-# PBX automated backup script
-set -euo pipefail
-
-BACKUP_BASE="/mnt/backups/pbx"
-TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-DAY=$(date +%u)    # 1=Mon 7=Sun
-HOUR=$(date +%H)
-RETAIN_DAILY=7
-RETAIN_WEEKLY=4
-RETAIN_MONTHLY=3
-
-if   [ "${HOUR}" = "02" ] && [ "${DAY}" = "7" ]; then  TYPE="weekly"
-elif [ "${HOUR}" = "02" ] && [ "$(date +%d)" = "01" ]; then TYPE="monthly"
-else TYPE="daily"
-fi
-
-DEST="${BACKUP_BASE}/${TYPE}/${TIMESTAMP}"
-mkdir -p "${DEST}"
-
-# FreePBX config backup
-fwconsole backup --backup-name="auto-${TIMESTAMP}" 2>/dev/null \
-    || cp -r /etc/asterisk "${DEST}/asterisk-etc" 2>/dev/null || true
-
-# MySQL databases
-[ -f /etc/pbx/.env ] && . /etc/pbx/.env 2>/dev/null || true
-MYSQL_ROOT_PASSWORD_FILE="${MYSQL_ROOT_PASSWORD_FILE:-/etc/pbx/mysql_root_password}"
-[ -z "${MYSQL_ROOT_PASSWORD:-}" ] && [ -f "${MYSQL_ROOT_PASSWORD_FILE}" ] && \
-    MYSQL_ROOT_PASSWORD=$(tr -d '\r\n' < "${MYSQL_ROOT_PASSWORD_FILE}" 2>/dev/null)
-MYSQL_PASS="${MYSQL_ROOT_PASSWORD:-}"
-MYSQL_OPTS=""; [ -n "${MYSQL_PASS}" ] && MYSQL_OPTS="-p${MYSQL_PASS}"
-# shellcheck disable=SC2086
-mysqldump -u root $MYSQL_OPTS --databases asterisk asteriskcdrdb avantfax \
-    > "${DEST}/mysql-pbx.sql" 2>/dev/null || true
-
-# Web root
-tar -czf "${DEST}/webroot.tar.gz" "${WEB_ROOT:-/var/www/apache/pbx}/admin" 2>/dev/null || true
-
-# PBX env
-cp /etc/pbx/.env "${DEST}/" 2>/dev/null || true
-
-# Feature: backup-verify — compute SHA256 checksums for all archive files
-for f in "${DEST}"/*.tar.gz "${DEST}"/*.sql; do
-    [ -f "${f}" ] && sha256sum "${f}" > "${f}.sha256" 2>/dev/null || true
-done
-
-# Feature: backup-encryption — encrypt archives if opted in
-if [ -f /etc/pbx/.env ]; then
-    # shellcheck source=/dev/null
-    source /etc/pbx/.env 2>/dev/null || true
-fi
-if [ "${BACKUP_ENCRYPT:-no}" = "yes" ] && [ -n "${BACKUP_GPG_KEY:-}" ]; then
-    for f in "${DEST}"/*.tar.gz "${DEST}"/*.sql; do
-        [ -f "${f}" ] || continue
-        gpg --batch --yes --encrypt --recipient "${BACKUP_GPG_KEY}" \
-            --output "${f}.gpg" "${f}" 2>/dev/null \
-            && rm -f "${f}" "${f}.sha256" \
-            && sha256sum "${f}.gpg" > "${f}.gpg.sha256" 2>/dev/null || true
-    done
-fi
-
-# Cleanup old backups
-find "${BACKUP_BASE}/daily"   -maxdepth 1 -type d -mtime +"${RETAIN_DAILY}"   -exec rm -rf {} + 2>/dev/null || true
-find "${BACKUP_BASE}/weekly"  -maxdepth 1 -type d -mtime +$(( RETAIN_WEEKLY * 7 )) -exec rm -rf {} + 2>/dev/null || true
-find "${BACKUP_BASE}/monthly" -maxdepth 1 -type d -mtime +$(( RETAIN_MONTHLY * 30 )) -exec rm -rf {} + 2>/dev/null || true
-
-echo "Backup complete: ${DEST}"
-BKPEOF
-    chmod +x /usr/local/bin/pbx-backup-run
+    # pbx-backup-run is deployed via scripts/ directory.
+    if [ ! -x /usr/local/bin/pbx-backup-run ]; then
+        warn "pbx-backup-run not found in /usr/local/bin — skipping backup cron"
+        return 0
+    fi
 
     # Cron entry
     if ! grep -q "pbx-backup-run" /etc/crontab 2>/dev/null; then
@@ -6408,174 +6505,15 @@ RCLCRONEOF
 
 create_root_scripts() {
     step "📜 Creating root utility scripts..."
-    info "Creating ipchecker, admin-pw-change, sig-fix, and timezone-setup"
+    info "Verifying admin shortcuts (deployed via scripts/)"
 
-    # IP checker
-    cat > /usr/local/bin/ipchecker << 'IPCEOF'
-#!/bin/bash
-# ipchecker — show current primary, private, and public IPs
-PRIM4=$(ip -4 route get 8.8.8.8 2>/dev/null \
-    | awk '/src/{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}') \
-    || PRIM4=$(ip -4 addr show scope global 2>/dev/null | awk '/inet /{split($2,a,"/"); print a[1]}' | head -1)
-PRIM6=$(ip -6 route get 2001:4860:4860::8888 2>/dev/null \
-    | awk '/src/{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}' | grep -v '^::1$') || PRIM6=""
-case "${PRIM4:-}" in 10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[0-1].*) PRIV4="${PRIM4}" ;; *) PRIV4="" ;; esac
-case "${PRIM6,,}" in fc*|fd*) PRIV6="${PRIM6}" ;; *) PRIV6="" ;; esac
-PUB=$(curl -s4 --max-time 5 https://ifconfig.me 2>/dev/null \
-    || curl -s4 --max-time 5 https://api.ipify.org 2>/dev/null \
-    || curl -s4 --max-time 5 https://icanhazip.com 2>/dev/null || echo "unknown")
-[ -z "${PUB}" ] || [ "${PUB}" = "unknown" ] && \
-    PUB=$(curl -s6 --max-time 5 https://ifconfig.me 2>/dev/null || echo "unknown")
-printf 'Primary IPv4 : %s\n' "${PRIM4:-unknown}"
-[ -n "${PRIV4}" ] && printf 'Private IPv4 : %s\n' "${PRIV4}"
-[ -n "${PRIM6}" ] && printf 'Primary IPv6 : %s\n' "${PRIM6}"
-[ -n "${PRIV6}" ] && printf 'Private IPv6 : %s\n' "${PRIV6}"
-printf 'Public  IP   : %s\n' "${PUB:-unknown}"
-IPCEOF
-    chmod +x /usr/local/bin/ipchecker
+    # ipchecker is deployed via scripts/ directory.
+    [ -x /usr/local/bin/ipchecker ] || warn "ipchecker missing in /usr/local/bin"
 
-    # admin-pw-change — change FreePBX admin password
-    cat > /usr/local/bin/admin-pw-change << 'APWEOF'
-#!/bin/bash
-ENV_FILE="/etc/pbx/.env"
-PASSWORDS_FILE="/etc/pbx/pbx_passwords"
-FREEPBX_ADMIN_USERNAME="administrator"
-sql_escape() { printf '%s' "$1" | sed "s/'/''/g"; }
-[ -f "${ENV_FILE}" ] && source "${ENV_FILE}" 2>/dev/null || true
-ADMIN_EMAIL="${ADMIN_EMAIL:-admin@localhost}"
-echo "Changing FreePBX admin password for ${FREEPBX_ADMIN_USERNAME}..."
-read -rsp "New password: " PW; echo
-MYSQL_ROOT_PASSWORD_FILE="${MYSQL_ROOT_PASSWORD_FILE:-/etc/pbx/mysql_root_password}"
-MYSQL_ROOT_PASSWORD=""
-[ -f "${MYSQL_ROOT_PASSWORD_FILE}" ] && MYSQL_ROOT_PASSWORD=$(tr -d '\r\n' < "${MYSQL_ROOT_PASSWORD_FILE}")
-[ -z "${MYSQL_ROOT_PASSWORD}" ] && [ -f "${ENV_FILE}" ] && MYSQL_ROOT_PASSWORD=$(grep '^MYSQL_ROOT_PASSWORD=' "${ENV_FILE}" | cut -d= -f2- | tr -d '"')
-if [ -n "${MYSQL_ROOT_PASSWORD}" ]; then
-    PASS_HASH=$(printf '%s' "${PW}" | sha1sum | cut -d' ' -f1)
-    mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk 2>/dev/null <<EOF || true
-INSERT INTO ampusers (username, email, password_sha1, extension_low, extension_high, deptname, sections)
-VALUES ('${FREEPBX_ADMIN_USERNAME}', '${ADMIN_EMAIL}', '${PASS_HASH}', '', '', '', 'all')
-ON DUPLICATE KEY UPDATE password_sha1='${PASS_HASH}', sections='all', email='${ADMIN_EMAIL}';
-EOF
-fi
-if [ -f /etc/freepbx.conf ]; then
-    php /dev/stdin "${FREEPBX_ADMIN_USERNAME}" "${PW}" "${ADMIN_EMAIL}" <<'PHP'
-<?php
-$bootstrap_settings = ['skip_astman' => true];
-require '/etc/freepbx.conf';
-$username = $argv[1] ?? '';
-$password = $argv[2] ?? '';
-$email = $argv[3] ?? 'admin@localhost';
-if ($username === '' || $password === '') {
-    exit(1);
-}
-$freepbx = FreePBX::create();
-$userman = $freepbx->Userman;
-$existing = $userman->getUserByUsername($username);
-$displayName = $username;
-$extraData = [
-    'email' => $email,
-    'displayname' => $displayName,
-    'fname' => 'PBX',
-    'lname' => 'Administrator',
-];
-if (!empty($existing['id'])) {
-    $uid = (int)$existing['id'];
-    $defaultExtension = !empty($existing['default_extension']) ? $existing['default_extension'] : 'none';
-    $result = $userman->updateUser($uid, $username, $username, $defaultExtension, 'PBX Administrator', $extraData, $password, true);
-} else {
-    $result = $userman->addUser($username, $password, 'none', 'PBX Administrator', $extraData, true);
-    $uid = (int)($result['id'] ?? 0);
-}
-if (!empty($uid)) {
-    $userman->setGlobalSettingByID($uid, 'pbx_login', true);
-    $userman->setGlobalSettingByID($uid, 'pbx_admin', true);
-    $userman->setGlobalSettingByID($uid, 'pbx_low', '');
-    $userman->setGlobalSettingByID($uid, 'pbx_high', '');
-    $userman->setGlobalSettingByID($uid, 'pbx_modules', ['*']);
-    $userman->setGlobalSettingByID($uid, 'pbx_landing', 'index');
-}
-PHP
-fi
-if [ -n "${MYSQL_ROOT_PASSWORD}" ]; then
-    USERMAN_PW_HASH=$(php -r 'echo password_hash($argv[1], PASSWORD_BCRYPT);' "${PW}" 2>/dev/null || true)
-    if [ -n "${USERMAN_PW_HASH}" ]; then
-        USER_SQL=$(sql_escape "${FREEPBX_ADMIN_USERNAME}")
-        EMAIL_SQL=$(sql_escape "${ADMIN_EMAIL}")
-        HASH_SQL=$(sql_escape "${USERMAN_PW_HASH}")
-        USERMAN_UID=$(mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk -Nse \
-            "SELECT id FROM userman_users WHERE username='${USER_SQL}' ORDER BY id LIMIT 1" 2>/dev/null || true)
-        if [ -n "${USERMAN_UID}" ]; then
-            mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk 2>/dev/null <<EOF || true
-UPDATE userman_users
-SET auth='1',
-    description='PBX Administrator',
-    password='${HASH_SQL}',
-    default_extension='none',
-    fname='PBX',
-    lname='Administrator',
-    displayname='${USER_SQL}',
-    email='${EMAIL_SQL}'
-WHERE id=${USERMAN_UID};
-EOF
-        else
-            mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk 2>/dev/null <<EOF || true
-INSERT INTO userman_users (auth, username, description, password, default_extension, fname, lname, displayname, email)
-VALUES ('1', '${USER_SQL}', 'PBX Administrator', '${HASH_SQL}', 'none', 'PBX', 'Administrator', '${USER_SQL}', '${EMAIL_SQL}');
-EOF
-            USERMAN_UID=$(mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk -Nse \
-                "SELECT id FROM userman_users WHERE username='${USER_SQL}' ORDER BY id LIMIT 1" 2>/dev/null || true)
-        fi
-        if [ -n "${USERMAN_UID}" ]; then
-            mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk 2>/dev/null <<EOF || true
-INSERT INTO userman_users_settings (uid, module, \`key\`, val, type) VALUES
-(${USERMAN_UID}, 'global', 'pbx_login', '1', NULL),
-(${USERMAN_UID}, 'global', 'pbx_admin', '1', NULL),
-(${USERMAN_UID}, 'global', 'pbx_low', '', NULL),
-(${USERMAN_UID}, 'global', 'pbx_high', '', NULL),
-(${USERMAN_UID}, 'global', 'pbx_modules', '["*"]', 'json-arr'),
-(${USERMAN_UID}, 'global', 'pbx_landing', 'index', NULL)
-ON DUPLICATE KEY UPDATE val=VALUES(val), type=VALUES(type);
-EOF
-        fi
-    fi
-fi
-if [ -f "${ENV_FILE}" ]; then
-    if grep -q '^ADMIN_PASSWORD=' "${ENV_FILE}" 2>/dev/null; then
-        sed -i "s|^ADMIN_PASSWORD=.*|ADMIN_PASSWORD=\"${PW}\"|" "${ENV_FILE}"
-    else
-        printf 'ADMIN_PASSWORD=\"%s\"\n' "${PW}" >> "${ENV_FILE}"
-    fi
-fi
-if [ -f "${PASSWORDS_FILE}" ]; then
-    if grep -q '^ADMIN_PASSWORD=' "${PASSWORDS_FILE}" 2>/dev/null; then
-        sed -i "s|^ADMIN_PASSWORD=.*|ADMIN_PASSWORD=${PW}|" "${PASSWORDS_FILE}"
-    else
-        printf 'ADMIN_PASSWORD=%s\n' "${PW}" >> "${PASSWORDS_FILE}"
-    fi
-fi
-echo "Password updated"
-APWEOF
-    chmod +x /usr/local/bin/admin-pw-change
-
-    # sig-fix — fix FreePBX module signatures
-    cat > /usr/local/bin/sig-fix << 'SIGEOF'
-#!/bin/bash
-echo "Refreshing FreePBX module signatures..."
-fwconsole ma refreshsignatures 2>/dev/null || true
-fwconsole chown >/dev/null 2>&1 || true
-echo "Done."
-SIGEOF
-    chmod +x /usr/local/bin/sig-fix
-
-    # timezone-setup
-    cat > /usr/local/bin/timezone-setup << 'TZEOF'
-#!/bin/bash
-TZ="${1:?Usage: timezone-setup <timezone>  e.g. America/New_York}"
-timedatectl set-timezone "${TZ}" 2>/dev/null \
-    || ln -sf "/usr/share/zoneinfo/${TZ}" /etc/localtime 2>/dev/null
-echo "Timezone set to ${TZ}"
-TZEOF
-    chmod +x /usr/local/bin/timezone-setup
+    # admin-pw-change, sig-fix, timezone-setup are all deployed via scripts/.
+    [ -x /usr/local/bin/admin-pw-change ] || warn "admin-pw-change missing in /usr/local/bin"
+    [ -x /usr/local/bin/sig-fix ]         || warn "sig-fix missing in /usr/local/bin"
+    [ -x /usr/local/bin/timezone-setup ]  || warn "timezone-setup missing in /usr/local/bin"
 
     # System-wide shell aliases
     cat > /etc/profile.d/pbx-aliases.sh << 'BPEOF'
@@ -6785,21 +6723,15 @@ setup_qos() {
     [ "${IS_CONTAINER:-0}" = "1" ] && return 0
     step "Configuring QoS for VoIP..."
 
-    local iface
-    iface=$(ip route get 8.8.8.8 2>/dev/null | awk '{print $5; exit}' || echo "eth0")
-
-    cat > /usr/local/bin/pbx-qos-apply << QOSEOF
-#!/bin/bash
-# Apply DSCP marking for SIP and RTP — re-run after reboot
-iptables -t mangle -A OUTPUT -p udp --dport 5060 -j DSCP --set-dscp-class EF 2>/dev/null || true
-iptables -t mangle -A OUTPUT -p udp --dport 5061 -j DSCP --set-dscp-class EF 2>/dev/null || true
-iptables -t mangle -A OUTPUT -p udp --dport 10000:20000 -j DSCP --set-dscp-class EF 2>/dev/null || true
-iptables -t mangle -A OUTPUT -p tcp --dport 5060 -j DSCP --set-dscp-class CS3 2>/dev/null || true
-QOSEOF
-    chmod 755 /usr/local/bin/pbx-qos-apply
+    # pbx-qos-apply is deployed via scripts/ directory.
+    if [ ! -x /usr/local/bin/pbx-qos-apply ]; then
+        warn "pbx-qos-apply not found in /usr/local/bin — skipping QoS"
+        return 0
+    fi
 
     echo "@reboot root /usr/local/bin/pbx-qos-apply" > /etc/cron.d/pbx-qos
-    /usr/local/bin/pbx-qos-apply 2>/dev/null || true
+    chmod 644 /etc/cron.d/pbx-qos
+    /usr/local/bin/pbx-qos-apply >/dev/null 2>&1 || true
     success "QoS DSCP rules applied (EF for SIP/RTP)"
 }
 
@@ -6874,60 +6806,27 @@ build_main_portal() {
     step "Building main web portal..."
     mkdir -p "${WEB_ROOT}"
 
-    cat > "${WEB_ROOT}/portal.php" << 'PORTALEOF'
-<?php
-$services = [
-    'FreePBX Admin'      => ['/admin/',      'PBX Management',       '⚙️'],
-    'User Portal (UCP)'  => ['/ucp/',        'End-user self-service', '👤'],
-    'Fax (AvantFax)'     => ['/avantfax/',   'Fax management',        '📠'],
-    'Call Center Stats'  => ['/callcenter/', 'Queue statistics',      '📊'],
-    'AsteriDex'          => ['/asteridex/',  'Phone directory',       '📖'],
-    'Telephone Reminder' => ['/reminder/',   'Schedule reminders',    '⏰'],
-    'System Status'      => ['/status/',     'Health overview',       '💚'],
-    'Webmin'             => ['https://' . $_SERVER['HTTP_HOST'] . ':9001/',
-                              'System admin', '🖥️'],
-];
-?><!DOCTYPE html>
-<html>
-<head>
-<title>PBX Server</title>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<style>
-body{font-family:Arial,sans-serif;background:#1a1a2e;color:#eee;margin:0;padding:20px}
-h1{text-align:center;color:#00d4ff;margin-bottom:30px}
-.grid{display:flex;flex-wrap:wrap;gap:20px;justify-content:center;max-width:1000px;margin:0 auto}
-.card{background:#16213e;border:1px solid #0f3460;border-radius:8px;padding:20px;width:200px;
-      text-align:center;text-decoration:none;color:#eee;transition:transform .2s,border-color .2s}
-.card:hover{transform:translateY(-4px);border-color:#00d4ff}
-.card .icon{font-size:36px;margin-bottom:10px}
-.card .name{font-weight:bold;font-size:14px;margin-bottom:5px}
-.card .desc{font-size:12px;color:#aaa}
-.footer{text-align:center;margin-top:40px;color:#666;font-size:12px}
-</style>
-</head>
-<body>
-<h1>🏢 PBX Server</h1>
-<div class="grid">
-<?php foreach($services as $name => [$url, $desc, $icon]): ?>
-<a class="card" href="<?= htmlspecialchars($url) ?>">
-  <div class="icon"><?= $icon ?></div>
-  <div class="name"><?= htmlspecialchars($name) ?></div>
-  <div class="desc"><?= htmlspecialchars($desc) ?></div>
-</a>
-<?php endforeach; ?>
-</div>
-<div class="footer">PBX v3.0 &bull; <?= htmlspecialchars(gethostname()) ?></div>
-</body>
-</html>
-PORTALEOF
+    # Templates live at /etc/pbx/web/portal/index.php (deployed by sync_web_assets).
+    # Apache routes /portal.php → /etc/pbx/web/portal/index.php via configure_pbx_web_routes().
+    # FPM auth shim gates /reminder/ and /callcenter/ via auto_prepend_file.
+    sync_web_assets
+    configure_pbx_web_routes
+    configure_php_fpm_auth_shim
 
-    chown "${APACHE_USER:-www-data}:${APACHE_GROUP:-www-data}" "${WEB_ROOT}/portal.php" 2>/dev/null || true
+    # Expose FROM_NAME to the template via Apache SetEnv on the global vhost
+    # (idempotent — only adds the line if missing).
+    local httpd_main
+    case "${DISTRO_FAMILY}" in
+        debian) httpd_main="/etc/apache2/conf-available/pbx-env.conf" ;;
+        *)      httpd_main="/etc/httpd/conf.d/pbx-env.conf" ;;
+    esac
+    cat > "${httpd_main}" << PBXENVEOF
+PassEnv FROM_NAME PBX_BRAND_NAME
+SetEnv FROM_NAME "${FROM_NAME}"
+PBXENVEOF
+    [ "${DISTRO_FAMILY}" = "debian" ] && a2enconf pbx-env >/dev/null 2>&1 || true
 
-    # Served as the directory index ahead of FreePBX's signed index.php — keep
-    # the FreePBX-shipped file untouched so it doesn't trip the framework
-    # tampered-files integrity check.
-    success "Main portal built at /portal.php (served as DirectoryIndex)"
+    success "Main portal deployed (template: ${PBX_WEB_DIR}/portal/index.php)"
 }
 
 # =============================================================================
@@ -7019,92 +6918,14 @@ HEALTHEOF
 
     chown -R "${APACHE_USER:-www-data}:${APACHE_GROUP:-www-data}" "${status_dir}" "${health_dir}" 2>/dev/null || true
 
-    # Cron script that runs as root and writes /var/lib/pbx/status.json every minute
-    cat > /usr/local/bin/pbx-status-update << 'STATUSUPDATEOF'
-#!/usr/bin/env python3
-import json
-import subprocess
-import datetime
-from pathlib import Path
-
-OUT = Path('/var/lib/pbx/status.json')
-OUT.parent.mkdir(parents=True, exist_ok=True)
-
-def sh(cmd: str) -> str:
-    return subprocess.run(
-        cmd,
-        shell=True,
-        universal_newlines=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    ).stdout.strip()
-
-def service_state(name: str) -> str:
-    state = sh(f'systemctl is-active {name} 2>/dev/null || true')
-    return 'running' if state == 'active' else (state or 'inactive')
-
-services = {}
-for name in ['asterisk','freepbx','mariadb','httpd','nginx','php-fpm','php7.4-fpm','php74-php-fpm','fail2ban','postfix','hylafax','webmin']:
-    state = service_state(name)
-    if state != 'inactive':
-        services[name] = state
-
-overall = 'ok'
-for core in ['asterisk','freepbx','mariadb','httpd']:
-    if services.get(core, 'inactive') not in ('running', 'inactive'):
-        overall = 'degraded'
-        break
-
-def num(cmd: str) -> int:
-    out = sh(cmd)
-    try:
-        return int(out)
-    except Exception:
-        return 0
-
-status = {
-    'status': overall,
-    'timestamp': datetime.datetime.utcnow().isoformat() + 'Z',
-    'hostname': sh('hostname -s') or 'pbx',
-    'os': sh('. /etc/os-release && echo ${PRETTY_NAME:-}') or '',
-    'kernel': sh('uname -r') or '',
-    'uptime_seconds': num("awk '{print int($1)}' /proc/uptime"),
-    'pbx': {
-        'asterisk_version': sh("timeout 5 asterisk -rx 'core show version' 2>/dev/null | head -1 | grep -oE 'Asterisk [0-9.]+' || true"),
-        'asterisk_uptime': sh("timeout 5 asterisk -rx 'core show uptime' 2>/dev/null | sed -n 's/System uptime: //p' | head -1"),
-        'freepbx_version': sh("grep -oP '(?<=<version>)[^<]+' /var/www/apache/pbx/admin/modules/framework/module.xml 2>/dev/null | head -1") or sh("grep -oP '(?<=<version>)[^<]+' /var/www/html/admin/modules/framework/module.xml 2>/dev/null | head -1"),
-        'php_version': sh("php -r 'echo PHP_MAJOR_VERSION,\".\",PHP_MINOR_VERSION,\".\",PHP_RELEASE_VERSION;' 2>/dev/null"),
-        'active_calls': num("timeout 5 asterisk -rx 'core show channels count' 2>/dev/null | awk '/active channel/{print $1; exit}'"),
-        'registered_endpoints': num("timeout 5 asterisk -rx 'pjsip show endpoints' 2>/dev/null | grep -cE '^[A-Za-z0-9].*Avail' || true"),
-        'total_endpoints': num("timeout 5 asterisk -rx 'pjsip show endpoints' 2>/dev/null | grep -cE '^[A-Za-z0-9]' || true"),
-    },
-    'services': services,
-    'features': {
-        'fax': services.get('hylafax') == 'running',
-        'webmin': services.get('webmin') == 'running',
-        'fail2ban': services.get('fail2ban') == 'running',
-    },
-    'system': {
-        'load_1min': sh("cut -d' ' -f1 /proc/loadavg") or '0',
-        'load_5min': sh("cut -d' ' -f2 /proc/loadavg") or '0',
-        'load_15min': sh("cut -d' ' -f3 /proc/loadavg") or '0',
-        'mem_total_mb': num("awk '/MemTotal/{print int($2/1024)}' /proc/meminfo"),
-        'mem_used_mb': max(num("awk '/MemTotal/{t=int($2/1024)} /MemAvailable/{a=int($2/1024)} END{print t-a}' /proc/meminfo"), 0),
-        'mem_free_mb': num("awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo"),
-        'disk_total_gb': num("df -BG / | awk 'NR==2{gsub(/G/,\"\",$2); print $2}'"),
-        'disk_used_gb': num("df -BG / | awk 'NR==2{gsub(/G/,\"\",$3); print $3}'"),
-        'disk_free_gb': num("df -BG / | awk 'NR==2{gsub(/G/,\"\",$4); print $4}'"),
-        'disk_used_pct': num("df / | awk 'NR==2{gsub(/%/,\"\",$5); print $5}'"),
-    },
-}
-OUT.write_text(json.dumps(status, indent=2) + '\n')
-STATUSUPDATEOF
-    chmod 755 /usr/local/bin/pbx-status-update
-
-    # Run immediately to populate the file, then every minute via cron
-    /usr/local/bin/pbx-status-update 2>/dev/null || true
-    echo "* * * * * root /usr/local/bin/pbx-status-update" > /etc/cron.d/pbx-status
-    chmod 644 /etc/cron.d/pbx-status
+    # pbx-status-update is deployed via scripts/ directory.
+    if [ ! -x /usr/local/bin/pbx-status-update ]; then
+        warn "pbx-status-update not found in /usr/local/bin — status endpoint will be stale"
+    else
+        /usr/local/bin/pbx-status-update 2>/dev/null || true
+        echo "* * * * * root /usr/local/bin/pbx-status-update" > /etc/cron.d/pbx-status
+        chmod 644 /etc/cron.d/pbx-status
+    fi
 
     success "Status endpoint built at /status/ and /health/ (updated every minute by cron)"
 }
@@ -7116,35 +6937,15 @@ STATUSUPDATEOF
 setup_health_monitoring() {
     step "Setting up health monitoring..."
 
-    # Write using unquoted heredoc so install-time vars are baked in,
-    # but escape $() so they run at cron-execution time
-    cat > /usr/local/bin/pbx-health-check << HEALTHEOF
-#!/bin/bash
-ADMIN_EMAIL="\${ADMIN_EMAIL:-${ADMIN_EMAIL:-root}}"
-FROM_EMAIL="${FROM_EMAIL}"
-FROM_NAME="${FROM_NAME}"
-SERVICES="asterisk mariadb"
-FAILED=""
-for svc in \${SERVICES}; do
-    systemctl is-active --quiet "\${svc}" 2>/dev/null || FAILED="\${FAILED} \${svc}"
-done
-if [ -n "\${FAILED}" ]; then
-    FQDN=\$(hostname -f 2>/dev/null || hostname)
-    MSG="PBX ALERT: Services down on \${FQDN}:\${FAILED}"
-    echo "\${MSG}" | mail -s "[PBX ALERT] Services Down" \
-        -a "From: \${FROM_NAME} <\${FROM_EMAIL}>" "\${ADMIN_EMAIL}" 2>/dev/null || true
-    logger -t pbx-health "\${MSG}"
-    for svc in \${FAILED}; do
-        systemctl restart "\${svc}" 2>/dev/null && \
-            echo "Auto-restarted: \${svc}" | \
-            mail -s "[PBX] Auto-restarted \${svc} on \${FQDN}" \
-                -a "From: \${FROM_NAME} <\${FROM_EMAIL}>" "\${ADMIN_EMAIL}" 2>/dev/null || true
-    done
-fi
-HEALTHEOF
-    chmod 755 /usr/local/bin/pbx-health-check
+    # pbx-health-check is deployed via scripts/ directory and reads
+    # ADMIN_EMAIL / FROM_EMAIL / FROM_NAME from /etc/pbx/.env at runtime.
+    if [ ! -x /usr/local/bin/pbx-health-check ]; then
+        warn "pbx-health-check not found in /usr/local/bin — skipping health cron"
+        return 0
+    fi
 
     echo "*/5 * * * * root /usr/local/bin/pbx-health-check" > /etc/cron.d/pbx-health
+    chmod 644 /etc/cron.d/pbx-health
     success "Health monitoring active (every 5 min)"
 }
 
@@ -7154,121 +6955,40 @@ HEALTHEOF
 
 install_telephone_reminder() {
     step "Installing Telephone Reminder..."
-    local reminder_dir="${WEB_ROOT}/reminder"
-    mkdir -p "${reminder_dir}"
 
-    cat > "${reminder_dir}/_auth.php" << 'REMAUTHEOF'
-<?php
-$bootstrap_settings = ['skip_astman' => true];
-require '/etc/freepbx.conf';
-require_once FreePBX::Config()->get('AMPWEBROOT') . '/admin/libraries/ampuser.class.php';
-if (!class_exists('\\FreePBX\\modules\\Userman')) {
-    $hint = FreePBX::Config()->get('AMPWEBROOT') . '/admin/modules/userman/Userman.class.php';
-    if (is_file($hint)) {
-        try {
-            FreePBX::create()->injectClass('Userman', $hint);
-        } catch (Exception $e) {
-        }
-    }
-}
-session_start();
-$uid = !empty($_SESSION['AMP_user']->id) ? (int)$_SESSION['AMP_user']->id : 0;
-if ($uid <= 0) {
-    header('Location: /admin/config.php');
-    exit;
-}
-$freepbx = FreePBX::create();
-$userman = $freepbx->Userman;
-$has_login = $userman->getCombinedGlobalSettingByID($uid, 'pbx_login') ? true : false;
-$has_admin = $userman->getCombinedGlobalSettingByID($uid, 'pbx_admin') ? true : false;
-if ($has_login !== true || $has_admin !== true) {
-    http_response_code(403);
-    echo 'Forbidden';
-    exit;
-}
-REMAUTHEOF
+    # Template + Apache routing are deployed by sync_web_assets +
+    # configure_pbx_web_routes (called from build_main_portal).
+    # Auth is enforced by the FPM auto_prepend_file shim — see
+    # configure_php_fpm_auth_shim() further down. No legacy
+    # ${WEB_ROOT}/reminder directory is needed.
 
-    cat > "${reminder_dir}/index.php" << 'REMEOF'
-<?php
-require_once __DIR__ . '/_auth.php';
-$reminders_file = '/etc/asterisk/reminders.txt';
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $phone = preg_replace('/[^0-9*#]/', '', $_POST['phone'] ?? '');
-    $time  = $_POST['time'] ?? '';
-    $msg   = substr(strip_tags($_POST['message'] ?? 'This is your reminder'), 0, 200);
-    if ($phone && $time) {
-        $ts = strtotime($time);
-        file_put_contents($reminders_file, "${ts}|${phone}|${msg}\n", FILE_APPEND | LOCK_EX);
-        $ok = "Reminder scheduled for {$time} → extension {$phone}";
-    }
-}
-?><!DOCTYPE html>
-<html>
-<head><title>Telephone Reminder</title>
-<style>body{font-family:Arial;max-width:500px;margin:40px auto;padding:20px}
-label{display:block;font-weight:bold;margin-top:12px}
-input,textarea,select{width:100%;padding:8px;margin-top:4px;box-sizing:border-box}
-button{background:#0066cc;color:#fff;padding:10px 24px;border:none;cursor:pointer;margin-top:16px;border-radius:4px}
-.ok{color:green;background:#f0fff0;padding:8px;border-radius:4px}</style></head>
-<body>
-<h2>⏰ Telephone Reminder</h2>
-<?php if (!empty($ok)) echo "<p class='ok'>" . htmlspecialchars($ok) . "</p>"; ?>
-<form method="post">
-<label>Extension or Phone Number:</label>
-<input type="text" name="phone" placeholder="1001 or 5551234567" required>
-<label>Reminder Date &amp; Time:</label>
-<input type="datetime-local" name="time" required>
-<label>Message (read via TTS):</label>
-<textarea name="message" rows="3">This is your telephone reminder.</textarea>
-<button type="submit">📅 Schedule Reminder</button>
-</form>
-</body></html>
-REMEOF
-
-    cat > /usr/local/bin/pbx-reminder-process << 'REMINDEREOF'
-#!/bin/bash
-# Process pending reminders — called by cron every minute
-REMFILE="/etc/asterisk/reminders.txt"
-[ -f "${REMFILE}" ] || exit 0
-NOW=$(date +%s)
-TMPFILE=$(mktemp)
-while IFS='|' read -r ts phone msg; do
-    [ -z "${ts}" ] && continue
-    if [ "${ts}" -le "${NOW}" ] 2>/dev/null; then
-        asterisk -rx "originate Local/${phone}@from-internal application Playback 'vm-youhave'" \
-            2>/dev/null || true
-    else
-        echo "${ts}|${phone}|${msg}" >> "${TMPFILE}"
+    # Migrate away from the legacy WEB_ROOT path so old admin/_auth.php
+    # files don't leak unauth'd content if someone leaves them around.
+    if [ -d "${WEB_ROOT}/reminder" ] && [ ! -L "${WEB_ROOT}/reminder" ]; then
+        rm -rf "${WEB_ROOT}/reminder"
     fi
-done < "${REMFILE}"
-mv "${TMPFILE}" "${REMFILE}"
-REMINDEREOF
-    chmod 755 /usr/local/bin/pbx-reminder-process
-    echo "* * * * * asterisk /usr/local/bin/pbx-reminder-process" > /etc/cron.d/pbx-reminders
 
-    # Ensure reminders file exists and is writable by both the web server and the asterisk cron job
+    if [ -x /usr/local/bin/pbx-reminder-process ]; then
+        echo "* * * * * asterisk /usr/local/bin/pbx-reminder-process" > /etc/cron.d/pbx-reminders
+        chmod 644 /etc/cron.d/pbx-reminders
+    else
+        warn "pbx-reminder-process not found in /usr/local/bin — skipping reminder cron"
+    fi
+
+    # Ensure reminders file exists and is writable by both the web UI
+    # (running as APACHE_USER) and the asterisk cron job.
+    local rem_group="${APACHE_GROUP:-}"
+    if [ -z "${rem_group}" ]; then
+        getent group apache   >/dev/null 2>&1 && rem_group=apache
+        getent group www-data >/dev/null 2>&1 && rem_group=www-data
+        rem_group="${rem_group:-asterisk}"
+    fi
     touch /etc/asterisk/reminders.txt
-    chown "asterisk:${APACHE_GROUP:-www-data}" /etc/asterisk/reminders.txt
+    chown "asterisk:${rem_group}" /etc/asterisk/reminders.txt
     chmod 664 /etc/asterisk/reminders.txt
 
-    local rem_conf
-    case "${DISTRO_FAMILY}" in
-        debian) rem_conf="/etc/apache2/conf-available/reminder.conf" ;;
-        *) rem_conf="/etc/httpd/conf.d/reminder.conf" ;;
-    esac
-    cat > "${rem_conf}" << REMCEOF
-Alias /reminder ${WEB_ROOT}/reminder
-<Directory ${WEB_ROOT}/reminder>
-    Options -Indexes
-    AllowOverride None
-    Require all granted
-</Directory>
-REMCEOF
-    [ "${DISTRO_FAMILY}" = "debian" ] && a2enconf reminder 2>/dev/null || true
-
-    chown -R "${APACHE_USER:-www-data}:${APACHE_GROUP:-www-data}" "${reminder_dir}" 2>/dev/null || true
     svc_reload "${APACHE_SERVICE}" 2>/dev/null || true
-    success "Telephone Reminder installed at /reminder/"
+    success "Telephone Reminder available at /reminder/ (FreePBX-session gated)"
 }
 
 # =============================================================================
@@ -7318,14 +7038,11 @@ install_asternic() {
 CCEOF
     fi
 
-    local cc_conf htpasswd_file="/etc/pbx/.htpasswd-pbx"
-    if command -v htpasswd >/dev/null 2>&1; then
-        htpasswd -bc "${htpasswd_file}" "${FREEPBX_ADMIN_USERNAME}" "${ADMIN_PASSWORD}" 2>/dev/null || true
-        [ "${FREEPBX_ADMIN_USERNAME}" != "admin" ] && \
-            htpasswd -b "${htpasswd_file}" admin "${ADMIN_PASSWORD}" 2>/dev/null || true
-        chmod 640 "${htpasswd_file}"
-        chown root:"${APACHE_GROUP:-www-data}" "${htpasswd_file}" 2>/dev/null || true
-    fi
+    # Asternic auth is enforced by the FreePBX-session FPM auto_prepend_file
+    # shim (configure_php_fpm_auth_shim). The legacy htpasswd-Basic prompt
+    # has been retired — clean it up if present from prior installs.
+    rm -f /etc/pbx/.htpasswd-pbx 2>/dev/null || true
+    local cc_conf
 
     if [ -n "${asternic_root:-}" ] && [ -f "${asternic_root}/sql/qstats.sql" ]; then
         mysql -u root -p"${MYSQL_ROOT_PASSWORD}" < "${asternic_root}/sql/qstats.sql" 2>/dev/null || true
@@ -7367,14 +7084,16 @@ EOF
         *) cc_conf="/etc/httpd/conf.d/callcenter.conf" ;;
     esac
     cat > "${cc_conf}" << CCAEOF
+# /callcenter — Asternic Call Center Stats.
+# Auth: any FreePBX UCP user OR admin, enforced by the FPM auto_prepend
+# shim at ${PBX_WEB_DIR}/_shared/auth-shim.php (URI prefix /callcenter/).
+# No Basic-auth prompt; FreePBX session is required.
 Alias /callcenter ${asternic_dir}
 <Directory ${asternic_dir}>
     Options -Indexes
     AllowOverride None
-    AuthType Basic
-    AuthName "PBX Call Center"
-    AuthUserFile /etc/pbx/.htpasswd-pbx
-    Require valid-user
+    Require all granted
+    DirectoryIndex index.php
 </Directory>
 CCAEOF
     [ "${DISTRO_FAMILY}" = "debian" ] && a2enconf callcenter 2>/dev/null || true

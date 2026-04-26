@@ -1,0 +1,40 @@
+#!/bin/bash
+# ipchecker — print the host's primary IPv4/IPv6 + RFC1918 + public IP.
+#
+# Used by diagnostic shortcuts and pbx-status. Resolves "primary" by
+# routing toward Google DNS (8.8.8.8 / 2001:4860:4860::8888) — that
+# matches the address packets will actually source from.
+set -eu
+
+SCRIPT_VERSION="${SCRIPT_VERSION:-3.0}"
+case "${1:-}" in
+    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${SCRIPT_VERSION}"; exit 0 ;;
+    --help|-h)
+        printf "Usage: ipchecker\n\nPrint primary IPv4/6, private (RFC1918/ULA) and public IP.\n"
+        exit 0 ;;
+esac
+
+PRIM4=$(ip -4 route get 8.8.8.8 2>/dev/null \
+    | awk '/src/{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}') || true
+[ -z "${PRIM4}" ] && PRIM4=$(ip -4 addr show scope global 2>/dev/null | awk '/inet /{split($2,a,"/"); print a[1]}' | head -1)
+
+PRIM6=$(ip -6 route get 2001:4860:4860::8888 2>/dev/null \
+    | awk '/src/{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}' | grep -v '^::1$') || PRIM6=""
+
+case "${PRIM4:-}" in
+    10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[0-1].*) PRIV4="${PRIM4}" ;;
+    *) PRIV4="" ;;
+esac
+case "${PRIM6,,}" in fc*|fd*) PRIV6="${PRIM6}" ;; *) PRIV6="" ;; esac
+
+PUB=$(curl -s4 --max-time 5 https://ifconfig.me 2>/dev/null \
+    || curl -s4 --max-time 5 https://api.ipify.org 2>/dev/null \
+    || curl -s4 --max-time 5 https://icanhazip.com 2>/dev/null || echo "")
+[ -z "${PUB}" ] && \
+    PUB=$(curl -s6 --max-time 5 https://ifconfig.me 2>/dev/null || echo "unknown")
+
+printf 'Primary IPv4 : %s\n' "${PRIM4:-unknown}"
+[ -n "${PRIV4}" ] && printf 'Private IPv4 : %s\n' "${PRIV4}"
+[ -n "${PRIM6}" ] && printf 'Primary IPv6 : %s\n' "${PRIM6}"
+[ -n "${PRIV6}" ] && printf 'Private IPv6 : %s\n' "${PRIV6}"
+printf 'Public  IP   : %s\n' "${PUB:-unknown}"

@@ -1,0 +1,22 @@
+#!/bin/bash
+# sig-fix — clear the FreePBX "tampered files" warning by refreshing
+# every module's signature manifest and re-asserting file ownership.
+set -eu
+
+PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin${PATH:+:$PATH}"
+export PATH
+
+SCRIPT_VERSION="${SCRIPT_VERSION:-3.0}"
+case "${1:-}" in
+    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${SCRIPT_VERSION}"; exit 0 ;;
+    --help|-h) printf "Usage: sig-fix\n\nRefresh FreePBX module signatures + chown.\n"; exit 0 ;;
+esac
+
+command -v fwconsole >/dev/null 2>&1 || {
+    echo "fwconsole not found in PATH" >&2; exit 1;
+}
+
+echo "Refreshing FreePBX module signatures..."
+fwconsole ma refreshsignatures 2>/dev/null || true
+fwconsole chown >/dev/null 2>&1 || true
+echo "Done."

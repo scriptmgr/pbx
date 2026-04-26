@@ -100,4 +100,5 @@ $RECYCLE.BIN/
 **/*.rewrite.sh
 **/*.refactor.sh
 
-
+# ignore the ui sub  project
+**/pbxui

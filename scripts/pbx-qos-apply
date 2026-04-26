@@ -1,0 +1,89 @@
+#!/bin/bash
+# pbx-qos-apply — DSCP marking for SIP signaling and RTP media
+#
+# Marks outbound SIP/RTP traffic with EF (Expedited Forwarding) so any
+# DSCP-aware upstream device prioritizes voice over bulk traffic. Marks
+# are mangle-table OUTPUT rules that do NOT survive a flush, so a cron
+# @reboot entry re-applies them after every boot.
+set -euo pipefail
+
+SCRIPT_VERSION="${SCRIPT_VERSION:-3.0}"
+case "${1:-}" in
+    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${SCRIPT_VERSION}"; exit 0 ;;
+esac
+
+if [ -n "${NO_COLOR+x}" ] || [ ! -t 1 ] || [ "${TERM:-}" = "dumb" ] || [ "${CI:-}" = "true" ]; then
+    RED=""; GREEN=""; YELLOW=""; BLUE=""; CYAN=""; BOLD=""; NC=""
+else
+    RED="$(printf '\033[0;31m')"; GREEN="$(printf '\033[0;32m')"
+    YELLOW="$(printf '\033[1;33m')"; BLUE="$(printf '\033[0;34m')"
+    CYAN="$(printf '\033[0;36m')"; BOLD="$(printf '\033[1m')"; NC="$(printf '\033[0m')"
+fi
+ok()   { printf "${GREEN}%s${NC}\n"   "$*"; }
+info() { printf "${BLUE}%s${NC}\n"    "$*"; }
+warn() { printf "${YELLOW}%s${NC}\n"  "$*"; }
+err()  { printf "${RED}%s${NC}\n"     "$*" >&2; }
+
+[ "$(id -u)" -ne 0 ] && { err "Must run as root"; exit 1; }
+
+usage() {
+    printf "Usage: pbx-qos-apply [--clear]\n\n"
+    printf "Apply DSCP marking to outbound SIP/RTP traffic.\n\n"
+    printf "Options:\n"
+    printf "  --clear      Remove the DSCP rules instead of applying them\n"
+    printf "  --help (alias: -h)     Show help\n"
+    printf "  --version (alias: -V)  Show version\n"
+    exit 0
+}
+
+# Each spec: "proto dport class". UDP 10000-20000 covers the default RTP range.
+RULES='udp 5060 EF
+udp 5061 EF
+udp 10000:20000 EF
+tcp 5060 CS3'
+
+apply_one() {
+    local proto="$1" dport="$2" class="$3"
+    if iptables -t mangle -C OUTPUT -p "$proto" --dport "$dport" \
+            -j DSCP --set-dscp-class "$class" 2>/dev/null; then
+        info "exists: $proto/$dport → $class"
+        return 0
+    fi
+    if iptables -t mangle -A OUTPUT -p "$proto" --dport "$dport" \
+            -j DSCP --set-dscp-class "$class" 2>/dev/null; then
+        ok "added:  $proto/$dport → $class"
+    else
+        warn "skip:   $proto/$dport (iptables refused)"
+    fi
+}
+
+clear_one() {
+    local proto="$1" dport="$2" class="$3"
+    while iptables -t mangle -C OUTPUT -p "$proto" --dport "$dport" \
+            -j DSCP --set-dscp-class "$class" 2>/dev/null; do
+        iptables -t mangle -D OUTPUT -p "$proto" --dport "$dport" \
+            -j DSCP --set-dscp-class "$class" 2>/dev/null || break
+        ok "removed: $proto/$dport → $class"
+    done
+}
+
+ACTION=apply
+case "${1:-}" in
+    --help|-h)  usage ;;
+    --clear)    ACTION=clear ;;
+    "")         ;;
+    *)          err "Unknown argument: $1"; usage ;;
+esac
+
+command -v iptables >/dev/null 2>&1 || { err "iptables not installed"; exit 1; }
+
+while IFS=' ' read -r proto dport class; do
+    [ -z "$proto" ] && continue
+    if [ "$ACTION" = clear ]; then
+        clear_one "$proto" "$dport" "$class"
+    else
+        apply_one "$proto" "$dport" "$class"
+    fi
+done <<EOF
+${RULES}
+EOF

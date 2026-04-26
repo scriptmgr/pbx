@@ -3,6 +3,12 @@
 # Cron example: 0 3 * * 0 /usr/local/bin/pbx-autoupdate
 set -euo pipefail
 
+# /etc/cron.d entries run with a minimal PATH (/usr/bin:/bin) on most distros.
+# fwconsole lives in /usr/sbin (RHEL) or /usr/local/sbin — extend PATH so
+# `command -v fwconsole` works regardless of the invocation environment.
+PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin${PATH:+:$PATH}"
+export PATH
+
 SCRIPT_VERSION="${SCRIPT_VERSION:-3.0}"
 case "${1:-}" in
     --version|-V) printf "%s v%s\n" "$(basename "$0")" "${SCRIPT_VERSION}"; exit 0 ;;

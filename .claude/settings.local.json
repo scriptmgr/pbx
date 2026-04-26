@@ -6,7 +6,21 @@
       "Bash(bash -n /root/Projects/github/scriptmgr/pbx/install.sh)",
       "Bash(bash -n /root/Projects/github/scriptmgr/pbx/scripts/pbx-firewall)",
       "Bash(bash -n /root/Projects/github/scriptmgr/pbx/scripts/pbx-add-ip)",
-      "Bash(scp scripts/pbx-firewall scripts/pbx-add-ip pbx.casjay.tel:/usr/local/bin/)"
+      "Bash(scp scripts/pbx-firewall scripts/pbx-add-ip pbx.casjay.tel:/usr/local/bin/)",
+      "Bash(bash -n /root/Projects/github/scriptmgr/pbx/scripts/pbx-qos-apply)",
+      "Bash(bash -n /root/Projects/github/scriptmgr/pbx/scripts/pbx-autoupdate)",
+      "Bash(scp /root/Projects/github/scriptmgr/pbx/scripts/pbx-qos-apply /root/Projects/github/scriptmgr/pbx/scripts/pbx-autoupdate root@pbx.casjay.tel:/usr/local/bin/)",
+      "Bash(bash -n /root/Projects/github/scriptmgr/pbx/scripts/pbx-reminder-process)",
+      "Bash(scp /root/Projects/github/scriptmgr/pbx/scripts/pbx-reminder-process root@pbx.casjay.tel:/usr/local/bin/pbx-reminder-process)",
+      "Bash(scp -q web/_shared/pbx-style.css web/_shared/pbx-auth.php web/_shared/pbx-layout.php web/_shared/pbx-layout-foot.php web/_shared/auth-shim.php root@pbx.casjay.tel:/etc/pbx/web/_shared/)",
+      "Bash(scp -q web/portal/index.php   root@pbx.casjay.tel:/etc/pbx/web/portal/)",
+      "Bash(scp -q web/reminder/index.php root@pbx.casjay.tel:/etc/pbx/web/reminder/)",
+      "Bash(scp -q web/_shared/auth-shim.php web/_shared/pbx-auth.php root@pbx.casjay.tel:/etc/pbx/web/_shared/)",
+      "Bash(php -l /root/Projects/github/scriptmgr/pbx/web/_shared/pbx-auth.php)",
+      "Bash(scp -q web/_shared/pbx-auth.php root@pbx.casjay.tel:/etc/pbx/web/_shared/)",
+      "Bash(scp -q scripts/fax-to-email.sh scripts/email-to-fax.sh scripts/enable-gmail-smarthost scripts/ipchecker scripts/sig-fix scripts/timezone-setup scripts/admin-pw-change root@pbx.casjay.tel:/usr/local/bin/)",
+      "Bash(scp -q web/_shared/auth-shim.php root@pbx.casjay.tel:/etc/pbx/web/_shared/auth-shim.php)",
+      "Bash(command -v docker)"
     ]
   }
 }

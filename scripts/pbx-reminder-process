@@ -1,0 +1,60 @@
+#!/bin/bash
+# pbx-reminder-process — fire due telephone reminders
+#
+# Runs every minute as user `asterisk` from /etc/cron.d/pbx-reminders.
+# Format of /etc/asterisk/reminders.txt: epoch|phone|message (one per line).
+# Due rows are originated as a Local/<phone>@from-internal call; future
+# rows are kept.
+set -euo pipefail
+
+PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin${PATH:+:$PATH}"
+export PATH
+
+SCRIPT_VERSION="${SCRIPT_VERSION:-3.0}"
+case "${1:-}" in
+    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${SCRIPT_VERSION}"; exit 0 ;;
+    --help|-h)
+        printf "Usage: pbx-reminder-process\n\n"
+        printf "Fire any telephone reminders whose epoch <= now.\n"
+        exit 0 ;;
+esac
+
+REMFILE="${REMFILE:-/etc/asterisk/reminders.txt}"
+[ -f "${REMFILE}" ] || exit 0
+
+# Self-heal perms when running as root (cron may have a stale root-owned file).
+if [ "$(id -u)" -eq 0 ]; then
+    APACHE_GROUP="${APACHE_GROUP:-}"
+    if [ -z "${APACHE_GROUP}" ]; then
+        getent group apache   >/dev/null 2>&1 && APACHE_GROUP=apache
+        getent group www-data >/dev/null 2>&1 && APACHE_GROUP=www-data
+    fi
+    chown "asterisk:${APACHE_GROUP:-asterisk}" "${REMFILE}" 2>/dev/null || true
+    chmod 664 "${REMFILE}" 2>/dev/null || true
+fi
+
+# Bail cleanly (with logger trail) if we can't read the file — avoids
+# spamming cron mail every minute when perms are wrong.
+if [ ! -r "${REMFILE}" ]; then
+    logger -t pbx-reminder "cannot read ${REMFILE} as $(id -un); skipping"
+    exit 0
+fi
+
+NOW=$(date +%s)
+# Use a same-directory tempfile so rename(2) is atomic and doesn't cross
+# filesystems (critical when /tmp is tmpfs / a separate mount).
+TMPFILE=$(mktemp "${REMFILE}.XXXXXX") || exit 0
+while IFS='|' read -r ts phone msg; do
+    [ -z "${ts}" ] && continue
+    if [ "${ts}" -le "${NOW}" ] 2>/dev/null; then
+        asterisk -rx "originate Local/${phone}@from-internal application Playback 'vm-youhave'" \
+            2>/dev/null || true
+    else
+        printf "%s|%s|%s\n" "${ts}" "${phone}" "${msg}" >> "${TMPFILE}"
+    fi
+done < "${REMFILE}"
+# Preserve the destination's owner/group/mode so atomic replace doesn't
+# silently strip permissions the web UI relies on.
+chown --reference="${REMFILE}" "${TMPFILE}" 2>/dev/null || true
+chmod --reference="${REMFILE}" "${TMPFILE}" 2>/dev/null || true
+mv -f "${TMPFILE}" "${REMFILE}"

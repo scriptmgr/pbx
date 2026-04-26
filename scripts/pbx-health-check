@@ -1,0 +1,46 @@
+#!/bin/bash
+# pbx-health-check — monitor core services, alert + auto-restart
+#
+# Runs every 5 minutes from /etc/cron.d/pbx-health. Reads ADMIN_EMAIL /
+# FROM_EMAIL / FROM_NAME from /etc/pbx/.env at runtime so they reflect
+# the live config (no install-time bake-in).
+set -euo pipefail
+
+PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin${PATH:+:$PATH}"
+export PATH
+
+SCRIPT_VERSION="${SCRIPT_VERSION:-3.0}"
+case "${1:-}" in
+    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${SCRIPT_VERSION}"; exit 0 ;;
+    --help|-h)
+        printf "Usage: pbx-health-check\n\n"
+        printf "Check core PBX services. Email + auto-restart on failure.\n"
+        exit 0 ;;
+esac
+
+[ -f /etc/pbx/.env ] && . /etc/pbx/.env 2>/dev/null || true
+
+ADMIN_EMAIL="${ADMIN_EMAIL:-root}"
+FROM_EMAIL="${FROM_EMAIL:-pbx@$(hostname -f 2>/dev/null || hostname)}"
+FROM_NAME="${FROM_NAME:-PBX System}"
+SERVICES="${HEALTH_SERVICES:-asterisk mariadb}"
+
+FAILED=""
+for svc in ${SERVICES}; do
+    systemctl is-active --quiet "${svc}" 2>/dev/null || FAILED="${FAILED} ${svc}"
+done
+
+[ -z "${FAILED}" ] && exit 0
+
+FQDN=$(hostname -f 2>/dev/null || hostname)
+MSG="PBX ALERT: Services down on ${FQDN}:${FAILED}"
+echo "${MSG}" | mail -s "[PBX ALERT] Services Down" \
+    -a "From: ${FROM_NAME} <${FROM_EMAIL}>" "${ADMIN_EMAIL}" 2>/dev/null || true
+logger -t pbx-health "${MSG}"
+
+for svc in ${FAILED}; do
+    systemctl restart "${svc}" 2>/dev/null && \
+        echo "Auto-restarted: ${svc}" | \
+        mail -s "[PBX] Auto-restarted ${svc} on ${FQDN}" \
+            -a "From: ${FROM_NAME} <${FROM_EMAIL}>" "${ADMIN_EMAIL}" 2>/dev/null || true
+done

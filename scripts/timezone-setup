@@ -1,0 +1,25 @@
+#!/bin/bash
+# timezone-setup — set system timezone (timedatectl, with /etc/localtime fallback).
+set -eu
+
+SCRIPT_VERSION="${SCRIPT_VERSION:-3.0}"
+case "${1:-}" in
+    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${SCRIPT_VERSION}"; exit 0 ;;
+    --help|-h)
+        printf "Usage: timezone-setup <timezone>\n\n"
+        printf "Example: timezone-setup America/New_York\n"
+        printf "List zones: timedatectl list-timezones\n"
+        exit 0 ;;
+esac
+
+TZ="${1:?Usage: timezone-setup <timezone>  e.g. America/New_York}"
+
+if [ ! -f "/usr/share/zoneinfo/${TZ}" ]; then
+    echo "Unknown timezone: ${TZ}" >&2
+    echo "Run 'timedatectl list-timezones' for valid names." >&2
+    exit 1
+fi
+
+timedatectl set-timezone "${TZ}" 2>/dev/null \
+    || ln -sf "/usr/share/zoneinfo/${TZ}" /etc/localtime
+echo "Timezone set to ${TZ}"
