@@ -27,12 +27,37 @@ usage() {
     printf "  --allow IP      Whitelist an IP\n  --deny IP       Block an IP\n"
     printf "  --ssh           Show SSH-specific rules\n"
     printf "  --reset         Flush INPUT, restore defaults (keeps SSH open)\n"
+    printf "  --save | --reload  Persist current iptables rules across reboot\n"
     printf "  --show-banned   Show fail2ban banned IPs\n  --help (alias: -h)       Show help
   --version (alias: -V)  Show version\n"; exit 0
 }
 
 SSH_PORT=$(grep -E '^Port ' /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}' | head -1 || true)
 SSH_PORT="${SSH_PORT:-22}"
+
+# Persist current iptables ruleset across reboots. Detects netfilter-persistent
+# (Debian/Ubuntu), iptables-services (RHEL/Fedora), or falls back to writing
+# the canonical save file directly.
+persist_iptables() {
+    command -v iptables >/dev/null 2>&1 || return 0
+    if command -v netfilter-persistent >/dev/null 2>&1; then
+        netfilter-persistent save >/dev/null 2>&1 && { ok "iptables saved (netfilter-persistent)"; return 0; }
+    fi
+    if [ -d /etc/iptables ] || command -v netfilter-persistent >/dev/null 2>&1; then
+        mkdir -p /etc/iptables 2>/dev/null
+        iptables-save > /etc/iptables/rules.v4 2>/dev/null \
+            && { ok "iptables saved → /etc/iptables/rules.v4"; return 0; }
+    fi
+    if [ -d /etc/sysconfig ]; then
+        if command -v service >/dev/null 2>&1 && service iptables save >/dev/null 2>&1; then
+            ok "iptables saved (service iptables save)"; return 0
+        fi
+        iptables-save > /etc/sysconfig/iptables 2>/dev/null \
+            && { ok "iptables saved → /etc/sysconfig/iptables"; return 0; }
+    fi
+    warn "Could not persist iptables — rules will not survive a reboot"
+    return 1
+}
 
 case "${1:-}" in
     --help|-h) usage ;;
@@ -46,7 +71,7 @@ case "${1:-}" in
             ufw allow from "$IP" comment "$COMMENT" 2>/dev/null && ok "Allowed $IP (ufw)"
         elif command -v iptables >/dev/null 2>&1; then
             iptables -I INPUT 1 -s "$IP" -j ACCEPT -m comment --comment "$COMMENT" \
-                && ok "Allowed $IP (iptables)"
+                && ok "Allowed $IP (iptables)" && persist_iptables
         else
             err "No firewall tool found"
         fi ;;
@@ -54,9 +79,13 @@ case "${1:-}" in
         IP="${2:-}"; [ -z "$IP" ] && { err "--deny requires an IP"; exit 1; }
         printf "Block %s? May affect active connections. [y/N] " "$IP"; read -r C
         [ "$C" != "y" ] && [ "$C" != "Y" ] && { info "Aborted."; exit 0; }
-        command -v iptables >/dev/null 2>&1 \
-            && iptables -I INPUT 1 -s "$IP" -j DROP && ok "Blocked $IP" \
-            || err "iptables not found" ;;
+        if command -v iptables >/dev/null 2>&1; then
+            iptables -I INPUT 1 -s "$IP" -j DROP && ok "Blocked $IP" && persist_iptables
+        else
+            err "iptables not found"
+        fi ;;
+    --save|--reload)
+        persist_iptables ;;
     --ssh)
         hdr "SSH Firewall Rules (port ${SSH_PORT})"
         command -v iptables >/dev/null 2>&1 \
@@ -80,6 +109,7 @@ case "${1:-}" in
             iptables -A INPUT -p tcp --dport 5061 -j ACCEPT
             iptables -A INPUT -p udp --dport 10000:20000 -j ACCEPT
             ok "Firewall reset. SSH port ${SSH_PORT} is open."
+            persist_iptables
         fi ;;
     --show-banned)
         hdr "Fail2ban Banned IPs"

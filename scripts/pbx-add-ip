@@ -84,6 +84,25 @@ add_iptables_rule() {
     fi
 }
 
+# Persist current iptables ruleset across reboots.
+persist_iptables() {
+    command -v iptables >/dev/null 2>&1 || return 0
+    if command -v netfilter-persistent >/dev/null 2>&1; then
+        netfilter-persistent save >/dev/null 2>&1 && return 0
+    fi
+    if [ -d /etc/iptables ] || command -v netfilter-persistent >/dev/null 2>&1; then
+        mkdir -p /etc/iptables 2>/dev/null
+        iptables-save > /etc/iptables/rules.v4 2>/dev/null && return 0
+    fi
+    if [ -d /etc/sysconfig ]; then
+        if command -v service >/dev/null 2>&1 && service iptables save >/dev/null 2>&1; then
+            return 0
+        fi
+        iptables-save > /etc/sysconfig/iptables 2>/dev/null && return 0
+    fi
+    return 1
+}
+
 save_to_whitelist() {
     local ip="$1" comment="$2"
     mkdir -p "$(dirname "$WHITELIST_FILE")"
@@ -139,6 +158,5 @@ info "SSH port ($ssh_port) will remain open regardless"
 
 add_iptables_rule "$ip" "$comment"
 save_to_whitelist "$ip" "$comment"
-
-printf "\n"
-info "To persist rules across reboots, run: pbx-firewall reload"
+persist_iptables && ok "iptables ruleset persisted across reboot" \
+                  || warn "Could not persist iptables — run 'pbx-firewall --save' manually"

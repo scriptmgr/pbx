@@ -591,18 +591,23 @@ version_select() {
             NODEJS_MAJOR="14"
             ;;
         3)
+            # RHEL 9 / Debian 12 era — FreePBX 17 + PHP 8.2 primary.
+            # PHP 7.4 stays installed as the AvantFax (and any other legacy
+            # PHP-7.4-only route) FPM pool on its own dedicated socket.
+            # FreePBX 17's UCP module dropped the broken mariasql native dep,
+            # so the UCP daemon actually runs on modern Node.
             ASTERISK_VERSION="20"
-            FREEPBX_VERSION="16.0"
-            PHP_VERSION="7.4"
+            FREEPBX_VERSION="17.0"
+            PHP_VERSION="8.2"
             PHP_AVANTFAX_VERSION="7.4"
-            NODEJS_MAJOR="14"
+            NODEJS_MAJOR="18"
             ;;
         *)
             ASTERISK_VERSION="20"
-            FREEPBX_VERSION="16.0"
-            PHP_VERSION="7.4"
+            FREEPBX_VERSION="17.0"
+            PHP_VERSION="8.2"
             PHP_AVANTFAX_VERSION="7.4"
-            NODEJS_MAJOR="14"
+            NODEJS_MAJOR="18"
             ;;
     esac
     info "Asterisk: ${ASTERISK_VERSION} | FreePBX: ${FREEPBX_VERSION} | PHP: ${PHP_VERSION}"
@@ -644,11 +649,13 @@ setup_pkg_map() {
             PACKAGES_DISTRO_WEBSERVER_OPT="libapache2-mod-fcgid"
             PACKAGES_DISTRO_PHP="php${PHP_VERSION} php${PHP_VERSION}-fpm php${PHP_VERSION}-cli php${PHP_VERSION}-common php${PHP_VERSION}-mysql php${PHP_VERSION}-gd php${PHP_VERSION}-xml php${PHP_VERSION}-curl php${PHP_VERSION}-zip php${PHP_VERSION}-mbstring php${PHP_VERSION}-intl php${PHP_VERSION}-bcmath php${PHP_VERSION}-opcache php${PHP_VERSION}-soap php${PHP_VERSION}-ldap php${PHP_VERSION}-imap php-pear"
             PACKAGES_DISTRO_PHP74="php${PHP_AVANTFAX_VERSION} php${PHP_AVANTFAX_VERSION}-fpm php${PHP_AVANTFAX_VERSION}-cli php${PHP_AVANTFAX_VERSION}-common php${PHP_AVANTFAX_VERSION}-mysql php${PHP_AVANTFAX_VERSION}-gd php${PHP_AVANTFAX_VERSION}-xml php${PHP_AVANTFAX_VERSION}-curl php${PHP_AVANTFAX_VERSION}-zip php${PHP_AVANTFAX_VERSION}-mbstring php${PHP_AVANTFAX_VERSION}-intl php${PHP_AVANTFAX_VERSION}-bcmath php${PHP_AVANTFAX_VERSION}-soap php${PHP_AVANTFAX_VERSION}-imap php-pear"
-            PACKAGES_DISTRO_MEDIA_OPT="libsox-fmt-all"
+            PACKAGES_DISTRO_MEDIA_OPT="libsox-fmt-all ffmpeg lame"
             PACKAGES_DISTRO_MAIL_CLIENT="bsd-mailx"
             PACKAGES_DISTRO_MARIADB="mariadb-server mariadb-client"
             PACKAGES_DISTRO_PYTHON="python3-dev python3-pip"
-            PACKAGES_DISTRO_NODE="nodejs npm"
+            # nodesource ships its own npm bundled in the `nodejs` package; the
+            # distro `npm` package conflicts and pulls a broken dep tree on Debian 12.
+            PACKAGES_DISTRO_NODE="nodejs"
             PACKAGES_DISTRO_SYSTEM="chrony pkg-config iptables-persistent cron"
             PACKAGES_DISTRO_KNOCKD="knockd"
             PACKAGES_DISTRO_FAX="hylafax-server iaxmodem"
@@ -679,9 +686,9 @@ setup_pkg_map() {
             PACKAGES_DISTRO_ASTERISK_DEPS="openssl-devel libxml2-devel libxslt-devel sqlite-devel sqlite libuuid-devel ncurses-devel newt-devel jansson-devel libcurl-devel libsrtp-devel speex-devel speexdsp-devel alsa-lib-devel libogg-devel libvorbis-devel libtiff-devel libpng-devel libjpeg-devel libicu-devel openldap-devel readline-devel libedit-devel gd-devel pkgconf-pkg-config pkgconf"
             PACKAGES_DISTRO_WEBSERVER="httpd httpd-tools"
             PACKAGES_DISTRO_WEBSERVER_OPT="mod_ssl mod_proxy_html"
-            PACKAGES_DISTRO_PHP="php php-fpm php-cli php-common php-mysqlnd php-gd php-xml php-curl php-zip php-mbstring php-intl php-bcmath php-opcache php-soap php-ldap php-imap php-process php-pdo php-pear"
+            PACKAGES_DISTRO_PHP="php php-fpm php-cli php-common php-mysqlnd php-gd php-xml php-curl php-zip php-mbstring php-intl php-bcmath php-opcache php-soap php-ldap php-imap php-process php-pdo php-pear php-sodium"
             PACKAGES_DISTRO_PHP74="php74 php74-php-fpm php74-php-cli php74-php-common php74-php-mysqlnd php74-php-gd php74-php-xml php74-php-curl php74-php-zip php74-php-mbstring php74-php-intl php74-php-bcmath php74-php-soap php74-php-imap php74-php-pear"
-            PACKAGES_DISTRO_MEDIA_OPT=""
+            PACKAGES_DISTRO_MEDIA_OPT="ffmpeg-free lame"
             PACKAGES_DISTRO_MAIL_CLIENT="s-nail"
             PACKAGES_DISTRO_MARIADB="mariadb-server mariadb"
             PACKAGES_DISTRO_PYTHON="python3-devel python3-pip"
@@ -2945,6 +2952,18 @@ ServerTokens Prod
 <FilesMatch \\.php\$>
     SetHandler "${php_handler}"
 </FilesMatch>
+
+# Allow .htaccess overrides on the PBX web root regardless of which
+# vhost serves the request (FreePBX UCP/Framework checks SetEnv HTACCESS
+# from admin/.htaccess; without overrides it raises a security warning).
+<Directory "${WEB_ROOT}">
+    Options -Indexes +FollowSymLinks
+    AllowOverride All
+    Require all granted
+    # Serve the custom portal at "/" without overwriting FreePBX's signed
+    # index.php (which would trigger the framework tampered-files warning).
+    DirectoryIndex portal.php index.php
+</Directory>
 MAINEOF
             fi
 
@@ -3123,7 +3142,38 @@ ServerTokens Prod
 <FilesMatch \\.php\$>
     SetHandler "${php_handler}"
 </FilesMatch>
+
+# Allow .htaccess overrides on the PBX web root regardless of which
+# vhost serves the request (FreePBX UCP/Framework checks SetEnv HTACCESS
+# from admin/.htaccess; without overrides it raises a security warning).
+<Directory "${WEB_ROOT}">
+    Options -Indexes +FollowSymLinks
+    AllowOverride All
+    Require all granted
+    # Serve the custom portal at "/" without overwriting FreePBX's signed
+    # index.php (which would trigger the framework tampered-files warning).
+    DirectoryIndex portal.php index.php
+</Directory>
 MAINEOF
+            fi
+
+            # Patch the stock <Directory "/var/www/apache/pbx"> in httpd.conf
+            # (added by base RPM) to allow .htaccess overrides too.
+            if grep -q "^<Directory \"${WEB_ROOT}\">" "${main_conf}" 2>/dev/null; then
+                awk -v root="${WEB_ROOT}" '
+                    BEGIN { in_block = 0 }
+                    {
+                        if ($0 ~ "^<Directory \"" root "\">") { in_block = 1 }
+                        if (in_block && $0 ~ /^[[:space:]]*AllowOverride[[:space:]]+None/) {
+                            sub(/AllowOverride[[:space:]]+None/, "AllowOverride All")
+                        }
+                        if (in_block && $0 ~ /^[[:space:]]*Options[[:space:]]+Indexes[[:space:]]+FollowSymLinks/) {
+                            sub(/Options[[:space:]]+Indexes[[:space:]]+FollowSymLinks/, "Options -Indexes +FollowSymLinks")
+                        }
+                        print
+                        if (in_block && $0 ~ /^<\/Directory>/) { in_block = 0 }
+                    }
+                ' "${main_conf}" > "${main_conf}.tmp" && mv "${main_conf}.tmp" "${main_conf}"
             fi
 
             # 2. Single vhost file — remove old per-component files first
@@ -3858,6 +3908,23 @@ NATEOF
     fwconsole setting RSSFEEDS "" 2>/dev/null || true
     fwconsole setting BROWSER_STATS 0 2>/dev/null || true
 
+    # Force AMI host to IPv4 loopback. "localhost" resolves to ::1 on most
+    # modern distros, but Asterisk AMI binds IPv4-only by default — Node-based
+    # daemons (UCP, etc.) hit ECONNREFUSED on ::1 and crash-loop.
+    fwconsole setting ASTMANAGERHOST 127.0.0.1 2>/dev/null || true
+
+    # Seed UpdateManager notification email so security/update mails actually
+    # have a recipient (otherwise FreePBX raises "Failed to send email to ''").
+    if [ -n "${ADMIN_EMAIL:-}" ]; then
+        php -r "
+            require_once('/etc/freepbx.conf');
+            try {
+                \$um = new \\FreePBX\\Builtin\\UpdateManager();
+                \$um->setNotificationEmail('${ADMIN_EMAIL}');
+            } catch (\\Throwable \$e) { fwrite(STDERR, \$e->getMessage().\"\n\"); }
+        " 2>/dev/null || true
+    fi
+
     # Re-enable signature checking after module installation so the finished
     # system doesn't retain a permanent security warning.
     fwconsole setting SIGNATURECHECK 1 2>/dev/null || true
@@ -3865,6 +3932,12 @@ NATEOF
 INSERT INTO admin (variable, value) VALUES ('SIGNATURECHECK', '1')
 ON DUPLICATE KEY UPDATE value='1';
 SIGEOF
+
+    # Refresh module signatures — re-downloads any modules whose files don't
+    # match their signed checksums (e.g. dashboard's phpsysinfo.ini that gets
+    # post-install-modified by the module itself, or upstream Composer drift).
+    # Without this the FreePBX dashboard shows "You have N tampered files".
+    fwconsole ma refreshsignatures >/dev/null 2>&1 || true
 
     fwconsole reload --skip-registry-checks >/dev/null 2>&1 || true
     asterisk -rx "core reload" 2>/dev/null || true
@@ -6801,7 +6874,7 @@ build_main_portal() {
     step "Building main web portal..."
     mkdir -p "${WEB_ROOT}"
 
-    cat > "${WEB_ROOT}/index.php" << 'PORTALEOF'
+    cat > "${WEB_ROOT}/portal.php" << 'PORTALEOF'
 <?php
 $services = [
     'FreePBX Admin'      => ['/admin/',      'PBX Management',       '⚙️'],
@@ -6849,8 +6922,12 @@ h1{text-align:center;color:#00d4ff;margin-bottom:30px}
 </html>
 PORTALEOF
 
-    chown "${APACHE_USER:-www-data}:${APACHE_GROUP:-www-data}" "${WEB_ROOT}/index.php" 2>/dev/null || true
-    success "Main portal built at /"
+    chown "${APACHE_USER:-www-data}:${APACHE_GROUP:-www-data}" "${WEB_ROOT}/portal.php" 2>/dev/null || true
+
+    # Served as the directory index ahead of FreePBX's signed index.php — keep
+    # the FreePBX-shipped file untouched so it doesn't trip the framework
+    # tampered-files integrity check.
+    success "Main portal built at /portal.php (served as DirectoryIndex)"
 }
 
 # =============================================================================

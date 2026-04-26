@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//root/.ssh/**)",
+      "Bash(ssh *)",
+      "Bash(bash -n /root/Projects/github/scriptmgr/pbx/install.sh)",
+      "Bash(bash -n /root/Projects/github/scriptmgr/pbx/scripts/pbx-firewall)",
+      "Bash(bash -n /root/Projects/github/scriptmgr/pbx/scripts/pbx-add-ip)",
+      "Bash(scp scripts/pbx-firewall scripts/pbx-add-ip pbx.casjay.tel:/usr/local/bin/)"
+    ]
+  }
+}

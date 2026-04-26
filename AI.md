@@ -31,6 +31,7 @@ These apply to every piece of code, script, UI, config, and documentation in thi
 | 18 | **Never assume or guess.** If anything is unclear, ask the user before proceeding. |
 | 19 | **Always search and read existing code** before implementing or changing anything. |
 | 20 | **Never reboot, power off, or shut down the host system.** Those actions are allowed only inside test containers or VMs. |
+| 21 | **Never run `install.sh` or test management scripts on the host or any production server.** All install/script testing happens in disposable environments only — incus containers (preferred), Docker, or qemu/libvirt VMs. Production servers (e.g. `pbx.casjay.tel`) are dev servers, not test targets. Targeted, surgical fixes on production (e.g. `fwconsole setting`, restoring a single notification) are allowed only when the user explicitly asks. |
 
 ---
 
@@ -198,12 +199,12 @@ incus exec pbx-alma9 -- chmod +x /usr/local/bin/pbx-status
 
 | Decision | Choice | Reason |
 |---|---|---|
-| VoIP engine | Asterisk 20 | Highest version accepted by FreePBX 16 while keeping PHP 7.4 |
-| PBX management | FreePBX 16 | Required to keep the stack on PHP 7.4 |
-| PHP main | 7.4 | Required by FreePBX and AvantFax |
-| PHP fax | 7.4 | Shared primary runtime |
-| PHP isolation | PHP-FPM sockets | Single shared PHP 7.4 pool by default |
-| PHP-FPM user | `asterisk` | FreePBX files owned by asterisk:asterisk (660) |
+| VoIP engine | Asterisk 20 | Latest LTS that FreePBX 17 supports |
+| PBX management | FreePBX 17 (gen 3) / FreePBX 16 (gen 2) | FreePBX 17 UCP daemon works on modern Node; FreePBX 16's UCP requires the abandoned `mariasql@0.2.6` native binding which fails to compile on Node ≥10 |
+| PHP main | 8.2 (gen 3) / 7.4 (gen 2) | FreePBX 17 supports PHP 8.x; gen 2 distros stay on 7.4 for FreePBX 16 |
+| PHP secondary | 7.4 (Remi `php74` SCL on RHEL, `php7.4-*` from sury on Debian) | AvantFax 3.4.1 + any other legacy route can be pinned to a separate PHP 7.4 FPM pool |
+| PHP isolation | Two separate FPM pools on distinct sockets | Primary pool on `/run/php-fpm/www.sock` (RHEL) or `/run/php/php8.2-fpm.sock` (Debian); secondary pool on `/var/opt/remi/php74/run/php-fpm/www.sock` (RHEL) or `/run/php/php7.4-fpm.sock` (Debian). Apache `<Directory>` blocks route per-app via `SetHandler` |
+| PHP-FPM user | `asterisk` (primary pool) / `apache`(`www-data`) (PHP 7.4 pool) | FreePBX files owned by asterisk:asterisk (660); AvantFax owned by apache/www-data |
 | SIP | PJSIP only | chan_sip disabled |
 | Fax | HylaFax+ + IAXmodem + AvantFax | Full fax stack, 4 virtual modems |
 | TTS | Flite (system) + gTTS | No AI/ML; Festival/espeak fallback |
