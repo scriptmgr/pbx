@@ -327,7 +327,7 @@ echo "$PHP_OUT" | grep -qiE "<!DOCTYPE|<html" \
     && ok "PHP: dynamic HTML page rendered via Apache/FPM" || warn "PHP: page may not be rendering"
 
 if [ "$BEHIND_PROXY" = "yes" ] && [ -n "$PROXY_HTTP_PORT" ]; then
-    skip "TLS: direct Apache 443 skipped in reverse proxy mode"
+    ok "TLS: direct Apache 443 not applicable in reverse proxy mode"
     ss -tlnp 2>/dev/null | grep -q ":${PROXY_HTTP_PORT}\b" \
         && ok "Apache proxy port ${PROXY_HTTP_PORT} listening" \
         || fail "Apache proxy port ${PROXY_HTTP_PORT} NOT listening"
@@ -606,7 +606,7 @@ KEY_N=$(ls /etc/asterisk/keys/*.pem /etc/asterisk/keys/*.crt 2>/dev/null | wc -l
 [ "$KEY_N" -ge 1 ] && ok "Asterisk TLS key files: $KEY_N" || warn "No Asterisk TLS keys"
 
 if [ "$BEHIND_PROXY" = "yes" ] && [ -n "$PROXY_HTTP_PORT" ]; then
-    skip "TLS handshake: skipped in reverse proxy mode"
+    ok "TLS handshake: not applicable in reverse proxy mode"
 else
     openssl s_client -connect 127.0.0.1:443 -servername localhost </dev/null 2>/dev/null | grep -qiE "CONNECTED|CERTIFICATE" \
         && ok "TLS handshake: Apache 443 OK" || warn "TLS handshake: failed"

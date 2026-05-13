@@ -26,3 +26,17 @@ foreach ($PBX_GATED_PATHS as $prefix => $admin_required) {
         break;
     }
 }
+
+// After UCP login, ucp.js calls location.reload() which re-requests
+// /ucp/?next=<encoded-path>. If the user is now authenticated, redirect
+// them to the original target rather than leaving them on the UCP dashboard.
+if (strncmp($path, '/ucp', 4) === 0 && isset($_GET['next'])) {
+    $next = $_GET['next'];
+    if (preg_match('#^/[A-Za-z0-9_\-./?&=%]*$#', $next)) {
+        require_once '/etc/pbx/web/_shared/pbx-auth.php';
+        if (pbx_current_user() !== null) {
+            header('Location: ' . $next, true, 302);
+            exit;
+        }
+    }
+}

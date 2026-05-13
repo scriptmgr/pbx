@@ -64,7 +64,35 @@ function pbx_current_user(): ?array {
         ];
     }
 
-    // UCP / Userman session — try the well-known shapes.
+    // UCP token-based session (FreePBX 16/17): Session->__set('token', $v)
+    // stores to $_SESSION['UCP_token'] (prefix='UCP_'). The token is validated
+    // against ucp_sessions; uid maps to userman_users. We query the DB directly
+    // because the Ucp BMO class isn't reliably autoloaded from auto_prepend_file
+    // context (Self_Helper can't scan the module tree before the page bootstrap).
+    $ucp_token = $_SESSION['UCP_token'] ?? '';
+    if (!empty($ucp_token) && is_string($ucp_token)) {
+        try {
+            $db = $GLOBALS['__pbx_freepbx']->Database;
+            $sth = $db->prepare(
+                'SELECT s.uid, u.username FROM ucp_sessions s'
+                . ' JOIN userman_users u ON s.uid = u.id'
+                . ' WHERE s.session = :token LIMIT 1'
+            );
+            $sth->execute([':token' => $ucp_token]);
+            $row = $sth->fetch(\PDO::FETCH_ASSOC);
+            if (!empty($row['uid'])) {
+                return [
+                    'id'       => (int)$row['uid'],
+                    'name'     => (string)($row['username'] ?? 'user'),
+                    'is_admin' => false,
+                ];
+            }
+        } catch (\Throwable $e) {
+            // DB unavailable or schema mismatch — fall through to other checks
+        }
+    }
+
+    // Legacy/older UCP session shapes (kept for compatibility).
     $candidates = [
         $_SESSION['ucp']['user']   ?? null,
         $_SESSION['UCP/User']      ?? null,

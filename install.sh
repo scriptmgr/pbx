@@ -8,6 +8,10 @@
 set -euo pipefail
 
 SCRIPT_VERSION="3.0"
+# Some minimal/cloud images omit /usr/local/bin from root's login PATH.
+# The installer and generated admin tools rely on standard /usr/local/*
+# locations being resolvable during install and in later root shells.
+export PATH="/usr/local/bin:/usr/local/sbin:${PATH:-/usr/bin:/bin:/usr/sbin:/sbin}"
 case "${1:-}" in
     --version|-V)
         printf "install.sh v%s\n" "${SCRIPT_VERSION}"
@@ -190,6 +194,10 @@ EMAIL_TO_FAX_ALIAS="${EMAIL_TO_FAX_ALIAS:-}"
 FAX_TO_EMAIL_ADDRESS="${FAX_TO_EMAIL_ADDRESS:-}"
 FAX_FROM_EMAIL="${FAX_FROM_EMAIL:-}"           # From address for fax notifications (default: FROM_EMAIL)
 FAX_FROM_NAME="${FAX_FROM_NAME:-}"            # From name for fax notifications (default: FROM_NAME)
+FAX_COUNTRY_CODE="${FAX_COUNTRY_CODE:-1}"     # ITU country code written to HylaFAX configs
+FAX_AREA_CODE="${FAX_AREA_CODE:-800}"         # Area code written to HylaFAX configs
+FAX_NUMBER="${FAX_NUMBER:-}"                  # E.164 fax number (e.g. +18005551234); placeholder used when blank
+FAX_LOCAL_IDENTIFIER="${FAX_LOCAL_IDENTIFIER:-}"  # HylaFAX LocalIdentifier (e.g. "My Company Fax"); defaults to "PBX FAX <n>"
 FROM_EMAIL="${FROM_EMAIL:-}"           # Default: no-reply@<fqdn> — set via env var
 FROM_NAME="${FROM_NAME:-}"            # Default: PBX System — set via env var
 
@@ -753,6 +761,22 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
+ensure_local_path_defaults() {
+    local profile_d="/etc/profile.d/pbx-path.sh"
+    cat > "${profile_d}" <<'EOF'
+case ":${PATH}:" in
+    *:/usr/local/bin:*) ;;
+    *) PATH="/usr/local/bin:${PATH}" ;;
+esac
+case ":${PATH}:" in
+    *:/usr/local/sbin:*) ;;
+    *) PATH="/usr/local/sbin:${PATH}" ;;
+esac
+export PATH
+EOF
+    chmod 644 "${profile_d}"
+}
+
 disable_anacron_if_present() {
     case "${DISTRO_FAMILY}" in
         rhel|fedora)
@@ -1279,6 +1303,14 @@ $userman->setGlobalSettingByID($uid, 'pbx_low', '');
 $userman->setGlobalSettingByID($uid, 'pbx_high', '');
 $userman->setGlobalSettingByID($uid, 'pbx_modules', ['*']);
 $userman->setGlobalSettingByID($uid, 'pbx_landing', 'index');
+
+// Allow UCP login — ucp_settings table must have allowLogin=1 for this user
+// or UCP._allowed() returns false and login fails with "Invalid Login Credentials".
+try {
+    $freepbx->Ucp->setSettingByID($uid, 'Global', 'allowLogin', true);
+} catch (Throwable $e) {
+    fwrite(STDERR, "Warning: could not set UCP allowLogin: {$e->getMessage()}\n");
+}
 PHP
 }
 
@@ -1957,6 +1989,11 @@ sync_web_assets() {
 
     # The shared dir is required from PHP; deny direct serving of its .php files.
     chown -R "root:${APACHE_GROUP:-root}" "${PBX_WEB_DIR}" 2>/dev/null || true
+    # /etc/pbx/ group-chown is deferred here because detect_ssh_safety() runs before
+    # the apache/www-data package creates the group. PHP-FPM (running as asterisk,
+    # which is in ${APACHE_GROUP}) needs execute-traverse on /etc/pbx/ to reach
+    # the auto_prepend_file at /etc/pbx/web/_shared/auth-shim.php.
+    chown root:"${APACHE_GROUP:-root}" /etc/pbx 2>/dev/null || true
 }
 
 # Apache routing for the deployed web templates. Idempotent — safe to re-run.
@@ -2632,12 +2669,12 @@ install_php() {
                 sed -i 's/post_max_size = .*/post_max_size = 120M/'             "${php_ini}"
                 sed -i 's/memory_limit = .*/memory_limit = 512M/'               "${php_ini}"
                 sed -i 's/max_execution_time = .*/max_execution_time = 300/'    "${php_ini}"
-                sed -i 's|;date.timezone.*|date.timezone = America/New_York|'   "${php_ini}"
+                sed -i "s|;date.timezone.*|date.timezone = ${TIMEZONE:-America/New_York}|"   "${php_ini}"
             fi
             local php_cli_ini="${PHP_INI_DIR}/cli/php.ini"
             if [ -f "${php_cli_ini}" ]; then
                 backup_config "${php_cli_ini}"
-                sed -i 's|;date.timezone.*|date.timezone = America/New_York|' "${php_cli_ini}"
+                sed -i "s|;date.timezone.*|date.timezone = ${TIMEZONE:-America/New_York}|" "${php_cli_ini}"
                 sed -i 's/memory_limit = .*/memory_limit = 512M/' "${php_cli_ini}"
             fi
             # FreePBX files are owned by asterisk — FPM must run as asterisk
@@ -2664,7 +2701,7 @@ install_php() {
                 sed -i 's/post_max_size = .*/post_max_size = 120M/'             "${php_ini}"
                 sed -i 's/memory_limit = .*/memory_limit = 512M/'               "${php_ini}"
                 sed -i 's/max_execution_time = .*/max_execution_time = 300/'    "${php_ini}"
-                sed -i 's|;date.timezone.*|date.timezone = America/New_York|'   "${php_ini}"
+                sed -i "s|;date.timezone.*|date.timezone = ${TIMEZONE:-America/New_York}|"   "${php_ini}"
             fi
             local fpm_www="/etc/php-fpm.d/www.conf"
             if [ -f "${fpm_www}" ]; then
@@ -3923,8 +3960,12 @@ NOSIGEARLYEOF
     ari_pass=$(generate_password 20)
     fwconsole setting FPBX_ARI_USER      "${ari_user}"    2>/dev/null || true
     fwconsole setting FPBX_ARI_PASSWORD  "${ari_pass}"    2>/dev/null || true
-    fwconsole setting HTTPTLSBINDADDRESS "0.0.0.0:8089"  2>/dev/null || true
-    fwconsole setting HTTPBINDADDRESS    "127.0.0.1:8088" 2>/dev/null || true
+    # FreePBX generates tlsbindaddr=${HTTPTLSBINDADDRESS}:${HTTPTLSBINDPORT} —
+    # do NOT include the port in HTTPTLSBINDADDRESS or the result is "ip:port:port".
+    fwconsole setting HTTPTLSBINDADDRESS "0.0.0.0"        2>/dev/null || true
+    fwconsole setting HTTPTLSBINDPORT    "8089"            2>/dev/null || true
+    fwconsole setting HTTPBINDADDRESS    "127.0.0.1"       2>/dev/null || true
+    fwconsole setting HTTPBINDPORT       "8088"            2>/dev/null || true
     seed_freepbx_module_defaults || warn "Failed to refresh FreePBX module defaults"
 
     # Create the initial FreePBX admin user via SQL for consistent unattended installs.
@@ -3998,24 +4039,27 @@ configure_freepbx() {
         warn "Asterisk still not running — FreePBX config may be incomplete"
     fi
 
-    # Write PJSIP transports directly to /etc/asterisk/pjsip_custom.conf
-    # Do NOT insert into the pjsip DB table — FreePBX joins it with trunks
-    # and iterates it as trunk data, causing "Undefined array key trunk_name"
+    # Write custom PJSIP transports to /etc/asterisk/pjsip_custom.conf
+    # FreePBX auto-generates [0.0.0.0-udp] (UDP) in pjsip.transports.conf with
+    # NAT settings from EXTERNALIP/LOCALNET — do NOT add transport-udp here or
+    # Asterisk will fail to bind the duplicate and log "Address already in use".
+    # We only add transports FreePBX does NOT generate: TCP, TLS, and WSS.
     mkdir -p /etc/asterisk
+    local _ext_ip="${EXTERNAL_IP:-${PUBLIC_IP:-${PRIMARY_IP:-}}}"
+    local _local_net="${PRIVATE_IP:+${PRIVATE_IP}/255.255.255.0}"
+
     cat > /etc/asterisk/pjsip_custom.conf << PJSIPCUSTEOF
 ; PBX custom PJSIP transports — managed by install.sh
-; FreePBX includes pjsip_custom.conf automatically
-
-[transport-udp]
-type=transport
-protocol=udp
-bind=0.0.0.0:5060
-allow_reload=yes
+; FreePBX includes pjsip_custom.conf automatically.
+; UDP transport is managed by FreePBX (pjsip.transports.conf) — not here.
 
 [transport-tcp]
 type=transport
 protocol=tcp
 bind=0.0.0.0:5060
+${_ext_ip:+external_media_address=${_ext_ip}}
+${_ext_ip:+external_signaling_address=${_ext_ip}}
+${_local_net:+local_net=${_local_net}}
 
 [transport-tls]
 type=transport
@@ -4024,6 +4068,9 @@ bind=0.0.0.0:5061
 cert_file=/etc/asterisk/keys/fullchain.pem
 priv_key_file=/etc/asterisk/keys/privkey.pem
 method=tlsv1_2
+${_ext_ip:+external_media_address=${_ext_ip}}
+${_ext_ip:+external_signaling_address=${_ext_ip}}
+${_local_net:+local_net=${_local_net}}
 PJSIPCUSTEOF
 
     # Feature: anon-sip — anonymous SIP inbound endpoint
@@ -4087,8 +4134,15 @@ NATEOF
     ensure_freepbx_manager_credentials || warn "Failed to sync FreePBX manager credentials"
     fwconsole setting FREEPBX_SYSTEM_IDENT "${FROM_NAME}" 2>/dev/null || true
     fwconsole setting DASHBOARD_FREEPBX_BRAND "${FROM_NAME}" 2>/dev/null || true
+    fwconsole setting TIMEZONE "${TIMEZONE:-America/New_York}" 2>/dev/null || true
     fwconsole setting RSSFEEDS "" 2>/dev/null || true
     fwconsole setting BROWSER_STATS 0 2>/dev/null || true
+
+    # Set AMPWEBADDRESS so voicemail email notifications contain a working link to UCP.
+    # Without this, the link in voicemail emails resolves to /ucp (relative, broken).
+    local _ampweb_scheme="http"
+    [ "${SSL_ENABLED:-yes}" = "yes" ] && _ampweb_scheme="https"
+    fwconsole setting AMPWEBADDRESS "${_ampweb_scheme}://${SYSTEM_FQDN}" 2>/dev/null || true
 
     # Force AMI host to IPv4 loopback. "localhost" resolves to ::1 on most
     # modern distros, but Asterisk AMI binds IPv4-only by default — Node-based
@@ -4148,6 +4202,7 @@ ADMINEOF2
     fwconsole notifications --delete api key-regenerated >/dev/null 2>&1 || true
     fwconsole notifications --delete framework BROWSER_STATS >/dev/null 2>&1 || true
     fwconsole notifications --delete core general_notice_bindaddress >/dev/null 2>&1 || true
+    fwconsole notifications --delete core core_bindaddress_changed >/dev/null 2>&1 || true
     fwconsole notifications --delete core EXTENSIONS_MOVE >/dev/null 2>&1 || true
     fwconsole notifications --delete freepbx SIGNATURE_CHECK >/dev/null 2>&1 || true
     record_freepbx_admin_username_sync
@@ -4284,10 +4339,12 @@ FAXGID=uucp
 EOF
     fi
     if [ ! -f "${hf_etc}/config" ]; then
-        cat > "${hf_etc}/config" <<'EOF'
-CountryCode:            1
-AreaCode:               800
-FAXNumber:              +18005551234
+        local _hf_faxnum="${FAX_NUMBER:-+1${FAX_AREA_CODE}5551234}"
+        local _hf_localid="${FAX_LOCAL_IDENTIFIER:-PBX System}"
+        cat > "${hf_etc}/config" <<EOF
+CountryCode:            ${FAX_COUNTRY_CODE}
+AreaCode:               ${FAX_AREA_CODE}
+FAXNumber:              ${_hf_faxnum}
 LongDistancePrefix:     1
 InternationalPrefix:    011
 DialStringRules:        etc/dialrules
@@ -4299,7 +4356,7 @@ DeviceMode:             0600
 RingsBeforeAnswer:      1
 SpeakerVolume:          off
 GettyArgs:              "-h %l dx_%s"
-LocalIdentifier:        "Anonymous"
+LocalIdentifier:        "${_hf_localid}"
 TagLineFont:            etc/lutRS18.pcf
 TagLineFormat:          "From %%l|%c|Page %%P of %%T"
 MaxRecvPages:           25
@@ -4422,9 +4479,30 @@ install_iaxmodem() {
     svc_disable iaxmodem 2>/dev/null || true
     svc_stop iaxmodem 2>/dev/null || true
 
+    local iax_custom="/etc/asterisk/iax_custom.conf"
+    # Ensure iax_custom.conf exists and has a [general] placeholder so FreePBX
+    # includes it without complaint even if the IAXmodem stanzas are the only content.
+    if [ ! -f "${iax_custom}" ]; then
+        mkdir -p /etc/asterisk
+        printf '; IAXmodem peer definitions — managed by pbx installer\n' > "${iax_custom}"
+        chown asterisk:asterisk "${iax_custom}" 2>/dev/null || true
+    fi
+
     local i=1
     while [ "${i}" -le "${NUMBER_OF_MODEMS}" ]; do
         mkdir -p /etc/iaxmodem
+
+        # Reuse secret from existing config so re-runs are idempotent; generate otherwise.
+        local modem_secret=""
+        if [ -f "/etc/iaxmodem/ttyIAX${i}" ]; then
+            modem_secret=$(awk '/^secret/{print $2}' "/etc/iaxmodem/ttyIAX${i}" 2>/dev/null || true)
+        fi
+        [ -n "${modem_secret}" ] || modem_secret=$(generate_password 24)
+
+        # Per-modem fax number: use FAX_NUMBER if set, else a placeholder.
+        local _fax_num="${FAX_NUMBER:-+1${FAX_AREA_CODE}555$(printf '%04d' $i)}"
+        local _fax_id="${FAX_LOCAL_IDENTIFIER:-PBX FAX ${i}}"
+
         cat > "/etc/iaxmodem/ttyIAX${i}" << MODEMEOF
 device          /dev/ttyIAX${i}
 owner           uucp:uucp
@@ -4433,12 +4511,32 @@ port            4569
 refresh         300
 server          127.0.0.1
 peername        iaxmodem${i}
-secret          iaxmodem${i}secret
+secret          ${modem_secret}
 cidname         FAX MACHINE ${i}
 cidnumber       s
 codec           ulaw
 MODEMEOF
         create_iaxmodem_services "${i}"
+
+        # Write Asterisk IAX2 peer so IAXmodem can authenticate.
+        # iax_custom.conf is included by FreePBX's iax.conf and is user-owned.
+        if grep -q "^\[iaxmodem${i}\]" "${iax_custom}" 2>/dev/null; then
+            # Update secret in place on re-run
+            sed -i "/^\[iaxmodem${i}\]/,/^\[/{s/^secret=.*/secret=${modem_secret}/}" "${iax_custom}" 2>/dev/null || true
+        else
+            cat >> "${iax_custom}" << IAXPEEREOF
+
+[iaxmodem${i}]
+type=friend
+secret=${modem_secret}
+host=127.0.0.1
+trunk=no
+context=from-internal
+disallow=all
+allow=ulaw
+IAXPEEREOF
+        fi
+        chown asterisk:asterisk "${iax_custom}" 2>/dev/null || true
 
         # Create HylaFAX per-modem config (required for hfaxd to manage each virtual modem)
         mkdir -p /var/spool/hylafax/etc
@@ -4448,10 +4546,10 @@ MODEMEOF
             chown uucp:uucp /var/spool/hylafax/etc/hosts.hfaxd 2>/dev/null || true
         fi
         cat > "/var/spool/hylafax/etc/config.ttyIAX${i}" << HFMODEMCFG
-CountryCode:            1
-AreaCode:               800
-FAXNumber:              +18005550${i}00
-LocalIdentifier:        "PBX FAX ${i}"
+CountryCode:            ${FAX_COUNTRY_CODE}
+AreaCode:               ${FAX_AREA_CODE}
+FAXNumber:              ${_fax_num}
+LocalIdentifier:        "${_fax_id}"
 MaxRecvPages:           25
 ModemType:              Class2.0
 ModemRate:              9600
@@ -4630,7 +4728,13 @@ AFADMINSQL
     # defaults) so the rest of AvantFax's own settings stay untouched.
     local lcfg="${AVANTFAX_WEB_DIR}/includes/local_config.php"
     if [ -d "${AVANTFAX_WEB_DIR}/includes" ]; then
-        cat > "${lcfg}" << 'AFLCFGEOF'
+        # Detect HylaFAX install prefix: source-compiled goes to /usr/local, packages to /usr.
+        # AvantFax's config.php defaults HYLAFAX_PREFIX to /usr — wrong for source builds.
+        local hf_prefix="/usr"
+        if [ -f "/usr/local/bin/faxstat" ]; then
+            hf_prefix="/usr/local"
+        fi
+        cat > "${lcfg}" << AFLCFGEOF
 <?php
 // AvantFAX overrides — managed by scriptmgr/pbx install.sh.
 // Loaded before config.php's defaults; only redefine what we need here.
@@ -4639,10 +4743,13 @@ AFADMINSQL
 
 if (!defined('MAX_USERNAME_SIZE')) define('MAX_USERNAME_SIZE', 64);
 if (!defined('MAX_PASSWD_SIZE'))   define('MAX_PASSWD_SIZE',   64);
+
+// HylaFAX binary prefix — source-compiled installs to /usr/local, packages to /usr.
+if (!isset(\$HYLAFAX_PREFIX)) \$HYLAFAX_PREFIX = '${hf_prefix}';
 AFLCFGEOF
         chown "${APACHE_USER:-www-data}:${APACHE_GROUP:-www-data}" "${lcfg}" 2>/dev/null || true
         chmod 644 "${lcfg}"
-        info "AvantFax local_config.php written (MAX_*_SIZE=64 for long admin passwords)"
+        info "AvantFax local_config.php written (HYLAFAX_PREFIX=${hf_prefix}, MAX_*_SIZE=64)"
     fi
 
     svc_reload "${APACHE_SERVICE}" 2>/dev/null || true
@@ -5614,6 +5721,8 @@ exten => s,1,Answer()
 [from-trunk]
 include => from-internal-custom
 DIALPLANEOF
+    # Patch timezone in dialplan — heredoc is single-quoted so we sed it after writing.
+    sed -i "s|SayUnixTime(,America/New_York,|SayUnixTime(,${TIMEZONE:-America/New_York},|g" "${custom_conf}" 2>/dev/null || true
 
     # Create lenny AGI if not present
     if [ ! -f /var/lib/asterisk/agi-bin/lenny.agi ]; then
@@ -5650,6 +5759,8 @@ configure_firewall() {
             firewall-cmd --permanent --add-port="${port}" 2>/dev/null || true
         done
         firewall-cmd --permanent --add-port=10000-20000/udp 2>/dev/null || true
+        [ "${INSTALL_FOP2:-no}" = "yes" ] && \
+            firewall-cmd --permanent --add-port=4445/tcp 2>/dev/null || true
         # Allow ICMP (ping) for monitoring
         firewall-cmd --permanent --remove-icmp-block=echo-request 2>/dev/null || true
         firewall-cmd --permanent --remove-icmp-block=echo-reply 2>/dev/null || true
@@ -5664,6 +5775,7 @@ configure_firewall() {
         ufw allow 5061/tcp 2>/dev/null || true
         ufw allow 4569/udp 2>/dev/null || true
         ufw allow 10000:20000/udp 2>/dev/null || true
+        [ "${INSTALL_FOP2:-no}" = "yes" ] && ufw allow 4445/tcp 2>/dev/null || true
         # Allow ICMP (ping) for monitoring — UFW needs before.rules entries, not
         # "ufw allow proto icmp".
         if [ -f /etc/ufw/before.rules ] && ! grep -q "PBX ICMP allow" /etc/ufw/before.rules 2>/dev/null; then
@@ -5726,6 +5838,7 @@ configure_iptables() {
     iptables -A INPUT -p tcp --dport 5061  -j ACCEPT
     iptables -A INPUT -p udp --dport 4569  -j ACCEPT
     iptables -A INPUT -p tcp --dport 8089  -j ACCEPT
+    [ "${INSTALL_FOP2:-no}" = "yes" ] && iptables -A INPUT -p tcp --dport 4445 -j ACCEPT || true
     iptables -A INPUT -p udp --dport 10000:20000 -j ACCEPT
 
     case "${DISTRO_FAMILY}" in
@@ -5794,6 +5907,19 @@ install_fail2ban() {
     touch /var/log/asterisk/security
     chown asterisk:asterisk /var/log/asterisk/security 2>/dev/null || true
 
+    # Enable Asterisk security log. FreePBX manages logger.conf but leaves
+    # logger_logfiles_custom.conf empty — add the security level there so
+    # Asterisk actually writes security events for fail2ban to parse.
+    # Create the file if it doesn't exist yet (fail2ban may run before the
+    # first fwconsole reload that generates it).
+    local _logger_custom="/etc/asterisk/logger_logfiles_custom.conf"
+    mkdir -p /etc/asterisk
+    if ! grep -q "^security" "${_logger_custom}" 2>/dev/null; then
+        printf '\nsecurity => security\n' >> "${_logger_custom}"
+        chown asterisk:asterisk "${_logger_custom}" 2>/dev/null || true
+        asterisk -rx "logger reload" >/dev/null 2>&1 || true
+    fi
+
     # Detect whether sshd is actually running (try all common service names)
     local sshd_running=0
     for svc_name in ssh sshd openssh-server; do
@@ -5831,12 +5957,22 @@ install_fail2ban() {
     fi
 
     # Global defaults — safe settings that won't lock anyone out
+    # Use email action only when ADMIN_EMAIL is configured — falls back to ban-only otherwise.
+    local _f2b_action='%(action_)s'
+    local _f2b_email_block=""
+    if [ -n "${ADMIN_EMAIL:-}" ]; then
+        _f2b_action='%(action_mwl)s'
+        _f2b_email_block="destemail = ${ADMIN_EMAIL}
+sender   = ${FROM_EMAIL:-fail2ban@localhost}"
+    fi
     cat > /etc/fail2ban/jail.d/pbx-defaults.conf << F2BGEOF
 [DEFAULT]
 bantime  = 3600
 findtime = 600
 maxretry = 10
 ignoreip = 127.0.0.1/8 ::1 ${SSH_CLIENT_IP:-}
+${_f2b_email_block}
+action   = ${_f2b_action}
 F2BGEOF
 
     # Write sshd jail override AFTER defaults-debian.conf alphabetically
@@ -6236,6 +6372,12 @@ install_fop2() {
     step "📊 Installing FOP2 operator panel (HTML5)..."
     skip_if_done fop2 && return 0
 
+    # libnsl.so.1 is not installed by default on RHEL 9 / AlmaLinux 9
+    # but is required by the pre-compiled fop2_server binary
+    case "${DISTRO_FAMILY}" in
+        rhel|fedora) pkg_install libnsl 2>/dev/null || true ;;
+    esac
+
     local fop2_url="http://download.fop2.com/install_fop2.sh"
     local fop2_script="${WORK_DIR}/install_fop2.sh"
 
@@ -6245,23 +6387,69 @@ install_fop2() {
     fi
     chmod 755 "${fop2_script}"
 
-    # Run non-interactively
+    # Run non-interactively; the FOP2 installer auto-generates a [fop2] stanza in
+    # manager_custom.conf and writes matching manager_user/manager_secret to fop2.cfg.
+    # We do NOT override those credentials — they are already a matched pair.
     bash "${fop2_script}" --auto 2>/dev/null || bash "${fop2_script}" 2>/dev/null || true
     rm -f "${fop2_script}"
 
-    # Configure to work with FreePBX AMI
-    if [ -f /usr/local/fop2/fop2.cfg ]; then
-        sed -i 's/^manager_host.*/manager_host = 127.0.0.1/' /usr/local/fop2/fop2.cfg
-        local ami_pass
-        ami_pass=$(grep "^secret" /etc/asterisk/manager.conf 2>/dev/null | head -1 | awk '{print $NF}')
-        [ -n "${ami_pass}" ] && sed -i "s/^manager_password.*/manager_password = ${ami_pass}/" /usr/local/fop2/fop2.cfg
+    if [ ! -f /usr/local/fop2/fop2.cfg ]; then
+        warn "FOP2 config not found after install — skipping post-config"
+        return 0
     fi
+
+    # Ensure AMI connection is loopback-only
+    sed -i 's|^manager_host.*|manager_host = 127.0.0.1|' /usr/local/fop2/fop2.cfg
+
+    # Move FOP2 web UI under WEB_ROOT so it is served by the PBX Apache vhost.
+    # The FOP2 installer defaults web files to /var/www/html/fop2.
+    local fop2_default_webdir="/var/www/html/fop2"
+    local fop2_webdir="${WEB_ROOT}/fop2"
+    if [ -d "${fop2_default_webdir}" ] && [ "${fop2_default_webdir}" != "${fop2_webdir}" ]; then
+        rm -rf "${fop2_webdir}"
+        mv "${fop2_default_webdir}" "${fop2_webdir}"
+        sed -i "s|^web_dir.*|web_dir = ${fop2_webdir}|" /usr/local/fop2/fop2.cfg
+    fi
+    [ -d "${fop2_webdir}" ] && chown -R "${APACHE_USER}:${APACHE_GROUP}" "${fop2_webdir}" 2>/dev/null || true
+
+    # Write Apache conf for FOP2: override DirectoryIndex (main page is index.html,
+    # not index.php/portal.php as set by the global WEB_ROOT <Directory> block).
+    local fop2_conf
+    case "${DISTRO_FAMILY}" in
+        debian) fop2_conf="/etc/apache2/conf-available/fop2.conf" ;;
+        *)      fop2_conf="/etc/httpd/conf.d/fop2.conf" ;;
+    esac
+    cat > "${fop2_conf}" << FOP2CONFEOF
+# FOP2 Flash Operator Panel 2 — Auth is handled by FOP2's own login system.
+# WebSocket connections go directly to fop2_server on port 4445.
+<Directory ${fop2_webdir}>
+    Options -Indexes
+    AllowOverride All
+    Require all granted
+    DirectoryIndex index.html index.php
+</Directory>
+FOP2CONFEOF
+    [ "${DISTRO_FAMILY}" = "debian" ] && a2enconf fop2 2>/dev/null || true
+    svc_reload "${APACHE_SERVICE}" 2>/dev/null || true
+
+    # Use Let's Encrypt certs (deployed to /etc/asterisk/keys/) for FOP2 WSS if available.
+    # Without valid certs on port 4445, browsers block WS connections from HTTPS pages.
+    local fop2_cert="/etc/asterisk/keys/fullchain.pem"
+    local fop2_key="/etc/asterisk/keys/privkey.pem"
+    if [ -f "${fop2_cert}" ] && [ -f "${fop2_key}" ]; then
+        sed -i "s|^ssl_certificate_file.*|ssl_certificate_file=${fop2_cert}|" /usr/local/fop2/fop2.cfg
+        sed -i "s|^ssl_certificate_key_file.*|ssl_certificate_key_file=${fop2_key}|" /usr/local/fop2/fop2.cfg
+    fi
+
+    # Reload Asterisk manager so the [fop2] user written to manager_custom.conf by
+    # the FOP2 installer is picked up — without this fop2_server cannot connect to AMI
+    asterisk -rx "manager reload" >/dev/null 2>&1 || true
 
     svc_enable fop2 2>/dev/null || true
     svc_start  fop2 2>/dev/null || true
 
     mark_done fop2
-    success "FOP2 installed"
+    success "FOP2 installed — web UI at /fop2/, WebSocket port 4445"
 }
 
 # =============================================================================
@@ -6767,13 +6955,17 @@ bind     = 0.0.0.0
 WSSEOF
     fi
 
-    local ast_conf="/etc/asterisk/asterisk.conf"
-    if [ -f "${ast_conf}" ] && ! grep -q "stunaddr" "${ast_conf}"; then
-        cat >> "${ast_conf}" << 'STUNEOF'
+    # stunaddr belongs in rtp_custom.conf [general], not asterisk.conf [options].
+    # FreePBX auto-generates rtp.conf and includes rtp_custom.conf at the end.
+    local rtp_custom="/etc/asterisk/rtp_custom.conf"
+    if ! grep -q "stunaddr" "${rtp_custom}" 2>/dev/null; then
+        mkdir -p /etc/asterisk
+        cat >> "${rtp_custom}" << 'STUNEOF'
 
-[options]
-stunaddr = stun.l.google.com:19302
+[general]
+stunaddr=stun.l.google.com:19302
 STUNEOF
+        chown asterisk:asterisk "${rtp_custom}" 2>/dev/null || true
     fi
 
     success "WebRTC WSS transport + STUN configured"
@@ -6789,8 +6981,17 @@ configure_voicemail_email() {
     step "Configuring voicemail-to-email..."
     backup_config "${vm_conf}"
 
-    sed -i "s|^;*serveremail=.*|serveremail=${FROM_EMAIL}|" "${vm_conf}" 2>/dev/null || true
-    sed -i "s|^;*fromstring=.*|fromstring=${FROM_NAME}|" "${vm_conf}" 2>/dev/null || true
+    # Replace existing line or append if absent — sed s/// only works when the line exists.
+    if grep -q "^;*serveremail=" "${vm_conf}" 2>/dev/null; then
+        sed -i "s|^;*serveremail=.*|serveremail=${FROM_EMAIL}|" "${vm_conf}" 2>/dev/null || true
+    else
+        sed -i "/^\[general\]/a serveremail=${FROM_EMAIL}" "${vm_conf}" 2>/dev/null || true
+    fi
+    if grep -q "^;*fromstring=" "${vm_conf}" 2>/dev/null; then
+        sed -i "s|^;*fromstring=.*|fromstring=${FROM_NAME}|" "${vm_conf}" 2>/dev/null || true
+    else
+        sed -i "/^\[general\]/a fromstring=${FROM_NAME}" "${vm_conf}" 2>/dev/null || true
+    fi
 
     grep -q "^format=" "${vm_conf}" || \
         sed -i '/^\[general\]/a format=wav49|gsm|wav' "${vm_conf}" 2>/dev/null || true
@@ -6913,6 +7114,23 @@ if ($overall === 'ok') {
 $data['data_age_seconds'] = $age;
 $data['_self'] = $_SERVER['REQUEST_URI'] ?? '/health/';
 
+// Compatibility aliases for older checks and external monitors.
+$data['asterisk'] = $data['asterisk']
+    ?? [
+        'status'  => $data['services']['asterisk'] ?? 'unknown',
+        'version' => $data['pbx']['asterisk_version'] ?? '',
+        'uptime'  => $data['pbx']['asterisk_uptime'] ?? '',
+    ];
+$data['mariadb'] = $data['mariadb']
+    ?? ['status' => $data['services']['mariadb'] ?? 'unknown'];
+$data['database'] = $data['database'] ?? $data['mariadb'];
+$data['fax'] = $data['fax']
+    ?? [
+        'enabled' => (bool)($data['features']['fax'] ?? false),
+        'status'  => $data['services']['hylafax'] ?? 'unknown',
+    ];
+$data['hylafax'] = $data['hylafax'] ?? $data['fax'];
+
 echo json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
 HEALTHEOF
 
@@ -6928,6 +7146,26 @@ HEALTHEOF
     fi
 
     success "Status endpoint built at /status/ and /health/ (updated every minute by cron)"
+}
+
+ensure_status_runtime_hooks() {
+    # build_status_page() and setup_health_monitoring() run before the management
+    # scripts are synced later in run_installation(), so retry the runtime hooks
+    # here once /usr/local/bin has been populated.
+    if [ -x /usr/local/bin/pbx-status-update ]; then
+        /usr/local/bin/pbx-status-update >/dev/null 2>&1 || true
+        echo "* * * * * root /usr/local/bin/pbx-status-update" > /etc/cron.d/pbx-status
+        chmod 644 /etc/cron.d/pbx-status
+    else
+        warn "pbx-status-update not found in /usr/local/bin — status endpoint will be stale"
+    fi
+
+    if [ -x /usr/local/bin/pbx-health-check ]; then
+        echo "*/5 * * * * root /usr/local/bin/pbx-health-check" > /etc/cron.d/pbx-health
+        chmod 644 /etc/cron.d/pbx-health
+    else
+        warn "pbx-health-check not found in /usr/local/bin — health cron remains disabled"
+    fi
 }
 
 # =============================================================================
@@ -7196,6 +7434,13 @@ SVCEOF
         echo "FREEPBX_URL=http://${SYSTEM_FQDN}/admin/"
     } >> "${AUTO_PASSWORDS_FILE}" 2>/dev/null || true
     chmod 600 "${AUTO_PASSWORDS_FILE}" 2>/dev/null || true
+
+    # Re-run signature refresh at the very end — module installs, fwconsole reload, and
+    # Composer vendor updates all happen AFTER the early refreshsignatures in configure_freepbx(),
+    # leaving vendor files flagged as "tampered" on first login. Running it here, after all
+    # work is done, gives FreePBX a clean signature baseline to compare against.
+    info "Refreshing FreePBX module signatures (final pass)..."
+    fwconsole ma refreshsignatures 2>/dev/null || true
 
     # Mark installation complete
     echo "INSTALL_COMPLETE=$(date +%s)" >> "${INSTALL_INVENTORY}"
@@ -7493,6 +7738,7 @@ run_installation() {
     info "Starting PBX installation — log: ${LOG_FILE}"
 
     # Phase 1: Detection, preflight, profiles
+    ensure_local_path_defaults
     detect_system
     version_select
     setup_pkg_map
@@ -7604,6 +7850,7 @@ run_installation() {
 
     # Phase 13: Management scripts (GitHub API sync) and finalization
     sync_management_scripts
+    ensure_status_runtime_hooks
     create_root_scripts
     install_asteridex
     finalize_installation
