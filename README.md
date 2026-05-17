@@ -4,11 +4,11 @@
 [![GitHub](https://img.shields.io/badge/GitHub-scriptmgr%2Fpbx-blue)](https://github.com/scriptmgr/pbx)
 [![Platform](https://img.shields.io/badge/Platform-Linux-green)](https://www.linux.org/)
 [![Asterisk](https://img.shields.io/badge/Asterisk-20-orange)](https://www.asterisk.org/)
-[![FreePBX](https://img.shields.io/badge/FreePBX-16-red)](https://www.freepbx.org/)
+[![FreePBX](https://img.shields.io/badge/FreePBX-17%2F16-red)](https://www.freepbx.org/)
 
-A production-ready, fully automated installer for a complete enterprise PBX system — Asterisk 20, FreePBX 16, AvantFax, and 33 management tools. Designed for self-hosted, SMB, and enterprise use.
+A production-ready, fully automated installer for a complete enterprise PBX system — Asterisk 20, FreePBX 17 (gen3) / FreePBX 16 (gen2), AvantFax, and 33 management tools. Designed for self-hosted, SMB, and enterprise use.
 
-**Version:** 2.0 &nbsp;|&nbsp; **Asterisk:** 20 &nbsp;|&nbsp; **FreePBX:** 16
+**Asterisk:** 20 &nbsp;|&nbsp; **FreePBX:** 17 (modern distros) / 16 (legacy distros)
 
 ---
 
@@ -123,16 +123,16 @@ Derivative distributions are auto-detected via `ID_LIKE` (Mint, Pop!_OS, CentOS 
 
 ### Version Matrix
 
-| Distribution | Asterisk | FreePBX | PHP |
-|---|---|---|---|
-| RHEL/Alma/Rocky 9, Ubuntu 22+, Debian 12 | **20** | **16** | 7.4 |
-| RHEL/Alma/Rocky 8, Ubuntu 20, Debian 11 | 20 | 16 | 7.4 |
-| CentOS 7 | 20 | 16 | 7.4 (Remi) |
-| CentOS 6 (legacy) | 18 LTS | 15 | 7.4 (Remi SCL) |
+| Distribution (gen) | Asterisk | FreePBX | PHP (primary) | PHP (AvantFax) |
+|---|---|---|---|---|
+| RHEL/Alma/Rocky 9+, Ubuntu 22.04+, Debian 12+ (gen3) | **20** | **17.0** | **8.2** | 7.4 |
+| RHEL/Alma/Rocky 8, Ubuntu 20.04, Debian 11 (gen2) | 20 | 16.0 | 7.4 | 7.4 |
+| CentOS 7 (gen2) | 20 | 16.0 | 7.4 (Remi) | 7.4 |
+| CentOS 6 (gen1, legacy) | 18 LTS | 15 | 7.4 (Remi SCL) | 7.4 |
 
-PHP 7.4 is the primary runtime for both FreePBX and AvantFax. The installer does not intentionally install PHP 8+.
+Gen3 distros run FreePBX 17 with PHP 8.2 as the primary FPM pool. PHP 7.4 is installed as a secondary pool exclusively for AvantFax. Gen2 and gen1 distros use PHP 7.4 throughout.
 
-Ubuntu 18.04 and Debian 10 are no longer included because their upstream PHP 7.4 repositories no longer publish the package set required by the current installer.
+Ubuntu 18.04 and Debian 10 are no longer supported because their upstream repositories no longer publish the package set required by the current installer.
 
 ### System Requirements
 - Fresh OS installation (no existing web or database services)

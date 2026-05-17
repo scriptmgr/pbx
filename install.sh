@@ -5867,6 +5867,21 @@ IPTEOF
 # =============================================================================
 
 configure_ipv6() {
+    # Determine whether IPv6 is actually present on this host using addresses
+    # already detected during OS detection, with a /proc fallback so the
+    # function remains correct if called outside the main install flow.
+    # Loopback-only (::1) is not counted as "having IPv6".
+    local _has_ipv6=0
+    if [ -n "${PRIMARY_IP6:-}${PUBLIC_IP6:-}${PRIVATE_IP6:-}" ]; then
+        _has_ipv6=1
+    elif [ -f /proc/net/if_inet6 ]; then
+        # Each line in /proc/net/if_inet6 is a 32-hex-char address; ::1 encodes
+        # as 00000000000000000000000000000001 — skip it.
+        if grep -qv "^00000000000000000000000000000001" /proc/net/if_inet6 2>/dev/null; then
+            _has_ipv6=1
+        fi
+    fi
+
     if [ "${DISABLE_IPV6:-no}" = "yes" ]; then
         step "Disabling IPv6 (DISABLE_IPV6=yes)..."
 
@@ -5886,8 +5901,13 @@ SYSCTLEOF
         return 0
     fi
 
-    info "Leaving IPv6 enabled (default) for dual-stack support"
-    command_exists postconf && postconf -e "inet_protocols = all" 2>/dev/null || true
+    if [ "${_has_ipv6}" = "1" ]; then
+        info "IPv6 detected — configuring services for dual-stack"
+        command_exists postconf && postconf -e "inet_protocols = all" 2>/dev/null || true
+    else
+        info "No IPv6 addresses detected — services configured for IPv4 only"
+        command_exists postconf && postconf -e "inet_protocols = ipv4" 2>/dev/null || true
+    fi
 }
 
 # =============================================================================
