@@ -4134,7 +4134,7 @@ NATEOF
     ensure_freepbx_manager_credentials || warn "Failed to sync FreePBX manager credentials"
     fwconsole setting FREEPBX_SYSTEM_IDENT "${FROM_NAME}" 2>/dev/null || true
     fwconsole setting DASHBOARD_FREEPBX_BRAND "${FROM_NAME}" 2>/dev/null || true
-    fwconsole setting TIMEZONE "${TIMEZONE:-America/New_York}" 2>/dev/null || true
+    fwconsole setting TIMEZONE "${TIMEZONE:-America/New_York}" > /dev/null 2>&1 || true
     fwconsole setting RSSFEEDS "" 2>/dev/null || true
     fwconsole setting BROWSER_STATS 0 2>/dev/null || true
 
@@ -6213,11 +6213,11 @@ install_sngrep() {
     if ! command_exists sngrep; then
         case "${DISTRO_FAMILY}" in
             rhel|fedora)
-                # GitHub source archive lacks generated ./configure — need autotools + autoreconf
-                pkg_install_one_by_one autoconf automake libtool libpcap-devel
+                # GitHub source archive uses cmake (no generated ./configure)
+                pkg_install_one_by_one cmake libpcap-devel
                 cd "${WORK_DIR}"
                 download_file \
-                    "https://github.com/irontec/sngrep/releases/download/v1.8.1/sngrep-1.8.1.tar.gz" \
+                    "https://github.com/irontec/sngrep/releases/download/v1.8.3/sngrep-1.8.3.tar.gz" \
                     sngrep.tar.gz 60 2>/dev/null || true
                 if [ -f sngrep.tar.gz ]; then
                     tar -xzf sngrep.tar.gz >> "${LOG_FILE}" 2>&1
@@ -6225,9 +6225,8 @@ install_sngrep() {
                     sdir=$(ls -d "${WORK_DIR}"/sngrep-*/ 2>/dev/null | head -1 || true)
                     if [ -d "${sdir:-}" ]; then
                         cd "${sdir}"
-                        run_logged "sngrep: autoreconf" autoreconf -i || true
-                        run_logged "sngrep: configure" ./configure --with-openssl || true
-                        run_logged "sngrep: build+install" bash -c "make -j$(nproc) && make install" || \
+                        run_logged "sngrep: cmake configure" cmake -DWITH_OPENSSL=ON -B build . || true
+                        run_logged "sngrep: build+install" bash -c "cmake --build build -j$(nproc) && cmake --install build" || \
                             warn "sngrep build failed"
                     fi
                 fi
@@ -7735,7 +7734,7 @@ show_completion_message() {
     echo "    *43  Echo test        *610 Music on hold  4747 Lenny bot"
     echo "    *41  Caller ID        *97  Voicemail      *469 Conference 1"
     echo ""
-    echo "${YELLOW}  ⚠️  Change default passwords before production use!${NC}"
+    echo "${YELLOW}  ⚠️  Credentials saved to /etc/pbx/pbx_passwords — review before exposing to the internet.${NC}"
     echo "${YELLOW}  ⚠️  Review firewall rules for your network topology.${NC}"
     echo ""
     echo "${GREEN}  Installation log: ${LOG_FILE}${NC}"

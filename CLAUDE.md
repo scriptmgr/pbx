@@ -300,6 +300,11 @@ Set `BEHIND_PROXY=yes` before installation to:
 4. **unixODBC-devel** — Capital ODBC on RHEL ✅
 5. **AvantFax source** — SourceForge v3.4.1 (GitHub 404) ✅
 
+### Known Non-Issues (Do Not Fix)
+1. **npm CVE warnings in FreePBX UCP / pm2** — FreePBX bundles its own npm packages (`/var/www/html/admin/assets/js/`, UCP node_modules, pm2). These report upstream CVEs that are **not fixable by the installer**. They are transitive deps of FreePBX's own codebase; fixing them would require upstream FreePBX patches. `npm audit` reports are expected — do not treat as install failures.
+2. **`fwconsole setting TIMEZONE` output** — FreePBX 17 removed the TIMEZONE setting key. The call emits "The setting TIMEZONE was not found!" to stdout but is harmless; timezone is correctly applied via `timedatectl`, `php.ini` date.timezone, and Asterisk dialplan. Suppressed with `> /dev/null 2>&1`.
+3. **Credential banner** — Passwords are randomly generated per install and saved to `/etc/pbx/pbx_passwords` and `/etc/pbx/.env`. They are preserved across re-runs. The banner reminds admins to review them before internet exposure — not to "change defaults".
+
 ## 📝 Development Guidelines
 
 ### Adding New Features
