@@ -1,9 +1,35 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# shellcheck shell=bash
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+##@Version           :  202605191156-git
+# @@Author           :  Jason Hempstead
+# @@Contact          :  git-admin@casjaysdev.pro
+# @@License          :  MIT or LICENSE.md
+# @@ReadME           :  pbx-docs --help | README.md
+# @@Copyright        :  Copyright: (c) 2026 Jason Hempstead, Casjays Developments
+# @@Created          :  Tuesday, May 19, 2026 11:56 EDT
+# @@File             :  pbx-docs
+# @@Description      :  Documentation and quick reference for the PBX system.
+# @@Changelog        :  Add compliant script header; fix convention violations
+# @@TODO             :
+# @@Other            :
+# @@Resource         :
+# @@Terminal App     :  yes
+# @@sudo/root        :  yes
+# @@Template         :  shell/bash
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+# shellcheck disable=SC1001,SC1003,SC2001,SC2003,SC2016,SC2031,SC2090,SC2115,SC2120,SC2155,SC2199,SC2229,SC2317,SC2329
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+VERSION="202605191156-git"
+APPNAME="${0##*/}"
+RUN_USER="${USER}"
+SET_UID="${UID}"
+SCRIPT_SRC_DIR="${BASH_SOURCE%/*}"
+# - - - - - - - - - - - - - - - - - - - - - - - - -
 set -euo pipefail
 
-SCRIPT_VERSION="${SCRIPT_VERSION:-3.0}"
 case "${1:-}" in
-    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${SCRIPT_VERSION}"; exit 0 ;;
+    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${VERSION}"; exit 0 ;;
 esac
 if [ -n "${NO_COLOR+x}" ] || [ ! -t 1 ] || [ "${TERM:-}" = "dumb" ] || [ "${CI:-}" = "true" ]; then
     RED=""; GREEN=""; YELLOW=""; BLUE=""; CYAN=""; BOLD=""; NC=""
@@ -97,7 +123,7 @@ show_urls() {
     printf "  UCP Portal     : %s://%s/ucp/\n" "${_scheme}" "${DISP}"
     [ -n "${WEBMIN_PORT:-}" ] && printf "  Webmin         : https://%s:%s/\n" "${DISP}" "$WEBMIN_PORT"
     hdr "Admin Credentials"
-    [ -f /etc/pbx/pbx_passwords ] && grep -E "^FREEPBX_ADMIN" /etc/pbx/pbx_passwords | head -1 || \
+    [ -f /etc/pbx/pbx_passwords ] && grep -E -- "^FREEPBX_ADMIN" /etc/pbx/pbx_passwords | head -1 || \
         info "Credentials in /etc/pbx/pbx_passwords"
 }
 
@@ -120,3 +146,4 @@ case "${1:-}" in
         show_extensions; echo ""
         show_scripts ;;
 esac
+# ex: ts=2 sw=2 et filetype=sh

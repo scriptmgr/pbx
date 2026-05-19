@@ -1,9 +1,35 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# shellcheck shell=bash
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+##@Version           :  202605191156-git
+# @@Author           :  Jason Hempstead
+# @@Contact          :  git-admin@casjaysdev.pro
+# @@License          :  MIT or LICENSE.md
+# @@ReadME           :  pbx-ssl --help | README.md
+# @@Copyright        :  Copyright: (c) 2026 Jason Hempstead, Casjays Developments
+# @@Created          :  Tuesday, May 19, 2026 11:56 EDT
+# @@File             :  pbx-ssl
+# @@Description      :  SSL certificate management for Let's Encrypt installation, renewal, self-signed generation, and status.
+# @@Changelog        :  Add compliant script header; fix convention violations
+# @@TODO             :
+# @@Other            :
+# @@Resource         :
+# @@Terminal App     :  yes
+# @@sudo/root        :  yes
+# @@Template         :  shell/bash
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+# shellcheck disable=SC1001,SC1003,SC2001,SC2003,SC2016,SC2031,SC2090,SC2115,SC2120,SC2155,SC2199,SC2229,SC2317,SC2329
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+VERSION="202605191156-git"
+APPNAME="${0##*/}"
+RUN_USER="${USER}"
+SET_UID="${UID}"
+SCRIPT_SRC_DIR="${BASH_SOURCE%/*}"
+# - - - - - - - - - - - - - - - - - - - - - - - - -
 set -euo pipefail
 
-SCRIPT_VERSION="${SCRIPT_VERSION:-3.0}"
 case "${1:-}" in
-    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${SCRIPT_VERSION}"; exit 0 ;;
+    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${VERSION}"; exit 0 ;;
 esac
 if [ -n "${NO_COLOR+x}" ] || [ ! -t 1 ] || [ "${TERM:-}" = "dumb" ] || [ "${CI:-}" = "true" ]; then
     RED=""; GREEN=""; YELLOW=""; BLUE=""; CYAN=""; BOLD=""; NC=""
@@ -89,10 +115,10 @@ case "${1:-}" in
     --status)
         hdr "SSL Connection Test"
         if command -v openssl >/dev/null 2>&1; then
-            echo | timeout 5 openssl s_client -connect localhost:443 2>&1 | grep -E "subject|issuer|verify" \
+            echo | timeout 5 openssl s_client -connect localhost:443 2>&1 | grep -E -- "subject|issuer|verify" \
                 || warn "Could not connect to HTTPS on localhost"
         elif command -v curl >/dev/null 2>&1; then
-            curl -vI https://localhost/ 2>&1 | grep -i ssl || warn "SSL test inconclusive"
+            curl -vI https://localhost/ 2>&1 | grep -i -- ssl || warn "SSL test inconclusive"
         fi ;;
     *)
         hdr "Certificate Status"
@@ -114,3 +140,4 @@ case "${1:-}" in
             warn "Asterisk keys directory not found"
         fi ;;
 esac
+# ex: ts=2 sw=2 et filetype=sh

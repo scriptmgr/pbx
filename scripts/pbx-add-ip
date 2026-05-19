@@ -1,10 +1,35 @@
-#!/bin/bash
-# pbx-add-ip - Add IP to firewall whitelist
+#!/usr/bin/env bash
+# shellcheck shell=bash
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+##@Version           :  202605191156-git
+# @@Author           :  Jason Hempstead
+# @@Contact          :  git-admin@casjaysdev.pro
+# @@License          :  MIT or LICENSE.md
+# @@ReadME           :  pbx-add-ip --help | README.md
+# @@Copyright        :  Copyright: (c) 2026 Jason Hempstead, Casjays Developments
+# @@Created          :  Tuesday, May 19, 2026 11:56 EDT
+# @@File             :  pbx-add-ip
+# @@Description      :  Add an IP address to the PBX firewall whitelist.
+# @@Changelog        :  Add compliant script header; fix convention violations
+# @@TODO             :
+# @@Other            :
+# @@Resource         :
+# @@Terminal App     :  yes
+# @@sudo/root        :  yes
+# @@Template         :  shell/bash
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+# shellcheck disable=SC1001,SC1003,SC2001,SC2003,SC2016,SC2031,SC2090,SC2115,SC2120,SC2155,SC2199,SC2229,SC2317,SC2329
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+VERSION="202605191156-git"
+APPNAME="${0##*/}"
+RUN_USER="${USER}"
+SET_UID="${UID}"
+SCRIPT_SRC_DIR="${BASH_SOURCE%/*}"
+# - - - - - - - - - - - - - - - - - - - - - - - - -
 set -euo pipefail
 
-SCRIPT_VERSION="${SCRIPT_VERSION:-3.0}"
 case "${1:-}" in
-    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${SCRIPT_VERSION}"; exit 0 ;;
+    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${VERSION}"; exit 0 ;;
 esac
 
 if [ -n "${NO_COLOR+x}" ] || [ ! -t 1 ] || [ "${TERM:-}" = "dumb" ] || [ "${CI:-}" = "true" ]; then
@@ -46,7 +71,7 @@ usage() {
     exit 0
 }
 
-validate_ip() {
+__validate_ip() {
     local ip="$1" stripped oct1 oct2 oct3 oct4
     # Accept IPv4 or IPv4/CIDR
     case "$ip" in
@@ -66,11 +91,11 @@ EOF
     return 0
 }
 
-get_client_ip() {
+__get_client_ip() {
     printf '%s' "${SSH_CLIENT%% *}" 2>/dev/null || true
 }
 
-add_iptables_rule() {
+__add_iptables_rule() {
     local ip="$1" comment="$2"
     if iptables -C INPUT -s "$ip" -j ACCEPT 2>/dev/null; then
         info "iptables rule for $ip already exists"
@@ -85,7 +110,7 @@ add_iptables_rule() {
 }
 
 # Persist current iptables ruleset across reboots.
-persist_iptables() {
+__persist_iptables() {
     command -v iptables >/dev/null 2>&1 || return 0
     if command -v netfilter-persistent >/dev/null 2>&1; then
         netfilter-persistent save >/dev/null 2>&1 && return 0
@@ -103,10 +128,10 @@ persist_iptables() {
     return 1
 }
 
-save_to_whitelist() {
+__save_to_whitelist() {
     local ip="$1" comment="$2"
     mkdir -p "$(dirname "$WHITELIST_FILE")"
-    if [ -f "$WHITELIST_FILE" ] && grep -q "^${ip}[[:space:]]" "$WHITELIST_FILE" 2>/dev/null; then
+    if [ -f "$WHITELIST_FILE" ] && grep -q -- "^${ip}[[:space:]]" "$WHITELIST_FILE" 2>/dev/null; then
         info "Already in whitelist: $ip"
         return 0
     fi
@@ -114,7 +139,7 @@ save_to_whitelist() {
     ok "Saved to whitelist: $WHITELIST_FILE"
 }
 
-cmd_list() {
+__cmd_list() {
     hdr "Whitelist (${WHITELIST_FILE})"
     if [ -f "$WHITELIST_FILE" ]; then
         printf "  %-20s %s\n" "IP/Range" "Comment"
@@ -130,33 +155,34 @@ cmd_list() {
     fi
     printf "\n"
     hdr "Active iptables ACCEPT rules"
-    iptables -L INPUT -n 2>/dev/null | grep ACCEPT | grep -v "state\|loopback" \
+    iptables -L INPUT -n 2>/dev/null | grep -- ACCEPT | grep -v -- "state\|loopback" \
         | sed 's/^/  /' | head -20 || info "(iptables not available)"
     printf "\n"
 }
 
 case "${1:-}" in
     --help|-h) usage ;;
-    --list)    cmd_list; exit 0 ;;
+    --list)    __cmd_list; exit 0 ;;
     "")        err "IP address required"; usage ;;
 esac
 
 ip="$1"
 comment="${2:-manual}"
 
-if ! validate_ip "$ip"; then
+if ! __validate_ip "$ip"; then
     err "Invalid IP address or CIDR: $ip"
     err "Use format: 1.2.3.4 or 1.2.3.0/24"
     exit 1
 fi
 
-client_ip=$(get_client_ip)
+client_ip=$(__get_client_ip)
 [ -n "$client_ip" ] && info "Your current SSH client IP: $client_ip"
 
 ssh_port=$(cat "$SSH_PORT_FILE" 2>/dev/null || printf '22')
 info "SSH port ($ssh_port) will remain open regardless"
 
-add_iptables_rule "$ip" "$comment"
-save_to_whitelist "$ip" "$comment"
-persist_iptables && ok "iptables ruleset persisted across reboot" \
+__add_iptables_rule "$ip" "$comment"
+__save_to_whitelist "$ip" "$comment"
+__persist_iptables && ok "iptables ruleset persisted across reboot" \
                   || warn "Could not persist iptables — run 'pbx-firewall --save' manually"
+# ex: ts=2 sw=2 et filetype=sh

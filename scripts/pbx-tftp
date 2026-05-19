@@ -1,11 +1,37 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# shellcheck shell=bash
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+##@Version           :  202605191156-git
+# @@Author           :  Jason Hempstead
+# @@Contact          :  git-admin@casjaysdev.pro
+# @@License          :  MIT or LICENSE.md
+# @@ReadME           :  pbx-tftp --help | README.md
+# @@Copyright        :  Copyright: (c) 2026 Jason Hempstead, Casjays Developments
+# @@Created          :  Tuesday, May 19, 2026 11:56 EDT
+# @@File             :  pbx-tftp
+# @@Description      :  Manage the PBX TFTP server for phone provisioning
+# @@Changelog        :  Add compliant script header; fix convention violations
+# @@TODO             :
+# @@Other            :
+# @@Resource         :
+# @@Terminal App     :  yes
+# @@sudo/root        :  yes
+# @@Template         :  shell/bash
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+# shellcheck disable=SC1001,SC1003,SC2001,SC2003,SC2016,SC2031,SC2090,SC2115,SC2120,SC2155,SC2199,SC2229,SC2317,SC2329
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+VERSION="202605191156-git"
+APPNAME="${0##*/}"
+RUN_USER="${USER}"
+SET_UID="${UID}"
+SCRIPT_SRC_DIR="${BASH_SOURCE%/*}"
+# - - - - - - - - - - - - - - - - - - - - - - - - -
 # pbx-tftp — Manage the PBX TFTP server for phone provisioning
 # Usage: pbx-tftp [status|start|stop|restart|list|add-device|set-server|--help]
 set -euo pipefail
 
-SCRIPT_VERSION="${SCRIPT_VERSION:-3.0}"
 case "${1:-}" in
-    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${SCRIPT_VERSION}"; exit 0 ;;
+    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${VERSION}"; exit 0 ;;
 esac
 
 # ---------------------------------------------------------------------------
@@ -233,7 +259,7 @@ cmd_set_server() {
     hdr "Updating PBX server IP to ${new_ip} in all TFTP templates"
     local updated=0
     while IFS= read -r -d '' f; do
-        if grep -qE 'PBX_IP|sip_server.*address|reg\.1\.server|<P35>' "${f}" 2>/dev/null; then
+        if grep -qE -- 'PBX_IP|sip_server.*address|reg\.1\.server|<P35>' "${f}" 2>/dev/null; then
             sed -i "s|${PRIMARY_IP}|${new_ip}|g; s|PBX_IP|${new_ip}|g" "${f}" 2>/dev/null && \
                 ok "  Updated: ${f#${TFTP_ROOT}/}" && updated=$((updated+1)) || true
         fi
@@ -299,3 +325,4 @@ case "${CMD}" in
         exit 1
         ;;
 esac
+# ex: ts=2 sw=2 et filetype=sh

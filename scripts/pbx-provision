@@ -1,10 +1,35 @@
-#!/bin/bash
-# PBX Phone Provisioning Manager
+#!/usr/bin/env bash
+# shellcheck shell=bash
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+##@Version           :  202605191156-git
+# @@Author           :  Jason Hempstead
+# @@Contact          :  git-admin@casjaysdev.pro
+# @@License          :  MIT or LICENSE.md
+# @@ReadME           :  pbx-provision --help | README.md
+# @@Copyright        :  Copyright: (c) 2026 Jason Hempstead, Casjays Developments
+# @@Created          :  Tuesday, May 19, 2026 11:56 EDT
+# @@File             :  pbx-provision
+# @@Description      :  Manage phone provisioning via TFTP and HTTP
+# @@Changelog        :  Add compliant script header; fix convention violations
+# @@TODO             :
+# @@Other            :
+# @@Resource         :
+# @@Terminal App     :  yes
+# @@sudo/root        :  yes
+# @@Template         :  shell/bash
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+# shellcheck disable=SC1001,SC1003,SC2001,SC2003,SC2016,SC2031,SC2090,SC2115,SC2120,SC2155,SC2199,SC2229,SC2317,SC2329
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+VERSION="202605191156-git"
+APPNAME="${0##*/}"
+RUN_USER="${USER}"
+SET_UID="${UID}"
+SCRIPT_SRC_DIR="${BASH_SOURCE%/*}"
+# - - - - - - - - - - - - - - - - - - - - - - - - -
 set -euo pipefail
 
-SCRIPT_VERSION="${SCRIPT_VERSION:-3.0}"
 case "${1:-}" in
-    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${SCRIPT_VERSION}"; exit 0 ;;
+    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${VERSION}"; exit 0 ;;
 esac
 
 if [ -n "${NO_COLOR+x}" ] || [ ! -t 1 ] || [ "${TERM:-}" = "dumb" ] || [ "${CI:-}" = "true" ]; then
@@ -26,28 +51,28 @@ hdr()  { printf "\n${BOLD}%s${NC}\n" "$*"; }
     MYSQL_ROOT_PASSWORD=$(tr -d '\r\n' < "${MYSQL_ROOT_PASSWORD_FILE}" 2>/dev/null)
 [ "$(id -u)" -ne 0 ] && { err "Must run as root"; exit 1; }
 
-unit_exists() {
+__unit_exists() {
     command -v systemctl >/dev/null 2>&1 || return 1
     local state
     state=$(systemctl show -p LoadState --value "$1" 2>/dev/null || true)
     [ -n "${state}" ] && [ "${state}" != "not-found" ]
 }
 
-detect_tftp_unit() {
+__detect_tftp_unit() {
     local unit
     if ! command -v systemctl >/dev/null 2>&1; then
         [ -x /etc/init.d/xinetd ] && { printf 'xinetd'; return 0; }
         [ -x /etc/init.d/tftp ] && { printf 'tftp'; return 0; }
     fi
     for unit in tftpd-hpa tftp.socket tftp xinetd; do
-        unit_exists "${unit}" && { printf '%s' "${unit}"; return 0; }
+        __unit_exists "${unit}" && { printf '%s' "${unit}"; return 0; }
     done
     printf 'tftp'
 }
 
-TFTP_SVC="$(detect_tftp_unit)"
+TFTP_SVC="$(__detect_tftp_unit)"
 
-svc_manage() {
+__svc_manage() {
     local action="$1"
     if command -v systemctl >/dev/null 2>&1; then
         systemctl "${action}" "${TFTP_SVC}" 2>/dev/null
@@ -56,7 +81,7 @@ svc_manage() {
     fi
 }
 
-tftp_running() {
+__tftp_running() {
     local state
     if command -v systemctl >/dev/null 2>&1; then
         state=$(systemctl is-active "${TFTP_SVC}" 2>/dev/null || true)
@@ -92,7 +117,7 @@ usage() {
     exit 0
 }
 
-show_status() {
+__show_status() {
     hdr "Phone Provisioning"
     printf "  TFTP root : %s\n" "$TFTP_ROOT"
     printf "  HTTP root : %s\n" "$HTTP_ROOT"
@@ -100,7 +125,7 @@ show_status() {
     printf "  TFTP URL  : tftp://%s/\n" "$PBX_IP"
     echo ""
     # Check TFTP service
-    if tftp_running; then
+    if __tftp_running; then
         ok "TFTP service is running (${TFTP_SVC})"
     else
         warn "TFTP service not running (${TFTP_SVC}) — run: pbx-provision --setup"
@@ -118,7 +143,7 @@ show_status() {
     printf "  Grandstream: Set config server to http://%s/provisioning/\n" "$PBX_IP"
 }
 
-cmd_setup() {
+__cmd_setup() {
     hdr "Setting up provisioning directories"
     mkdir -p "$TFTP_ROOT" "$HTTP_ROOT"
     chmod 755 "$TFTP_ROOT" "$HTTP_ROOT"
@@ -147,19 +172,19 @@ YLINK
     # Enable TFTP if xinetd is installed
     if [ "${TFTP_SVC}" = "xinetd" ] && command -v xinetd >/dev/null 2>&1 && [ -f /etc/xinetd.d/tftp ]; then
         sed -i 's/disable.*=.*yes/disable = no/' /etc/xinetd.d/tftp 2>/dev/null || true
-        svc_manage restart && ok "xinetd/TFTP restarted" || warn "Could not restart xinetd"
-    elif unit_exists "${TFTP_SVC}"; then
+        __svc_manage restart && ok "xinetd/TFTP restarted" || warn "Could not restart xinetd"
+    elif __unit_exists "${TFTP_SVC}"; then
         if command -v systemctl >/dev/null 2>&1; then
             systemctl enable --now "${TFTP_SVC}" 2>/dev/null && ok "${TFTP_SVC} enabled" || warn "Could not enable ${TFTP_SVC}"
         else
-            svc_manage start && ok "${TFTP_SVC} started" || warn "Could not start ${TFTP_SVC}"
+            __svc_manage start && ok "${TFTP_SVC} started" || warn "Could not start ${TFTP_SVC}"
         fi
     else
         warn "No TFTP server found — install tftp-server or tftpd-hpa"
     fi
 }
 
-cmd_yealink() {
+__cmd_yealink() {
     MAC="${1:-}"; EXT="${2:-}"
     [ -z "$MAC" ] || [ -z "$EXT" ] && {
         err "Usage: pbx-provision --yealink <MAC> <extension>"
@@ -201,7 +226,7 @@ YLINK
     info "Reboot phone or trigger auto-provision to apply"
 }
 
-cmd_list() {
+__cmd_list() {
     hdr "Provisioned Devices"
     if [ -d "$TFTP_ROOT" ]; then
         found=0
@@ -218,7 +243,7 @@ cmd_list() {
     fi
 }
 
-cmd_remove() {
+__cmd_remove() {
     MAC="${1:-}"
     [ -z "$MAC" ] && { err "Usage: pbx-provision --remove <MAC>"; exit 1; }
     MAC_NORM=$(printf '%s' "$MAC" | tr '[:upper:]' '[:lower:]' | tr -d ':- ')
@@ -234,14 +259,15 @@ cmd_remove() {
 
 case "${1:-}" in
     --help|-h) usage ;;
-    --setup)   cmd_setup ;;
-    --yealink) shift; cmd_yealink "$@" ;;
-    --list|list) cmd_list ;;
-    --remove)  shift; cmd_remove "$@" ;;
-    "")        show_status ;;
+    --setup)   __cmd_setup ;;
+    --yealink) shift; __cmd_yealink "$@" ;;
+    --list|list) __cmd_list ;;
+    --remove)  shift; __cmd_remove "$@" ;;
+    "")        __show_status ;;
     *)
         err "Unknown option: ${1}"
         printf "Run 'pbx-provision --help' for usage.\n" >&2
         exit 1
         ;;
 esac
+# ex: ts=2 sw=2 et filetype=sh

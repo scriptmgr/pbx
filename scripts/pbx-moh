@@ -1,9 +1,35 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# shellcheck shell=bash
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+##@Version           :  202605191156-git
+# @@Author           :  Jason Hempstead
+# @@Contact          :  git-admin@casjaysdev.pro
+# @@License          :  MIT or LICENSE.md
+# @@ReadME           :  pbx-moh --help | README.md
+# @@Copyright        :  Copyright: (c) 2026 Jason Hempstead, Casjays Developments
+# @@Created          :  Tuesday, May 19, 2026 11:56 EDT
+# @@File             :  pbx-moh
+# @@Description      :  Music on Hold management for the PBX system
+# @@Changelog        :  Add compliant script header; fix convention violations
+# @@TODO             :
+# @@Other            :
+# @@Resource         :
+# @@Terminal App     :  yes
+# @@sudo/root        :  yes
+# @@Template         :  shell/bash
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+# shellcheck disable=SC1001,SC1003,SC2001,SC2003,SC2016,SC2031,SC2090,SC2115,SC2120,SC2155,SC2199,SC2229,SC2317,SC2329
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+VERSION="202605191156-git"
+APPNAME="${0##*/}"
+RUN_USER="${USER}"
+SET_UID="${UID}"
+SCRIPT_SRC_DIR="${BASH_SOURCE%/*}"
+# - - - - - - - - - - - - - - - - - - - - - - - - -
 set -euo pipefail
 
-SCRIPT_VERSION="${SCRIPT_VERSION:-3.0}"
 case "${1:-}" in
-    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${SCRIPT_VERSION}"; exit 0 ;;
+    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${VERSION}"; exit 0 ;;
 esac
 if [ -n "${NO_COLOR+x}" ] || [ ! -t 1 ] || [ "${TERM:-}" = "dumb" ] || [ "${CI:-}" = "true" ]; then
     RED=""; GREEN=""; YELLOW=""; BLUE=""; CYAN=""; BOLD=""; NC=""
@@ -34,7 +60,7 @@ usage() {
   --version (alias: -V)  Show version\n"; exit 0
 }
 
-do_reload() {
+__do_reload() {
     command -v asterisk >/dev/null 2>&1 \
         && timeout 5 asterisk -rx "moh reload" 2>/dev/null && ok "MOH reloaded" \
         || warn "Could not reload MOH (Asterisk may not be running)"
@@ -64,21 +90,21 @@ case "${1:-}" in
         DEST_DIR="${MOH_DIR}/${CLASS}"
         mkdir -p "$DEST_DIR"
         FNAME=$(basename "$FILE")
-        if echo "$FNAME" | grep -qiE '\.(mp3|ogg|flac)$' && command -v sox >/dev/null 2>&1; then
+        if echo "$FNAME" | grep -qiE -- '\.(mp3|ogg|flac)$' && command -v sox >/dev/null 2>&1; then
             DEST="${DEST_DIR}/${FNAME%.*}.wav"
             sox "$FILE" -r 8000 -c 1 "$DEST" 2>/dev/null \
                 && ok "Converted and added: $(basename "$DEST")" || err "sox conversion failed"
         else
             cp "$FILE" "${DEST_DIR}/${FNAME}" && ok "Added: $FNAME to class ${CLASS}"
         fi
-        do_reload ;;
+        __do_reload ;;
     --play)
         CLASS="${2:-default}"
         command -v asterisk >/dev/null 2>&1 \
             && timeout 5 asterisk -rx "moh play ${CLASS}" 2>/dev/null \
             || warn "Could not play MOH (requires an active channel)"
         info "Note: moh play requires an active channel in Asterisk" ;;
-    --reload) do_reload ;;
+    --reload) __do_reload ;;
     --import)
         URL="${2:-}"; [ -z "$URL" ] && { err "--import requires a URL"; exit 1; }
         FNAME=$(basename "$URL" | sed 's/?.*//')
@@ -91,5 +117,6 @@ case "${1:-}" in
         else
             err "curl or wget required for --import"
         fi
-        do_reload ;;
+        __do_reload ;;
 esac
+# ex: ts=2 sw=2 et filetype=sh

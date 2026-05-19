@@ -1,10 +1,35 @@
-#!/bin/bash
-# PBX Backup Encryption Helper
+#!/usr/bin/env bash
+# shellcheck shell=bash
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+##@Version           :  202605191156-git
+# @@Author           :  Jason Hempstead
+# @@Contact          :  git-admin@casjaysdev.pro
+# @@License          :  MIT or LICENSE.md
+# @@ReadME           :  pbx-backup-encrypt --help | README.md
+# @@Copyright        :  Copyright: (c) 2026 Jason Hempstead, Casjays Developments
+# @@Created          :  Tuesday, May 19, 2026 11:56 EDT
+# @@File             :  pbx-backup-encrypt
+# @@Description      :  Manage GPG encryption for PBX backups.
+# @@Changelog        :  Add compliant script header; fix convention violations
+# @@TODO             :
+# @@Other            :
+# @@Resource         :
+# @@Terminal App     :  no
+# @@sudo/root        :  yes
+# @@Template         :  shell/bash
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+# shellcheck disable=SC1001,SC1003,SC2001,SC2003,SC2016,SC2031,SC2090,SC2115,SC2120,SC2155,SC2199,SC2229,SC2317,SC2329
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+VERSION="202605191156-git"
+APPNAME="${0##*/}"
+RUN_USER="${USER}"
+SET_UID="${UID}"
+SCRIPT_SRC_DIR="${BASH_SOURCE%/*}"
+# - - - - - - - - - - - - - - - - - - - - - - - - -
 set -euo pipefail
 
-SCRIPT_VERSION="${SCRIPT_VERSION:-3.0}"
 case "${1:-}" in
-    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${SCRIPT_VERSION}"; exit 0 ;;
+    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${VERSION}"; exit 0 ;;
 esac
 
 if [ -n "${NO_COLOR+x}" ] || [ ! -t 1 ] || [ "${TERM:-}" = "dumb" ] || [ "${CI:-}" = "true" ]; then
@@ -74,7 +99,7 @@ GPGBATCH
     fi
     rm -f "${BATCH_FILE}"
     KEY_ID=$(gpg --list-keys --with-colons 2>/dev/null \
-        | grep "^pub" | tail -1 | cut -d: -f5)
+        | grep -- "^pub" | tail -1 | cut -d: -f5)
     if [ -z "$KEY_ID" ]; then
         err "Could not retrieve generated key ID"
         exit 1
@@ -85,11 +110,11 @@ GPGBATCH
     # Store key ID in /etc/pbx/.env
     mkdir -p "${PBX_ETC_DIR}"
     if [ -f /etc/pbx/.env ]; then
-        grep -v "^BACKUP_GPG_KEY=" /etc/pbx/.env > /etc/pbx/.env.new 2>/dev/null \
+        grep -v -- "^BACKUP_GPG_KEY=" /etc/pbx/.env > /etc/pbx/.env.new 2>/dev/null \
             && mv /etc/pbx/.env.new /etc/pbx/.env || true
     fi
     printf "BACKUP_GPG_KEY=%s\n" "${KEY_ID}" >> /etc/pbx/.env
-    grep -q "^BACKUP_ENCRYPT=" /etc/pbx/.env 2>/dev/null || \
+    grep -q -- "^BACKUP_ENCRYPT=" /etc/pbx/.env 2>/dev/null || \
         printf "BACKUP_ENCRYPT=no\n" >> /etc/pbx/.env
     ok "Key ID ${KEY_ID} saved to /etc/pbx/.env"
     info "Set BACKUP_ENCRYPT=yes in /etc/pbx/.env to enable auto-encryption"
@@ -139,3 +164,4 @@ case "${1:-}" in
         exit 1
         ;;
 esac
+# ex: ts=2 sw=2 et filetype=sh

@@ -1,9 +1,35 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# shellcheck shell=bash
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+##@Version           :  202605191156-git
+# @@Author           :  Jason Hempstead
+# @@Contact          :  git-admin@casjaysdev.pro
+# @@License          :  MIT or LICENSE.md
+# @@ReadME           :  pbx-cdr --help | README.md
+# @@Copyright        :  Copyright: (c) 2026 Jason Hempstead, Casjays Developments
+# @@Created          :  Tuesday, May 19, 2026 11:56 EDT
+# @@File             :  pbx-cdr
+# @@Description      :  Call Detail Records management and reporting.
+# @@Changelog        :  Add compliant script header; fix convention violations
+# @@TODO             :
+# @@Other            :
+# @@Resource         :
+# @@Terminal App     :  yes
+# @@sudo/root        :  yes
+# @@Template         :  shell/bash
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+# shellcheck disable=SC1001,SC1003,SC2001,SC2003,SC2016,SC2031,SC2090,SC2115,SC2120,SC2155,SC2199,SC2229,SC2317,SC2329
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+VERSION="202605191156-git"
+APPNAME="${0##*/}"
+RUN_USER="${USER}"
+SET_UID="${UID}"
+SCRIPT_SRC_DIR="${BASH_SOURCE%/*}"
+# - - - - - - - - - - - - - - - - - - - - - - - - -
 set -euo pipefail
 
-SCRIPT_VERSION="${SCRIPT_VERSION:-3.0}"
 case "${1:-}" in
-    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${SCRIPT_VERSION}"; exit 0 ;;
+    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${VERSION}"; exit 0 ;;
 esac
 if [ -n "${NO_COLOR+x}" ] || [ ! -t 1 ] || [ "${TERM:-}" = "dumb" ] || [ "${CI:-}" = "true" ]; then
     RED=""; GREEN=""; YELLOW=""; BLUE=""; CYAN=""; BOLD=""; NC=""
@@ -36,16 +62,16 @@ usage() {
   --version (alias: -V)  Show version\n"; exit 0
 }
 
-check_cdr() {
+__check_cdr() {
     [ ! -f "$CDR_FILE" ] && { warn "CDR file not found: $CDR_FILE"; exit 0; }
 }
 
-print_header() {
+__print_header() {
     printf "%-12s %-15s %-15s %-20s %-8s %-12s\n" "Source" "Dest" "Context" "Start" "Dur(s)" "Status"
     printf "%s\n" "$(printf '─%.0s' {1..80})"
 }
 
-print_row() {
+__print_row() {
     IFS=, read -r acct src dst dctx clid chan dchan app data start ans end dur bill disp _rest <<< "$1"
     printf "%-12s %-15s %-15s %-20s %-8s %-12s\n" \
         "${src:-?}" "${dst:-?}" "${dctx:-?}" "${start:-?}" "${dur:-0}" "${disp:-?}"
@@ -54,47 +80,48 @@ print_row() {
 case "${1:-}" in
     --help|-h) usage ;;
     --today)
-        check_cdr
+        __check_cdr
         TODAY=$(date +"%Y-%m-%d")
         hdr "Calls Today (${TODAY})"
-        print_header
-        grep "$TODAY" "$CDR_FILE" 2>/dev/null | tail -50 | while IFS= read -r line; do print_row "$line"; done ;;
+        __print_header
+        grep -- "$TODAY" "$CDR_FILE" 2>/dev/null | tail -50 | while IFS= read -r line; do __print_row "$line"; done ;;
     --yesterday)
-        check_cdr
+        __check_cdr
         YEST=$(date -d yesterday +"%Y-%m-%d" 2>/dev/null || date -v-1d +"%Y-%m-%d" 2>/dev/null)
         hdr "Calls Yesterday (${YEST})"
-        print_header
-        grep "${YEST}" "$CDR_FILE" 2>/dev/null | tail -50 | while IFS= read -r line; do print_row "$line"; done ;;
+        __print_header
+        grep -- "${YEST}" "$CDR_FILE" 2>/dev/null | tail -50 | while IFS= read -r line; do __print_row "$line"; done ;;
     --search)
         NUM="${2:-}"; [ -z "$NUM" ] && { err "--search requires a NUMBER"; exit 1; }
-        check_cdr
+        __check_cdr
         hdr "CDR Search: ${NUM}"
-        print_header
-        grep "$NUM" "$CDR_FILE" 2>/dev/null | tail -30 | while IFS= read -r line; do print_row "$line"; done ;;
+        __print_header
+        grep -- "$NUM" "$CDR_FILE" 2>/dev/null | tail -30 | while IFS= read -r line; do __print_row "$line"; done ;;
     --stats)
-        check_cdr
+        __check_cdr
         hdr "CDR Statistics"
         TOTAL=$(wc -l < "$CDR_FILE" 2>/dev/null || echo 0)
-        ANSWERED=$(grep -c "ANSWERED" "$CDR_FILE" 2>/dev/null || echo 0)
-        FAILED=$(grep -c "FAILED\|NO ANSWER\|BUSY" "$CDR_FILE" 2>/dev/null || echo 0)
+        ANSWERED=$(grep -c -- "ANSWERED" "$CDR_FILE" 2>/dev/null || echo 0)
+        FAILED=$(grep -c -- "FAILED\|NO ANSWER\|BUSY" "$CDR_FILE" 2>/dev/null || echo 0)
         printf "  Total calls     : %s\n" "$TOTAL"
         printf "  Answered        : %s\n" "$ANSWERED"
         printf "  Failed/No Ans   : %s\n" "$FAILED"
         info "Calls by hour (today):"
         TODAY=$(date +"%Y-%m-%d")
-        grep "$TODAY" "$CDR_FILE" 2>/dev/null | cut -d, -f10 | cut -d' ' -f2 | cut -d: -f1 | \
+        grep -- "$TODAY" "$CDR_FILE" 2>/dev/null | cut -d, -f10 | cut -d' ' -f2 | cut -d: -f1 | \
             sort | uniq -c | sort -k2n | while read -r cnt hr; do
                 printf "  Hour %s: %s calls\n" "$hr" "$cnt"
             done ;;
     --export)
         OUTFILE="${2:-}"
         [ -z "$OUTFILE" ] && { err "--export requires a FILE path"; exit 1; }
-        check_cdr
+        __check_cdr
         cp "$CDR_FILE" "$OUTFILE" && ok "CDR exported to: $OUTFILE ($(wc -l < "$OUTFILE") records)" \
             || err "Export failed" ;;
     *)
-        check_cdr
+        __check_cdr
         hdr "Last 20 Calls"
-        print_header
-        tail -20 "$CDR_FILE" 2>/dev/null | while IFS= read -r line; do print_row "$line"; done ;;
+        __print_header
+        tail -20 "$CDR_FILE" 2>/dev/null | while IFS= read -r line; do __print_row "$line"; done ;;
 esac
+# ex: ts=2 sw=2 et filetype=sh

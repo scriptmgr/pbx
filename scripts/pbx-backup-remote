@@ -1,10 +1,35 @@
-#!/bin/bash
-# Sync PBX backups to remote storage via rclone
+#!/usr/bin/env bash
+# shellcheck shell=bash
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+##@Version           :  202605191156-git
+# @@Author           :  Jason Hempstead
+# @@Contact          :  git-admin@casjaysdev.pro
+# @@License          :  MIT or LICENSE.md
+# @@ReadME           :  pbx-backup-remote --help | README.md
+# @@Copyright        :  Copyright: (c) 2026 Jason Hempstead, Casjays Developments
+# @@Created          :  Tuesday, May 19, 2026 11:56 EDT
+# @@File             :  pbx-backup-remote
+# @@Description      :  Sync PBX backups to remote storage via rclone.
+# @@Changelog        :  Add compliant script header; fix convention violations
+# @@TODO             :
+# @@Other            :
+# @@Resource         :
+# @@Terminal App     :  no
+# @@sudo/root        :  yes
+# @@Template         :  shell/bash
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+# shellcheck disable=SC1001,SC1003,SC2001,SC2003,SC2016,SC2031,SC2090,SC2115,SC2120,SC2155,SC2199,SC2229,SC2317,SC2329
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+VERSION="202605191156-git"
+APPNAME="${0##*/}"
+RUN_USER="${USER}"
+SET_UID="${UID}"
+SCRIPT_SRC_DIR="${BASH_SOURCE%/*}"
+# - - - - - - - - - - - - - - - - - - - - - - - - -
 set -euo pipefail
 
-SCRIPT_VERSION="${SCRIPT_VERSION:-3.0}"
 case "${1:-}" in
-    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${SCRIPT_VERSION}"; exit 0 ;;
+    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${VERSION}"; exit 0 ;;
 esac
 
 if [ -n "${NO_COLOR+x}" ] || [ ! -t 1 ] || [ "${TERM:-}" = "dumb" ] || [ "${CI:-}" = "true" ]; then
@@ -44,7 +69,7 @@ usage() {
     exit 0
 }
 
-check_deps() {
+__check_deps() {
     command -v rclone >/dev/null 2>&1 || {
         err "rclone not found — install with: curl https://rclone.org/install.sh | bash"
         exit 1
@@ -54,7 +79,7 @@ check_deps() {
 case "${1:-}" in
     --help|-h) usage ;;
     --check)
-        check_deps
+        __check_deps
         hdr "rclone configuration check"
         REMOTE="${RCLONE_REMOTE:-}"
         [ -z "$REMOTE" ] && {
@@ -72,14 +97,14 @@ case "${1:-}" in
         fi
         ;;
     --list)
-        check_deps
+        __check_deps
         REMOTE="${RCLONE_REMOTE:-}"
         [ -z "$REMOTE" ] && { err "RCLONE_REMOTE not set in /etc/pbx/.env"; exit 1; }
         hdr "Remote files at ${REMOTE}/pbx-backups/"
         rclone ls "${REMOTE}/pbx-backups/" 2>/dev/null || warn "No remote files found"
         ;;
     "")
-        check_deps
+        __check_deps
         REMOTE="${RCLONE_REMOTE:-}"
         [ -z "$REMOTE" ] && {
             err "RCLONE_REMOTE not configured in /etc/pbx/.env"
@@ -108,3 +133,4 @@ case "${1:-}" in
         exit 1
         ;;
 esac
+# ex: ts=2 sw=2 et filetype=sh

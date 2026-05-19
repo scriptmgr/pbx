@@ -1,9 +1,35 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# shellcheck shell=bash
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+##@Version           :  202605191156-git
+# @@Author           :  Jason Hempstead
+# @@Contact          :  git-admin@casjaysdev.pro
+# @@License          :  MIT or LICENSE.md
+# @@ReadME           :  pbx-repair --help | README.md
+# @@Copyright        :  Copyright: (c) 2026 Jason Hempstead, Casjays Developments
+# @@Created          :  Tuesday, May 19, 2026 11:56 EDT
+# @@File             :  pbx-repair
+# @@Description      :  Run a FreePBX repair sequence including signature refresh, permission fix, reload, and restart.
+# @@Changelog        :  Add compliant script header; fix convention violations
+# @@TODO             :
+# @@Other            :
+# @@Resource         :
+# @@Terminal App     :  yes
+# @@sudo/root        :  yes
+# @@Template         :  shell/bash
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+# shellcheck disable=SC1001,SC1003,SC2001,SC2003,SC2016,SC2031,SC2090,SC2115,SC2120,SC2155,SC2199,SC2229,SC2317,SC2329
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+VERSION="202605191156-git"
+APPNAME="${0##*/}"
+RUN_USER="${USER}"
+SET_UID="${UID}"
+SCRIPT_SRC_DIR="${BASH_SOURCE%/*}"
+# - - - - - - - - - - - - - - - - - - - - - - - - -
 set -euo pipefail
 
-SCRIPT_VERSION="${SCRIPT_VERSION:-3.0}"
 case "${1:-}" in
-    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${SCRIPT_VERSION}"; exit 0 ;;
+    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${VERSION}"; exit 0 ;;
 esac
 if [ -n "${NO_COLOR+x}" ] || [ ! -t 1 ] || [ "${TERM:-}" = "dumb" ] || [ "${CI:-}" = "true" ]; then
     RED=""; GREEN=""; YELLOW=""; BLUE=""; CYAN=""; BOLD=""; NC=""
@@ -47,7 +73,7 @@ if [ "$CHECK" -eq 1 ]; then
             fi
         fi
     done
-    fwconsole ma list 2>/dev/null | grep -iE "broken|failed" && warn "Broken modules found" || ok "No broken FreePBX modules"
+    fwconsole ma list 2>/dev/null | grep -iE -- "broken|failed" && warn "Broken modules found" || ok "No broken FreePBX modules"
     if command -v asterisk >/dev/null 2>&1; then
         AMOD=$(asterisk -rx "module show" 2>/dev/null | tail -1)
         ok "Asterisk modules: $AMOD"
@@ -76,7 +102,7 @@ if command -v asterisk >/dev/null 2>&1; then
 fi
 
 hdr "Checking for broken modules"
-fwconsole ma list 2>/dev/null | grep -iE "broken|failed" || info "No broken modules found"
+fwconsole ma list 2>/dev/null | grep -iE -- "broken|failed" || info "No broken modules found"
 
 if [ "$DEEP" -eq 1 ]; then
     hdr "Upgrading all modules (--deep)"
@@ -87,10 +113,11 @@ if [ "$DEEP" -eq 1 ]; then
     if [ -d "$FPBX_DIR" ] && command -v php >/dev/null 2>&1; then
         info "Scanning $FPBX_DIR for PHP syntax errors..."
         find "$FPBX_DIR" -name "*.php" -print0 | \
-            xargs -0 -P4 php -l 2>&1 | grep -v "^No syntax errors" | grep -v "^$" \
+            xargs -0 -P4 php -l 2>&1 | grep -v -- "^No syntax errors" | grep -v -- "^$" \
             || info "No PHP syntax errors found"
     else
         warn "PHP or FreePBX admin directory not found"
     fi
 fi
 ok "Repair sequence complete"
+# ex: ts=2 sw=2 et filetype=sh

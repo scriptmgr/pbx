@@ -1,16 +1,35 @@
-#!/bin/bash
-# admin-pw-change — reset the FreePBX administrator password.
-#
-# Updates three places so /admin and /ucp + the saved env all stay in sync:
-#   1. ampusers (legacy admin login table)        — SHA1 hash
-#   2. userman_users (modern UCP/Userman record)  — bcrypt hash
-#   3. /etc/pbx/.env + /etc/pbx/pbx_passwords    — plain text (root-only)
-# Plus the Userman global flags (pbx_login, pbx_admin) so the user can sign in.
+#!/usr/bin/env bash
+# shellcheck shell=bash
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+##@Version           :  202605191156-git
+# @@Author           :  Jason Hempstead
+# @@Contact          :  git-admin@casjaysdev.pro
+# @@License          :  MIT or LICENSE.md
+# @@ReadME           :  admin-pw-change --help | README.md
+# @@Copyright        :  Copyright: (c) 2026 Jason Hempstead, Casjays Developments
+# @@Created          :  Tuesday, May 19, 2026 11:56 EDT
+# @@File             :  admin-pw-change
+# @@Description      :  Reset the FreePBX administrator password across ampusers, userman_users, and credential files.
+# @@Changelog        :  Add compliant script header; fix convention violations
+# @@TODO             :
+# @@Other            :
+# @@Resource         :
+# @@Terminal App     :  yes
+# @@sudo/root        :  yes
+# @@Template         :  shell/bash
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+# shellcheck disable=SC1001,SC1003,SC2001,SC2003,SC2016,SC2031,SC2090,SC2115,SC2120,SC2155,SC2199,SC2229,SC2317,SC2329
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+VERSION="202605191156-git"
+APPNAME="${0##*/}"
+RUN_USER="${USER}"
+SET_UID="${UID}"
+SCRIPT_SRC_DIR="${BASH_SOURCE%/*}"
+# - - - - - - - - - - - - - - - - - - - - - - - - -
 set -eu
 
-SCRIPT_VERSION="${SCRIPT_VERSION:-3.0}"
 case "${1:-}" in
-    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${SCRIPT_VERSION}"; exit 0 ;;
+    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${VERSION}"; exit 0 ;;
     --help|-h)
         printf "Usage: admin-pw-change\n\n"
         printf "Interactive: prompts for the new admin password.\n"
@@ -24,7 +43,7 @@ ENV_FILE="/etc/pbx/.env"
 PASSWORDS_FILE="/etc/pbx/pbx_passwords"
 FREEPBX_ADMIN_USERNAME="${FREEPBX_ADMIN_USERNAME:-administrator}"
 
-sql_escape() { printf '%s' "$1" | sed "s/'/''/g"; }
+__sql_escape() { printf '%s' "$1" | sed "s/'/''/g"; }
 
 [ -f "${ENV_FILE}" ] && . "${ENV_FILE}" 2>/dev/null || true
 ADMIN_EMAIL="${ADMIN_EMAIL:-admin@localhost}"
@@ -38,13 +57,13 @@ MYSQL_ROOT_PASSWORD=""
 [ -f "${MYSQL_ROOT_PASSWORD_FILE}" ] && \
     MYSQL_ROOT_PASSWORD=$(tr -d '\r\n' < "${MYSQL_ROOT_PASSWORD_FILE}")
 [ -z "${MYSQL_ROOT_PASSWORD}" ] && [ -f "${ENV_FILE}" ] && \
-    MYSQL_ROOT_PASSWORD=$(grep '^MYSQL_ROOT_PASSWORD=' "${ENV_FILE}" | cut -d= -f2- | tr -d '"')
+    MYSQL_ROOT_PASSWORD=$(grep -- '^MYSQL_ROOT_PASSWORD=' "${ENV_FILE}" | cut -d= -f2- | tr -d '"')
 
 # 1. ampusers — SHA1 hash, simple admin login table.
 if [ -n "${MYSQL_ROOT_PASSWORD}" ]; then
     PASS_HASH=$(printf '%s' "${PW}" | sha1sum | cut -d' ' -f1)
-    USER_SQL=$(sql_escape "${FREEPBX_ADMIN_USERNAME}")
-    EMAIL_SQL=$(sql_escape "${ADMIN_EMAIL}")
+    USER_SQL=$(__sql_escape "${FREEPBX_ADMIN_USERNAME}")
+    EMAIL_SQL=$(__sql_escape "${ADMIN_EMAIL}")
     mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk 2>/dev/null <<EOF || true
 INSERT INTO ampusers (username, email, password_sha1, extension_low, extension_high, deptname, sections)
 VALUES ('${USER_SQL}', '${EMAIL_SQL}', '${PASS_HASH}', '', '', '', 'all')
@@ -97,9 +116,9 @@ fi
 if [ -n "${MYSQL_ROOT_PASSWORD}" ]; then
     USERMAN_PW_HASH=$(php -r 'echo password_hash($argv[1], PASSWORD_BCRYPT);' "${PW}" 2>/dev/null || true)
     if [ -n "${USERMAN_PW_HASH}" ]; then
-        USER_SQL=$(sql_escape "${FREEPBX_ADMIN_USERNAME}")
-        EMAIL_SQL=$(sql_escape "${ADMIN_EMAIL}")
-        HASH_SQL=$(sql_escape "${USERMAN_PW_HASH}")
+        USER_SQL=$(__sql_escape "${FREEPBX_ADMIN_USERNAME}")
+        EMAIL_SQL=$(__sql_escape "${ADMIN_EMAIL}")
+        HASH_SQL=$(__sql_escape "${USERMAN_PW_HASH}")
         USERMAN_UID=$(mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk -Nse \
             "SELECT id FROM userman_users WHERE username='${USER_SQL}' ORDER BY id LIMIT 1" 2>/dev/null || true)
         if [ -n "${USERMAN_UID}" ]; then
@@ -141,14 +160,14 @@ fi
 # 3. Persisted plaintext copies (root-readable only) — used by other
 #    install-time tooling and for operator recovery.
 if [ -f "${ENV_FILE}" ]; then
-    if grep -q '^ADMIN_PASSWORD=' "${ENV_FILE}" 2>/dev/null; then
+    if grep -q -- '^ADMIN_PASSWORD=' "${ENV_FILE}" 2>/dev/null; then
         sed -i "s|^ADMIN_PASSWORD=.*|ADMIN_PASSWORD=\"${PW}\"|" "${ENV_FILE}"
     else
         printf 'ADMIN_PASSWORD="%s"\n' "${PW}" >> "${ENV_FILE}"
     fi
 fi
 if [ -f "${PASSWORDS_FILE}" ]; then
-    if grep -q '^ADMIN_PASSWORD=' "${PASSWORDS_FILE}" 2>/dev/null; then
+    if grep -q -- '^ADMIN_PASSWORD=' "${PASSWORDS_FILE}" 2>/dev/null; then
         sed -i "s|^ADMIN_PASSWORD=.*|ADMIN_PASSWORD=${PW}|" "${PASSWORDS_FILE}"
     else
         printf 'ADMIN_PASSWORD=%s\n' "${PW}" >> "${PASSWORDS_FILE}"
@@ -156,3 +175,4 @@ if [ -f "${PASSWORDS_FILE}" ]; then
 fi
 
 echo "Password updated"
+# ex: ts=2 sw=2 et filetype=sh

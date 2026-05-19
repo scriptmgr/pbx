@@ -1,10 +1,36 @@
 #!/usr/bin/env bash
+# shellcheck shell=bash
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+##@Version           :  202605191156-git
+# @@Author           :  Jason Hempstead
+# @@Contact          :  git-admin@casjaysdev.pro
+# @@License          :  MIT or LICENSE.md
+# @@ReadME           :  pbx-status --help | README.md
+# @@Copyright        :  Copyright: (c) 2026 Jason Hempstead, Casjays Developments
+# @@Created          :  Tuesday, May 19, 2026 11:56 EDT
+# @@File             :  pbx-status
+# @@Description      :  Display a formatted PBX system status dashboard with service health, active calls, endpoint counts, resource usage, and primary web URLs.
+# @@Changelog        :  Add compliant script header; fix convention violations
+# @@TODO             :
+# @@Other            :
+# @@Resource         :
+# @@Terminal App     :  yes
+# @@sudo/root        :  yes
+# @@Template         :  shell/bash
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+# shellcheck disable=SC1001,SC1003,SC2001,SC2003,SC2016,SC2031,SC2090,SC2115,SC2120,SC2155,SC2199,SC2229,SC2317,SC2329
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+VERSION="202605191156-git"
+APPNAME="${0##*/}"
+RUN_USER="${USER}"
+SET_UID="${UID}"
+SCRIPT_SRC_DIR="${BASH_SOURCE%/*}"
+# - - - - - - - - - - - - - - - - - - - - - - - - -
 # pbx-status — PBX system status dashboard
 set -euo pipefail
 
-SCRIPT_VERSION="${SCRIPT_VERSION:-3.0}"
 case "${1:-}" in
-    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${SCRIPT_VERSION}"; exit 0 ;;
+    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${VERSION}"; exit 0 ;;
 esac
 
 # ── Usage ──────────────────────────────────────────────────────────────────────
@@ -26,13 +52,13 @@ else
 fi
 
 # ── String / layout helpers ────────────────────────────────────────────────────
-_repeat() {                           # _repeat CHAR N → repeated string
+__repeat() {                           # __repeat CHAR N → repeated string
     local char="$1" n="$2" i=0 r=''
     while [ "$i" -lt "$n" ]; do r="${r}${char}"; i=$(( i + 1 )); done
     printf '%s' "$r"
 }
 
-_hr_bytes() {                         # _hr_bytes BYTES → human-readable size
+__hr_bytes() {                         # __hr_bytes BYTES → human-readable size
     awk -v b="$1" 'BEGIN{
         if      (b >= 1073741824) printf "%.1fG", b / 1073741824
         else if (b >= 1048576)    printf "%.1fM", b / 1048576
@@ -44,11 +70,11 @@ _hr_bytes() {                         # _hr_bytes BYTES → human-readable size
 COL=16   # label column width
 SRW=54   # section ruler inner width
 
-section() { printf '\n  %s%s%s\n  %s\n' "$BOLD" "$1" "$NC" "$(_repeat '─' "$SRW")"; }
+section() { printf '\n  %s%s%s\n  %s\n' "$BOLD" "$1" "$NC" "$(__repeat '─' "$SRW")"; }
 row()     { printf "  %-${COL}s %s\n" "$1" "$2"; }
 
 # ── Service badge ──────────────────────────────────────────────────────────────
-_badge() {
+__badge() {
     case "$1" in
         active)  printf '%s[  OK  ]%s' "$GREEN"  "$NC" ;;
         failed)  printf '%s[ FAIL ]%s' "$RED"    "$NC" ;;
@@ -63,10 +89,10 @@ _SOCKET_UNITS=$(systemctl list-unit-files --type=socket 2>/dev/null || true)
 svc_row() {
     local svc="$1" extra="${2:-}" state installed=0
     state=$(systemctl is-active "$svc" 2>/dev/null || true)
-    printf '%s\n' "$_UNITS" | grep -q "^${svc}\.service" && installed=1 || true
+    printf '%s\n' "$_UNITS" | grep -q -- "^${svc}\.service" && installed=1 || true
     # Skip silently if not installed and not running
     [ "$state" != "active" ] && [ "$installed" = "0" ] && return 0
-    local badge; badge=$(_badge "$state")
+    local badge; badge=$(__badge "$state")
     printf '  %-14s %s' "$svc" "$badge"
     [ -n "$extra" ] && printf '   %s' "$extra"
     printf '\n'
@@ -85,25 +111,25 @@ PUBLIC_IP="${PUBLIC_IP:-}"
 _web=''
 for _s in "${APACHE_SERVICE:-}" apache2 httpd; do
     [ -z "$_s" ] && continue
-    printf '%s\n' "$_UNITS" | grep -q "^${_s}\.service" && { _web="$_s"; break; } || true
+    printf '%s\n' "$_UNITS" | grep -q -- "^${_s}\.service" && { _web="$_s"; break; } || true
 done
 [ -z "$_web" ] && _web='httpd'
 
 # Detect PHP-FPM service name
 _fpm='php-fpm'
 for _s in php7.4-fpm php74-php-fpm php-fpm; do
-    printf '%s\n' "$_UNITS" | grep -q "^${_s}\.service" && { _fpm="$_s"; break; } || true
+    printf '%s\n' "$_UNITS" | grep -q -- "^${_s}\.service" && { _fpm="$_s"; break; } || true
 done
 
 # Detect TFTP service/socket name
 _tftp=''
-if printf '%s\n' "$_UNITS" | grep -q '^tftpd-hpa\.service'; then
+if printf '%s\n' "$_UNITS" | grep -q -- '^tftpd-hpa\.service'; then
     _tftp='tftpd-hpa'
-elif printf '%s\n' "$_SOCKET_UNITS" | grep -q '^tftp\.socket'; then
+elif printf '%s\n' "$_SOCKET_UNITS" | grep -q -- '^tftp\.socket'; then
     _tftp='tftp.socket'
-elif printf '%s\n' "$_UNITS" | grep -q '^tftp\.service'; then
+elif printf '%s\n' "$_UNITS" | grep -q -- '^tftp\.service'; then
     _tftp='tftp'
-elif printf '%s\n' "$_UNITS" | grep -q '^xinetd\.service'; then
+elif printf '%s\n' "$_UNITS" | grep -q -- '^xinetd\.service'; then
     _tftp='xinetd'
 fi
 
@@ -125,12 +151,12 @@ _mtk=$(awk '/^MemTotal:/{print $2}'     /proc/meminfo)
 _mak=$(awk '/^MemAvailable:/{print $2}' /proc/meminfo)
 _muk=$(( _mtk - _mak ))
 MEM_PCT=$(( _muk * 100 / _mtk ))
-MEM_STR="$(_hr_bytes $(( _muk * 1024 ))) used / $(_hr_bytes $(( _mtk * 1024 ))) total (${MEM_PCT}%)"
+MEM_STR="$(__hr_bytes $(( _muk * 1024 ))) used / $(__hr_bytes $(( _mtk * 1024 ))) total (${MEM_PCT}%)"
 
 # Disk (from df -B1 for exact byte counts)
 read -r _ _dtot _duse _ _ _ < <(df -B1 / 2>/dev/null | awk 'NR==2')
 DISK_PCT=$(( _duse * 100 / _dtot ))
-DISK_STR="$(_hr_bytes "$_duse") used / $(_hr_bytes "$_dtot") total (${DISK_PCT}%)"
+DISK_STR="$(__hr_bytes "$_duse") used / $(__hr_bytes "$_dtot") total (${DISK_PCT}%)"
 
 # IP addresses
 PRIV_IP4=$(ip -4 route get 8.8.8.8 2>/dev/null \
@@ -147,7 +173,7 @@ fi
 AST_VER='' CALLS=0 EP_CFG=0 EP_REG=0
 if command -v asterisk >/dev/null 2>&1; then
     _av=$(timeout 5 asterisk -rx 'core show version' 2>/dev/null || true)
-    AST_VER=$(printf '%s\n' "$_av" | grep -oE 'Asterisk [0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
+    AST_VER=$(printf '%s\n' "$_av" | grep -oE -- 'Asterisk [0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)
 
     _ac=$(timeout 5 asterisk -rx 'core show channels count' 2>/dev/null || true)
     CALLS=$(printf '%s\n' "$_ac" | awk '/active call/{print $1; exit}')
@@ -160,7 +186,7 @@ fi
 
 # ── Print dashboard ────────────────────────────────────────────────────────────
 TITLE="PBX System Status  —  ${HOSTNAME_FQDN}  —  ${DATE_STR}"
-HRULE="$(_repeat '═' $(( ${#TITLE} + 2 )))"
+HRULE="$(__repeat '═' $(( ${#TITLE} + 2 )))"
 
 printf '\n%s\n  %s%s%s\n%s\n' "$HRULE" "$BOLD" "$TITLE" "$NC" "$HRULE"
 
@@ -204,7 +230,7 @@ _scheme="http"
 row "FreePBX Admin" "${_scheme}://${_disp}/admin/"
 row "User Portal"   "${_scheme}://${_disp}/ucp/"
 row "AvantFax"      "${_scheme}://${_disp}/avantfax/"
-if printf '%s\n' "$_UNITS" | grep -q '^webmin\.service'; then
+if printf '%s\n' "$_UNITS" | grep -q -- '^webmin\.service'; then
     row "Webmin" "https://${_disp}:9001/"
 fi
 
@@ -212,7 +238,7 @@ fi
 section "RECENT LOG ERRORS  (last 5)"
 _astlog="/var/log/asterisk/full"
 if [ -f "$_astlog" ]; then
-    _errs=$(grep -iE '\[ERROR\]' "$_astlog" 2>/dev/null | tail -5 || true)
+    _errs=$(grep -iE -- '\[ERROR\]' "$_astlog" 2>/dev/null | tail -5 || true)
     if [ -n "$_errs" ]; then
         printf '%s\n' "$_errs" | while IFS= read -r _line; do
             printf '  %s%s%s\n' "$RED" "$_line" "$NC"
@@ -225,3 +251,4 @@ else
 fi
 
 printf '\n'
+# ex: ts=2 sw=2 et filetype=sh

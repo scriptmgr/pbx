@@ -1,6 +1,31 @@
-#!/bin/bash
-# FreePBX weekly auto-update with pre-update DB backup
-# Cron example: 0 3 * * 0 /usr/local/bin/pbx-autoupdate
+#!/usr/bin/env bash
+# shellcheck shell=bash
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+##@Version           :  202605191156-git
+# @@Author           :  Jason Hempstead
+# @@Contact          :  git-admin@casjaysdev.pro
+# @@License          :  MIT or LICENSE.md
+# @@ReadME           :  pbx-autoupdate --help | README.md
+# @@Copyright        :  Copyright: (c) 2026 Jason Hempstead, Casjays Developments
+# @@Created          :  Tuesday, May 19, 2026 11:56 EDT
+# @@File             :  pbx-autoupdate
+# @@Description      :  FreePBX weekly auto-update with pre-update database backup.
+# @@Changelog        :  Add compliant script header; fix convention violations
+# @@TODO             :
+# @@Other            :
+# @@Resource         :
+# @@Terminal App     :  no
+# @@sudo/root        :  yes
+# @@Template         :  shell/bash
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+# shellcheck disable=SC1001,SC1003,SC2001,SC2003,SC2016,SC2031,SC2090,SC2115,SC2120,SC2155,SC2199,SC2229,SC2317,SC2329
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+VERSION="202605191156-git"
+APPNAME="${0##*/}"
+RUN_USER="${USER}"
+SET_UID="${UID}"
+SCRIPT_SRC_DIR="${BASH_SOURCE%/*}"
+# - - - - - - - - - - - - - - - - - - - - - - - - -
 set -euo pipefail
 
 # /etc/cron.d entries run with a minimal PATH (/usr/bin:/bin) on most distros.
@@ -9,9 +34,8 @@ set -euo pipefail
 PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin${PATH:+:$PATH}"
 export PATH
 
-SCRIPT_VERSION="${SCRIPT_VERSION:-3.0}"
 case "${1:-}" in
-    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${SCRIPT_VERSION}"; exit 0 ;;
+    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${VERSION}"; exit 0 ;;
 esac
 
 if [ -n "${NO_COLOR+x}" ] || [ ! -t 1 ] || [ "${TERM:-}" = "dumb" ] || [ "${CI:-}" = "true" ]; then
@@ -39,7 +63,7 @@ RETAIN_DAYS="${AUTOUPDATE_RETAIN_DAYS:-28}"
 
 mkdir -p "$(dirname "$LOG")" "$BKDIR"
 
-log_raw() { printf "%s\n" "$*" | sed 's/\x1b\[[0-9;]*m//g' >> "${LOG}"; }
+__log_raw() { printf "%s\n" "$*" | sed 's/\x1b\[[0-9;]*m//g' >> "${LOG}"; }
 
 usage() {
     printf "Usage: pbx-autoupdate [--dry-run]\n\n"
@@ -55,7 +79,7 @@ DRY_RUN=0
 case "${1:-}" in --help|-h) usage ;; --dry-run) DRY_RUN=1 ;; esac
 
 DATE=$(date +%Y%m%d-%H%M%S)
-log_raw "=== Auto-update started: $(date) ==="
+__log_raw "=== Auto-update started: $(date) ==="
 
 hdr "Pre-update database backup"
 DB_BACKUP="${BKDIR}/pre-update-${DATE}.sql.gz"
@@ -65,7 +89,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
 else
     command -v mysqldump >/dev/null 2>&1 || {
         err "mysqldump not found"
-        log_raw "ERROR: mysqldump not found"
+        __log_raw "ERROR: mysqldump not found"
         exit 1
     }
     MOPTS=""
@@ -73,11 +97,11 @@ else
     # shellcheck disable=SC2086
     if mysqldump -u root $MOPTS --all-databases 2>/dev/null | gzip > "$DB_BACKUP"; then
         ok "DB backup: ${DB_BACKUP}"
-        log_raw "DB backup OK: ${DB_BACKUP}"
+        __log_raw "DB backup OK: ${DB_BACKUP}"
         sha256sum "$DB_BACKUP" > "${DB_BACKUP}.sha256" 2>/dev/null || true
     else
         err "DB backup FAILED — skipping module update"
-        log_raw "ERROR: DB backup FAILED — skipping update"
+        __log_raw "ERROR: DB backup FAILED — skipping update"
         exit 1
     fi
 fi
@@ -87,23 +111,23 @@ if command -v fwconsole >/dev/null 2>&1; then
     if [ "$DRY_RUN" -eq 1 ]; then
         info "DRY-RUN: Would run: fwconsole ma upgradeall --autoenable"
     else
-        log_raw "Running: fwconsole chown"
+        __log_raw "Running: fwconsole chown"
         fwconsole chown --quiet 2>/dev/null || true
-        log_raw "Running: fwconsole ma upgradeall --autoenable"
+        __log_raw "Running: fwconsole ma upgradeall --autoenable"
         if fwconsole ma upgradeall --autoenable 2>&1 \
                 | sed 's/\x1b\[[0-9;]*m//g' >> "$LOG"; then
             ok "FreePBX modules upgraded"
-            log_raw "Module upgrade complete"
+            __log_raw "Module upgrade complete"
         else
             warn "Module upgrade had warnings (see log)"
-            log_raw "WARNING: module upgrade had non-zero exit"
+            __log_raw "WARNING: module upgrade had non-zero exit"
         fi
         fwconsole reload --quiet 2>/dev/null || true
-        log_raw "fwconsole reload complete"
+        __log_raw "fwconsole reload complete"
     fi
 else
     warn "fwconsole not found — skipping module update"
-    log_raw "WARNING: fwconsole not found"
+    __log_raw "WARNING: fwconsole not found"
 fi
 
 hdr "Cleanup old backups (retain ${RETAIN_DAYS} days)"
@@ -115,5 +139,6 @@ else
     ok "Old backups cleaned"
 fi
 
-log_raw "=== Auto-update complete: $(date) ==="
+__log_raw "=== Auto-update complete: $(date) ==="
 ok "Auto-update complete"
+# ex: ts=2 sw=2 et filetype=sh

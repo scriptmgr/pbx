@@ -1,11 +1,36 @@
-#!/bin/bash
-# pbxstatus — Adaptive PBX status dashboard
+#!/usr/bin/env bash
+# shellcheck shell=bash
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+##@Version           :  202605191156-git
+# @@Author           :  Jason Hempstead
+# @@Contact          :  git-admin@casjaysdev.pro
+# @@License          :  MIT or LICENSE.md
+# @@ReadME           :  pbxstatus --help | README.md
+# @@Copyright        :  Copyright: (c) 2026 Jason Hempstead, Casjays Developments
+# @@Created          :  Tuesday, May 19, 2026 11:56 EDT
+# @@File             :  pbxstatus
+# @@Description      :  Adaptive PBX status dashboard for SSH, mobile terminals, and larger screens
+# @@Changelog        :  Add compliant script header; fix convention violations
+# @@TODO             :
+# @@Other            :
+# @@Resource         :
+# @@Terminal App     :  yes
+# @@sudo/root        :  yes
+# @@Template         :  shell/bash
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+# shellcheck disable=SC1001,SC1003,SC2001,SC2003,SC2016,SC2031,SC2090,SC2115,SC2120,SC2155,SC2199,SC2229,SC2317,SC2329
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+VERSION="202605191156-git"
+APPNAME="${0##*/}"
+RUN_USER="${USER}"
+SET_UID="${UID}"
+SCRIPT_SRC_DIR="${BASH_SOURCE%/*}"
+# - - - - - - - - - - - - - - - - - - - - - - - - -
 set -euo pipefail
 
-SCRIPT_VERSION="${SCRIPT_VERSION:-3.0}"
 case "${1:-}" in
     --version|-V)
-        printf "%s v%s\n" "$(basename "$0")" "${SCRIPT_VERSION}"
+        printf "%s v%s\n" "$(basename "$0")" "${VERSION}"
         exit 0
         ;;
 esac
@@ -109,9 +134,9 @@ collect_data() {
     [ -f /etc/asterisk/keys/asterisk.pem ] && SCHEME="https"
 
     AST_VER=$(asterisk -V 2>/dev/null | awk '{print $NF}' || echo "n/a")
-    FPBX_VER=$(grep -oP '(?<=<version>)[^<]+' "${WEB_ROOT:-/var/www/apache/pbx}/admin/modules/framework/module.xml" 2>/dev/null | head -1 \
-        || grep -oP '(?<=<version>)[^<]+' /var/www/html/admin/modules/framework/module.xml 2>/dev/null | head -1 \
-        || timeout 3 fwconsole --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 \
+    FPBX_VER=$(grep -oP -- '(?<=<version>)[^<]+' "${WEB_ROOT:-/var/www/apache/pbx}/admin/modules/framework/module.xml" 2>/dev/null | head -1 \
+        || grep -oP -- '(?<=<version>)[^<]+' /var/www/html/admin/modules/framework/module.xml 2>/dev/null | head -1 \
+        || timeout 3 fwconsole --version 2>/dev/null | grep -oE -- '[0-9]+\.[0-9]+\.[0-9]+' | head -1 \
         || echo "n/a")
     PHP_VER=$(php -r "echo PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION;" 2>/dev/null || echo "n/a")
 
@@ -232,3 +257,4 @@ if [ "${MODE}" = "watch" ]; then
 else
     render_once
 fi
+# ex: ts=2 sw=2 et filetype=sh

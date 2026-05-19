@@ -1,14 +1,35 @@
-#!/bin/bash
-# fax-to-email.sh — HylaFAX FaxDispatch hook: email an inbound fax.
-#
-# HylaFAX calls: fax-to-email.sh <fax-file> <fax-from> <fax-pages>
-# Recipient + From identity are read from /etc/pbx/.env at runtime so
-# changing FAX_TO_EMAIL_ADDRESS doesn't require a re-install.
+#!/usr/bin/env bash
+# shellcheck shell=bash
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+##@Version           :  202605191156-git
+# @@Author           :  Jason Hempstead
+# @@Contact          :  git-admin@casjaysdev.pro
+# @@License          :  MIT or LICENSE.md
+# @@ReadME           :  fax-to-email.sh --help | README.md
+# @@Copyright        :  Copyright: (c) 2026 Jason Hempstead, Casjays Developments
+# @@Created          :  Tuesday, May 19, 2026 11:56 EDT
+# @@File             :  fax-to-email.sh
+# @@Description      :  HylaFAX FaxDispatch hook that emails an inbound fax to the configured recipient.
+# @@Changelog        :  Add compliant script header; fix convention violations
+# @@TODO             :
+# @@Other            :
+# @@Resource         :
+# @@Terminal App     :  no
+# @@sudo/root        :  no
+# @@Template         :  shell/bash
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+# shellcheck disable=SC1001,SC1003,SC2001,SC2003,SC2016,SC2031,SC2090,SC2115,SC2120,SC2155,SC2199,SC2229,SC2317,SC2329
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+VERSION="202605191156-git"
+APPNAME="${0##*/}"
+RUN_USER="${USER}"
+SET_UID="${UID}"
+SCRIPT_SRC_DIR="${BASH_SOURCE%/*}"
+# - - - - - - - - - - - - - - - - - - - - - - - - -
 set -eu
 
-SCRIPT_VERSION="${SCRIPT_VERSION:-3.0}"
 case "${1:-}" in
-    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${SCRIPT_VERSION}"; exit 0 ;;
+    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${VERSION}"; exit 0 ;;
     --help|-h)
         printf "Usage: fax-to-email.sh <fax-file> <fax-from> <fax-pages>\n\n"
         printf "Email an inbound HylaFAX-received fax. Configured via /etc/pbx/.env:\n"
@@ -42,3 +63,4 @@ elif command -v mutt >/dev/null 2>&1; then
 else
     logger -t fax-to-email "no MUA available (need uuencode or mutt) — fax not delivered to ${TO}"
 fi
+# ex: ts=2 sw=2 et filetype=sh

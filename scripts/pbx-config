@@ -1,9 +1,35 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# shellcheck shell=bash
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+##@Version           :  202605191156-git
+# @@Author           :  Jason Hempstead
+# @@Contact          :  git-admin@casjaysdev.pro
+# @@License          :  MIT or LICENSE.md
+# @@ReadME           :  pbx-config --help | README.md
+# @@Copyright        :  Copyright: (c) 2026 Jason Hempstead, Casjays Developments
+# @@Created          :  Tuesday, May 19, 2026 11:56 EDT
+# @@File             :  pbx-config
+# @@Description      :  Interactive TUI tool for common PBX configuration tasks.
+# @@Changelog        :  Add compliant script header; fix convention violations
+# @@TODO             :
+# @@Other            :
+# @@Resource         :
+# @@Terminal App     :  yes
+# @@sudo/root        :  yes
+# @@Template         :  shell/bash
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+# shellcheck disable=SC1001,SC1003,SC2001,SC2003,SC2016,SC2031,SC2090,SC2115,SC2120,SC2155,SC2199,SC2229,SC2317,SC2329
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+VERSION="202605191156-git"
+APPNAME="${0##*/}"
+RUN_USER="${USER}"
+SET_UID="${UID}"
+SCRIPT_SRC_DIR="${BASH_SOURCE%/*}"
+# - - - - - - - - - - - - - - - - - - - - - - - - -
 set -euo pipefail
 
-SCRIPT_VERSION="${SCRIPT_VERSION:-3.0}"
 case "${1:-}" in
-    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${SCRIPT_VERSION}"; exit 0 ;;
+    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${VERSION}"; exit 0 ;;
 esac
 if [ -n "${NO_COLOR+x}" ] || [ ! -t 1 ] || [ "${TERM:-}" = "dumb" ] || [ "${CI:-}" = "true" ]; then
     RED=""; GREEN=""; YELLOW=""; BLUE=""; CYAN=""; BOLD=""; NC=""
@@ -51,7 +77,7 @@ ALT_BUFFER_ACTIVE=0
 # ---------------------------------------------------------------------------
 # Signal handling — restore terminal on INT/TERM/HUP; don't clear on normal exit
 # ---------------------------------------------------------------------------
-_tui_cleanup() {
+__tui_cleanup() {
     # Clear dialog artifacts and restore terminal to a sane state
     [ "$TUI" != "text" ] && { "$TUI" --clear 2>/dev/null || true; } || true
     if [ "$ALT_BUFFER_ACTIVE" -eq 1 ] && command -v tput >/dev/null 2>&1; then
@@ -62,7 +88,7 @@ _tui_cleanup() {
     stty sane 2>/dev/null || true
     clear
 }
-_tui_exit() {
+__tui_exit() {
     # On normal exit just ensure terminal is sane — do NOT clear the screen
     if [ "$ALT_BUFFER_ACTIVE" -eq 1 ] && command -v tput >/dev/null 2>&1; then
         tput cnorm 2>/dev/null || true
@@ -71,15 +97,15 @@ _tui_exit() {
     fi
     stty sane 2>/dev/null || true
 }
-_tui_resize() {
+__tui_resize() {
     # SIGWINCH: terminal resized — dialog re-reads dimensions on each invocation
     :
 }
-trap '_tui_exit'            EXIT
-trap '_tui_cleanup; exit 130' INT TERM HUP
-trap '_tui_resize'          WINCH
+trap '__tui_exit'            EXIT
+trap '__tui_cleanup; exit 130' INT TERM HUP
+trap '__tui_resize'          WINCH
 
-_screen_lines() {
+__screen_lines() {
     local lines
     lines=$(tput lines 2>/dev/null || printf '24')
     [[ "$lines" =~ ^[0-9]+$ ]] || lines=24
@@ -87,7 +113,7 @@ _screen_lines() {
     printf '%s' "$lines"
 }
 
-_screen_cols() {
+__screen_cols() {
     local cols
     cols=$(tput cols 2>/dev/null || printf '80')
     [[ "$cols" =~ ^[0-9]+$ ]] || cols=80
@@ -95,25 +121,25 @@ _screen_cols() {
     printf '%s' "$cols"
 }
 
-_box_height() {
+__box_height() {
     local lines
-    lines=$(_screen_lines)
+    lines=$(__screen_lines)
     printf '%s' $(( lines > 30 ? 30 : lines - 2 ))
 }
 
-_box_width() {
+__box_width() {
     local cols
-    cols=$(_screen_cols)
+    cols=$(__screen_cols)
     printf '%s' $(( cols > 100 ? 100 : cols - 4 ))
 }
 
-_menu_height() {
+__menu_height() {
     local lines
-    lines=$(_screen_lines)
+    lines=$(__screen_lines)
     printf '%s' $(( lines > 18 ? 12 : lines - 8 ))
 }
 
-_enter_alt_buffer() {
+__enter_alt_buffer() {
     if [ "$TUI" != "text" ] && [ "$ALT_BUFFER_ACTIVE" -eq 0 ] && [ -t 1 ] && command -v tput >/dev/null 2>&1; then
         tput smcup 2>/dev/null || true
         tput civis 2>/dev/null || true
@@ -121,7 +147,7 @@ _enter_alt_buffer() {
     fi
 }
 
-_leave_alt_buffer() {
+__leave_alt_buffer() {
     if [ "$ALT_BUFFER_ACTIVE" -eq 1 ] && command -v tput >/dev/null 2>&1; then
         tput cnorm 2>/dev/null || true
         tput rmcup 2>/dev/null || true
@@ -129,18 +155,18 @@ _leave_alt_buffer() {
     fi
 }
 
-_enter_alt_buffer
+__enter_alt_buffer
 
 menu() {
     local title="$1" prompt="$2"; shift 2
     local out rc
     if [ "$TUI" = "dialog" ]; then
-        out=$("$TUI" --stdout --title "$title" --menu "$prompt" "$(_box_height)" "$(_box_width)" "$(_menu_height)" "$@" 2>/dev/null) || rc=$?
+        out=$("$TUI" --stdout --title "$title" --menu "$prompt" "$(__box_height)" "$(__box_width)" "$(__menu_height)" "$@" 2>/dev/null) || rc=$?
         rc=${rc:-0}
         [ "$rc" -eq 0 ] || return 1
         printf '%s' "$out"
     elif [ "$TUI" = "whiptail" ]; then
-        out=$("$TUI" --title "$title" --menu "$prompt" "$(_box_height)" "$(_box_width)" "$(_menu_height)" "$@" 3>&1 1>&2 2>&3) || rc=$?
+        out=$("$TUI" --title "$title" --menu "$prompt" "$(__box_height)" "$(__box_width)" "$(__menu_height)" "$@" 3>&1 1>&2 2>&3) || rc=$?
         rc=${rc:-0}
         [ "$rc" -eq 0 ] || return 1
         printf '%s' "$out"
@@ -160,12 +186,12 @@ menu() {
 input() {
     local prompt="$1" default="$2" out rc
     if [ "$TUI" = "dialog" ]; then
-        out=$("$TUI" --stdout --title "PBX Config" --inputbox "$prompt" 10 "$(_box_width)" "$default" 2>/dev/null) || rc=$?
+        out=$("$TUI" --stdout --title "PBX Config" --inputbox "$prompt" 10 "$(__box_width)" "$default" 2>/dev/null) || rc=$?
         rc=${rc:-0}
         [ "$rc" -eq 0 ] || return 1
         printf '%s' "$out"
     elif [ "$TUI" = "whiptail" ]; then
-        out=$("$TUI" --title "PBX Config" --inputbox "$prompt" 10 "$(_box_width)" "$default" 3>&1 1>&2 2>&3) || rc=$?
+        out=$("$TUI" --title "PBX Config" --inputbox "$prompt" 10 "$(__box_width)" "$default" 3>&1 1>&2 2>&3) || rc=$?
         rc=${rc:-0}
         [ "$rc" -eq 0 ] || return 1
         printf '%s' "$out"
@@ -179,9 +205,9 @@ input() {
 show_message() {
     local title="$1" text="$2"
     if [ "$TUI" = "dialog" ]; then
-        "$TUI" --title "$title" --msgbox "$text" 10 "$(_box_width)" 2>/dev/null || true
+        "$TUI" --title "$title" --msgbox "$text" 10 "$(__box_width)" 2>/dev/null || true
     elif [ "$TUI" = "whiptail" ]; then
-        "$TUI" --title "$title" --msgbox "$text" 10 "$(_box_width)" 2>/dev/null || true
+        "$TUI" --title "$title" --msgbox "$text" 10 "$(__box_width)" 2>/dev/null || true
     else
         hdr "$title"
         printf "%s\n" "$text"
@@ -193,7 +219,7 @@ show_text_block() {
     if [ "$TUI" = "dialog" ]; then
         tmp=$(mktemp)
         printf "%s\n" "$content" > "$tmp"
-        "$TUI" --title "$title" --textbox "$tmp" "$(_box_height)" "$(_box_width)" 2>/dev/null || true
+        "$TUI" --title "$title" --textbox "$tmp" "$(__box_height)" "$(__box_width)" 2>/dev/null || true
         rm -f "$tmp"
     elif [ "$TUI" = "whiptail" ]; then
         tmp=$(mktemp)
@@ -370,3 +396,4 @@ while true; do
 done
 
 ok "pbx-config done"
+# ex: ts=2 sw=2 et filetype=sh

@@ -1,14 +1,35 @@
-#!/bin/bash
-# enable-gmail-smarthost — point Postfix at Gmail's submission relay.
-#
-# Required env vars: GMAIL_USER, GMAIL_PASS (Gmail "App Password",
-# NOT your account password). 2FA must be enabled on the Google account
-# for app passwords to be available.
+#!/usr/bin/env bash
+# shellcheck shell=bash
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+##@Version           :  202605191156-git
+# @@Author           :  Jason Hempstead
+# @@Contact          :  git-admin@casjaysdev.pro
+# @@License          :  MIT or LICENSE.md
+# @@ReadME           :  enable-gmail-smarthost --help | README.md
+# @@Copyright        :  Copyright: (c) 2026 Jason Hempstead, Casjays Developments
+# @@Created          :  Tuesday, May 19, 2026 11:56 EDT
+# @@File             :  enable-gmail-smarthost
+# @@Description      :  Point Postfix at Gmail's submission relay for outbound mail.
+# @@Changelog        :  Add compliant script header; fix convention violations
+# @@TODO             :
+# @@Other            :
+# @@Resource         :
+# @@Terminal App     :  yes
+# @@sudo/root        :  yes
+# @@Template         :  shell/bash
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+# shellcheck disable=SC1001,SC1003,SC2001,SC2003,SC2016,SC2031,SC2090,SC2115,SC2120,SC2155,SC2199,SC2229,SC2317,SC2329
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+VERSION="202605191156-git"
+APPNAME="${0##*/}"
+RUN_USER="${USER}"
+SET_UID="${UID}"
+SCRIPT_SRC_DIR="${BASH_SOURCE%/*}"
+# - - - - - - - - - - - - - - - - - - - - - - - - -
 set -euo pipefail
 
-SCRIPT_VERSION="${SCRIPT_VERSION:-3.0}"
 case "${1:-}" in
-    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${SCRIPT_VERSION}"; exit 0 ;;
+    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${VERSION}"; exit 0 ;;
     --help|-h)
         printf "Usage: GMAIL_USER=you@gmail.com GMAIL_PASS=app-password enable-gmail-smarthost\n\n"
         printf "Reconfigures Postfix to relay outbound mail through smtp.gmail.com:587.\n"
@@ -46,3 +67,4 @@ postmap /etc/postfix/sasl_passwd
 
 systemctl restart postfix
 echo "Gmail relay configured for ${GMAIL_USER}"
+# ex: ts=2 sw=2 et filetype=sh

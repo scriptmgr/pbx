@@ -1,9 +1,35 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# shellcheck shell=bash
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+##@Version           :  202605191156-git
+# @@Author           :  Jason Hempstead
+# @@Contact          :  git-admin@casjaysdev.pro
+# @@License          :  MIT or LICENSE.md
+# @@ReadME           :  pbx-backup --help | README.md
+# @@Copyright        :  Copyright: (c) 2026 Jason Hempstead, Casjays Developments
+# @@Created          :  Tuesday, May 19, 2026 11:56 EDT
+# @@File             :  pbx-backup
+# @@Description      :  PBX backup management for configuration files and database.
+# @@Changelog        :  Add compliant script header; fix convention violations
+# @@TODO             :
+# @@Other            :
+# @@Resource         :
+# @@Terminal App     :  yes
+# @@sudo/root        :  yes
+# @@Template         :  shell/bash
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+# shellcheck disable=SC1001,SC1003,SC2001,SC2003,SC2016,SC2031,SC2090,SC2115,SC2120,SC2155,SC2199,SC2229,SC2317,SC2329
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+VERSION="202605191156-git"
+APPNAME="${0##*/}"
+RUN_USER="${USER}"
+SET_UID="${UID}"
+SCRIPT_SRC_DIR="${BASH_SOURCE%/*}"
+# - - - - - - - - - - - - - - - - - - - - - - - - -
 set -euo pipefail
 
-SCRIPT_VERSION="${SCRIPT_VERSION:-3.0}"
 case "${1:-}" in
-    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${SCRIPT_VERSION}"; exit 0 ;;
+    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${VERSION}"; exit 0 ;;
 esac
 if [ -n "${NO_COLOR+x}" ] || [ ! -t 1 ] || [ "${TERM:-}" = "dumb" ] || [ "${CI:-}" = "true" ]; then
     RED=""; GREEN=""; YELLOW=""; BLUE=""; CYAN=""; BOLD=""; NC=""
@@ -39,7 +65,7 @@ usage() {
   --version (alias: -V)  Show version\n"; exit 0
 }
 
-backup_config() {
+__backup_config() {
     hdr "Backing up configuration"
     local out="${BACKUP_DIR}/config/pbx-config-${TIMESTAMP}.tar.gz"
     local dirs=""
@@ -56,7 +82,7 @@ backup_config() {
     fi
 }
 
-backup_db() {
+__backup_db() {
     hdr "Backing up database"
     command -v mysqldump >/dev/null 2>&1 || { err "mysqldump not found"; return 1; }
     local out="${BACKUP_DIR}/database/pbx-db-${TIMESTAMP}.sql.gz"
@@ -68,7 +94,7 @@ backup_db() {
         || err "Database backup failed"
 }
 
-show_status() {
+__show_status() {
     hdr "Existing Backups in ${BACKUP_DIR}"
     if [ -d "$BACKUP_DIR" ]; then
         find "$BACKUP_DIR" -type f \( -name "*.tar.gz" -o -name "*.sql.gz" \) 2>/dev/null \
@@ -88,7 +114,7 @@ case "${1:-}" in
     full|--full|--now)    MODE="full" ;;
     config|--config)      MODE="config" ;;
     db|--db)              MODE="db" ;;
-    status|list|--list)   show_status; exit 0 ;;
+    status|list|--list)   __show_status; exit 0 ;;
     --restore)
         FILE="${2:-}"; [ -z "$FILE" ] && { err "--restore requires a FILE"; exit 1; }
         [ ! -f "$FILE" ] && { err "File not found: $FILE"; exit 1; }
@@ -101,8 +127,9 @@ esac
 
 mkdir -p "${BACKUP_DIR}/config" "${BACKUP_DIR}/database"
 case "$MODE" in
-    config) backup_config ;;
-    db)     backup_db ;;
-    full)   backup_config; backup_db ;;
+    config) __backup_config ;;
+    db)     __backup_db ;;
+    full)   __backup_config; __backup_db ;;
 esac
 ok "Backup complete. Location: ${BACKUP_DIR}"
+# ex: ts=2 sw=2 et filetype=sh

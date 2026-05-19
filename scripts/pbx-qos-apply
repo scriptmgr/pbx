@@ -1,4 +1,31 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# shellcheck shell=bash
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+##@Version           :  202605191156-git
+# @@Author           :  Jason Hempstead
+# @@Contact          :  git-admin@casjaysdev.pro
+# @@License          :  MIT or LICENSE.md
+# @@ReadME           :  pbx-qos-apply --help | README.md
+# @@Copyright        :  Copyright: (c) 2026 Jason Hempstead, Casjays Developments
+# @@Created          :  Tuesday, May 19, 2026 11:56 EDT
+# @@File             :  pbx-qos-apply
+# @@Description      :  Apply DSCP marking to outbound SIP/RTP traffic for QoS prioritization
+# @@Changelog        :  Add compliant script header; fix convention violations
+# @@TODO             :
+# @@Other            :
+# @@Resource         :
+# @@Terminal App     :  no
+# @@sudo/root        :  yes
+# @@Template         :  shell/bash
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+# shellcheck disable=SC1001,SC1003,SC2001,SC2003,SC2016,SC2031,SC2090,SC2115,SC2120,SC2155,SC2199,SC2229,SC2317,SC2329
+# - - - - - - - - - - - - - - - - - - - - - - - - -
+VERSION="202605191156-git"
+APPNAME="${0##*/}"
+RUN_USER="${USER}"
+SET_UID="${UID}"
+SCRIPT_SRC_DIR="${BASH_SOURCE%/*}"
+# - - - - - - - - - - - - - - - - - - - - - - - - -
 # pbx-qos-apply — DSCP marking for SIP signaling and RTP media
 #
 # Marks outbound SIP/RTP traffic with EF (Expedited Forwarding) so any
@@ -7,9 +34,8 @@
 # @reboot entry re-applies them after every boot.
 set -euo pipefail
 
-SCRIPT_VERSION="${SCRIPT_VERSION:-3.0}"
 case "${1:-}" in
-    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${SCRIPT_VERSION}"; exit 0 ;;
+    --version|-V) printf "%s v%s\n" "$(basename "$0")" "${VERSION}"; exit 0 ;;
 esac
 
 if [ -n "${NO_COLOR+x}" ] || [ ! -t 1 ] || [ "${TERM:-}" = "dumb" ] || [ "${CI:-}" = "true" ]; then
@@ -42,7 +68,7 @@ udp 5061 EF
 udp 10000:20000 EF
 tcp 5060 CS3'
 
-apply_one() {
+__apply_one() {
     local proto="$1" dport="$2" class="$3"
     if iptables -t mangle -C OUTPUT -p "$proto" --dport "$dport" \
             -j DSCP --set-dscp-class "$class" 2>/dev/null; then
@@ -57,7 +83,7 @@ apply_one() {
     fi
 }
 
-clear_one() {
+__clear_one() {
     local proto="$1" dport="$2" class="$3"
     while iptables -t mangle -C OUTPUT -p "$proto" --dport "$dport" \
             -j DSCP --set-dscp-class "$class" 2>/dev/null; do
@@ -80,10 +106,11 @@ command -v iptables >/dev/null 2>&1 || { err "iptables not installed"; exit 1; }
 while IFS=' ' read -r proto dport class; do
     [ -z "$proto" ] && continue
     if [ "$ACTION" = clear ]; then
-        clear_one "$proto" "$dport" "$class"
+        __clear_one "$proto" "$dport" "$class"
     else
-        apply_one "$proto" "$dport" "$class"
+        __apply_one "$proto" "$dport" "$class"
     fi
 done <<EOF
 ${RULES}
 EOF
+# ex: ts=2 sw=2 et filetype=sh
