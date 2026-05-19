@@ -2,14 +2,15 @@
 
 ## Project Status: Active Development
 
-A production-ready, fully automated installation script for enterprise PBX systems with Asterisk 20, FreePBX 16, and comprehensive management tools.
+A production-ready, fully automated installation script for enterprise PBX systems with Asterisk 20, FreePBX 17, and comprehensive management tools.
 
-## 🎯 Current Version: 2.0
+## 🎯 Current Version: 3.0
 
 ### Latest Updates
-- ✅ Asterisk 20 (18 for CentOS 6)
+- ✅ Asterisk 20.19.0 (18 for CentOS 6)
+- ✅ FreePBX 17.0 (not 16 — upstream version bump)
 - ✅ Full idempotency — script can be re-run safely (state in /etc/pbx/state.json)
-- ✅ 70+ FreePBX modules automatic installation (explicit list via loop)
+- ✅ 72+ FreePBX modules automatic installation (explicit list via loop)
 - ✅ Comprehensive demo applications (DEMO, 123, 947, 951, LENNY, etc.)
 - ✅ TUI configuration tool (`pbx-config`) for extensions/trunks/routes
 - ✅ VoIP provider templates (voip.ms, Flowroute, Telnyx, Twilio, Custom)
@@ -21,8 +22,8 @@ A production-ready, fully automated installation script for enterprise PBX syste
 - ✅ AvantFax installation from SourceForge (official source) - v3.4.1
 - ✅ Email-to-fax with secure random alias via /etc/pbx/.env
 - ✅ Fax-to-email automatic forwarding configuration
-- ✅ 32 management scripts in /usr/local/bin/pbx-*
-- ✅ PHP-FPM runs as `asterisk` user (required for FreePBX file permissions)
+- ✅ 45 management scripts in /usr/local/bin/pbx-* (scripts synced from GitHub on each run)
+- ✅ PHP-FPM runs as `apache` user which is added to `asterisk` group (FreePBX files are 664 asterisk:asterisk — group membership gives write access)
 - ✅ FreePBX admin user created via direct SQL for unattended installs
 - ✅ HylaFax service detects binary path (package vs source-compiled)
 - ✅ /var/spool/hylafax owned by uucp for FIFO creation
@@ -41,7 +42,9 @@ A production-ready, fully automated installation script for enterprise PBX syste
 - ✅ Installation summary email to admin
 - ✅ 5 MOH classes (default, jazz, classical, holiday, ringback)
 - ✅ 9 extended AGI scripts (IVR, TTS, DND, recording, wakeup, echo, etc.)
-- ✅ All scripts: _strip_e bug fixed, correct passwords path, 41P/1W/0F tested
+- ✅ All scripts: compliant headers, function prefixes, grep --, vim modelines (44 bash + 1 python)
+- ✅ sngrep: gracefully warns and skips when unavailable instead of false success; autotools bootstrap (autoreconf -i) added to source compile fallback for RHEL/AlmaLinux 9
+- ✅ Summary banner only lists sngrep when it is actually installed (command_exists check)
 
 ## 🏗️ Architecture
 
@@ -263,11 +266,11 @@ Set `BEHIND_PROXY=yes` before installation to:
 ## 🐛 Known Issues & Fixes
 
 ### Critical Fixes Applied
-1. **PHP-FPM must run as `asterisk` user**
-   - FreePBX files owned by `asterisk:asterisk` (mode 660)
-   - Default FPM pool user is `apache`/`www-data` — causes HTTP 500
-   - Fix: `user = asterisk / group = asterisk` in FPM pool `www.conf`
-   - Status: ✅ Fixed
+1. **PHP-FPM permission model**
+   - FreePBX files owned by `asterisk:asterisk` (mode 664)
+   - PHP-FPM pool runs as `apache` user — OK because `apache` is added to the `asterisk` group and files are group-writable (664)
+   - Mechanism: `usermod -aG asterisk apache` + `usermod -aG apache asterisk` in `create_users()`
+   - Status: ✅ Working (group membership, not pool user change)
 
 2. **FreePBX admin user creation**
    - Use direct SQL INSERT into `ampusers` for unattended provisioning

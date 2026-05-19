@@ -6206,11 +6206,15 @@ install_sngrep() {
         return 0
     fi
 
-    # Try to install from repos; fall back to source compile on RHEL if not available
-    if ! pkg_install_one_by_one $PACKAGES_DISTRO_SNGREP && ! command_exists sngrep; then
+    # Try to install from repos first
+    pkg_install_one_by_one $PACKAGES_DISTRO_SNGREP
+
+    # Fall back to source compile on RHEL/Fedora when not in repos
+    if ! command_exists sngrep; then
         case "${DISTRO_FAMILY}" in
             rhel|fedora)
-                pkg_install_one_by_one libpcap-devel
+                # GitHub source archive lacks generated ./configure — need autotools + autoreconf
+                pkg_install_one_by_one autoconf automake libtool libpcap-devel
                 cd "${WORK_DIR}"
                 download_file \
                     "https://github.com/irontec/sngrep/releases/download/v1.8.1/sngrep-1.8.1.tar.gz" \
@@ -6221,7 +6225,8 @@ install_sngrep() {
                     sdir=$(ls -d "${WORK_DIR}"/sngrep-*/ 2>/dev/null | head -1 || true)
                     if [ -d "${sdir:-}" ]; then
                         cd "${sdir}"
-                        run_logged "sngrep: configure" ./configure || true
+                        run_logged "sngrep: autoreconf" autoreconf -i || true
+                        run_logged "sngrep: configure" ./configure --with-openssl || true
                         run_logged "sngrep: build+install" bash -c "make -j$(nproc) && make install" || \
                             warn "sngrep build failed"
                     fi
@@ -6231,8 +6236,12 @@ install_sngrep() {
         esac
     fi
 
-    track_install "sngrep"
-    success "sngrep installed"
+    if command_exists sngrep; then
+        track_install "sngrep"
+        success "sngrep installed"
+    else
+        warn "sngrep unavailable on this platform — skipping"
+    fi
 }
 
 # =============================================================================
@@ -7701,7 +7710,7 @@ show_completion_message() {
     echo "    Asterisk ${ASTERISK_VERSION} | FreePBX ${FREEPBX_VERSION} | PHP ${PHP_VERSION} | MariaDB"
     echo "    AvantFax 3.4.1 | HylaFAX+ | IAXmodem (${NUMBER_OF_MODEMS} modems)"
     [ "${INSTALL_WEBMIN:-yes}" = "yes" ] && optional_components="${optional_components} | Webmin"
-    [ "${INSTALL_SNGREP:-yes}" = "yes" ] && optional_components="${optional_components} | sngrep"
+    [ "${INSTALL_SNGREP:-yes}" = "yes" ] && command_exists sngrep && optional_components="${optional_components} | sngrep"
     [ "${INSTALL_OPENVPN:-yes}" = "yes" ] && optional_components="${optional_components} | OpenVPN client"
     [ "${INSTALL_WIREGUARD:-yes}" = "yes" ] && optional_components="${optional_components} | WireGuard client"
     [ "${INSTALL_FOP2:-yes}" = "yes" ] && optional_components="${optional_components} | FOP2"
