@@ -3182,17 +3182,150 @@ generate_apache_vhost_config() {
     </Directory>"
     fi
 
+    # ── vhosts.d detection ────────────────────────────────────────────────────────
+    # If /etc/httpd/conf/vhosts.d or /etc/apache2/vhosts.d exists, write a
+    # self-contained {fqdn}.conf there.  Do NOT touch the main httpd.conf /
+    # apache2.conf beyond adding one IncludeOptional line if the directory is
+    # not yet referenced.
+    local vhost_dir=""
     case "${DISTRO_FAMILY}" in
-        # ------------------------------------------------------------------ #
-        # DEBIAN / UBUNTU                                                     #
-        # ------------------------------------------------------------------ #
-        debian)
-            local main_conf="/etc/apache2/apache2.conf"
-            local vhost_conf="/etc/apache2/sites-available/pbx.conf"
+        rhel|fedora) [ -d /etc/httpd/conf/vhosts.d ]  && vhost_dir="/etc/httpd/conf/vhosts.d" ;;
+        debian)      [ -d /etc/apache2/vhosts.d ]     && vhost_dir="/etc/apache2/vhosts.d" ;;
+    esac
 
-            # 1. Main config — append/replace global settings block
-            if ! grep -q "# PBX global settings" "${main_conf}" 2>/dev/null; then
-                cat >> "${main_conf}" << MAINEOF
+    if [ -n "${vhost_dir}" ]; then
+        # ── vhosts.d path ─────────────────────────────────────────────────────
+        local vhost_conf="${vhost_dir}/${SYSTEM_FQDN}.conf"
+        info "vhosts.d detected — writing ${vhost_conf}"
+
+        # Ensure the directory is included by the main conf (one-time add only)
+        case "${DISTRO_FAMILY}" in
+            rhel|fedora)
+                local _mc="/etc/httpd/conf/httpd.conf"
+                grep -q "vhosts.d" "${_mc}" 2>/dev/null || \
+                    echo "IncludeOptional conf/vhosts.d/*.conf" >> "${_mc}"
+                ;;
+            debian)
+                local _mc="/etc/apache2/apache2.conf"
+                grep -q "vhosts.d" "${_mc}" 2>/dev/null || \
+                    echo "IncludeOptional vhosts.d/*.conf" >> "${_mc}"
+                a2enmod rewrite ssl proxy proxy_fcgi proxy_http setenvif \
+                        headers expires deflate remoteip 2>/dev/null || true
+                ;;
+        esac
+
+        # Build the PHP FilesMatch block — goes inside every VirtualHost
+        local php_fmatch="
+    <FilesMatch \\.php\$>
+        SetHandler \"${php_handler}\"
+    </FilesMatch>"
+
+        # Build common Directory directives (reused across modes)
+        local dir_block="
+    DirectoryIndex portal.php index.php
+${php_fmatch}
+    <Directory ${WEB_ROOT}>
+        Options -Indexes +FollowSymLinks
+        AllowOverride All
+        Require all granted
+    </Directory>
+    <Directory ${WEB_ROOT}/admin>
+        AllowOverride All
+        Require all granted
+        Options -Indexes +FollowSymLinks
+    </Directory>
+${avantfax_block}"
+
+        if [ "${BEHIND_PROXY:-no}" = "yes" ]; then
+            local remoteip_mod="modules/mod_remoteip.so"
+            [ "${DISTRO_FAMILY}" = "debian" ] && \
+                remoteip_mod="/usr/lib/apache2/modules/mod_remoteip.so"
+            cat > "${vhost_conf}" << VHDPROXY
+# PBX — ${SYSTEM_FQDN} — reverse proxy mode — managed by installer
+ServerSignature Off
+ServerTokens    Prod
+
+LoadModule remoteip_module ${remoteip_mod}
+
+RemoteIPHeader X-Forwarded-For
+RemoteIPTrustedProxy 127.0.0.1/8
+RemoteIPTrustedProxy 10.0.0.0/8
+RemoteIPTrustedProxy 172.16.0.0/12
+RemoteIPTrustedProxy 192.168.0.0/16
+SetEnvIf X-Forwarded-Proto https HTTPS=on
+
+<VirtualHost ${proxy_bind}>
+    ServerName    ${SYSTEM_FQDN}
+    DocumentRoot  ${WEB_ROOT}
+${dir_block}
+</VirtualHost>
+VHDPROXY
+        elif [ "${have_ssl}" -eq 1 ]; then
+            cat > "${vhost_conf}" << VHDSSL
+# PBX — ${SYSTEM_FQDN} — HTTPS mode — managed by installer
+ServerSignature Off
+ServerTokens    Prod
+
+<VirtualHost *:80>
+    ServerName   ${SYSTEM_FQDN}
+    DocumentRoot ${WEB_ROOT}
+
+    RewriteEngine On
+    RewriteCond %{REQUEST_URI} !^/\.well-known/acme-challenge/
+    RewriteCond %{REQUEST_URI} !^/\.freepbx-known/
+    RewriteRule ^ https://${SYSTEM_FQDN}%{REQUEST_URI} [R=301,L]
+
+    <Directory ${WEB_ROOT}/.well-known>
+        AllowOverride None
+        Require all granted
+    </Directory>
+    <Directory ${WEB_ROOT}/.freepbx-known>
+        AllowOverride None
+        Require all granted
+    </Directory>
+</VirtualHost>
+
+<VirtualHost *:443>
+    ServerName            ${SYSTEM_FQDN}
+    DocumentRoot          ${WEB_ROOT}
+
+    SSLEngine             on
+    SSLCertificateFile    ${cert_file}
+    SSLCertificateKeyFile ${key_file}
+${chain_line}
+    SSLProtocol           all -SSLv2 -SSLv3 -TLSv1 -TLSv1.1
+    SSLCipherSuite        ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384
+    SSLHonorCipherOrder   on
+${dir_block}
+</VirtualHost>
+VHDSSL
+        else
+            cat > "${vhost_conf}" << VHDHTTP
+# PBX — ${SYSTEM_FQDN} — HTTP mode — managed by installer
+ServerSignature Off
+ServerTokens    Prod
+
+<VirtualHost *:80>
+    ServerName   ${SYSTEM_FQDN}
+    DocumentRoot ${WEB_ROOT}
+${dir_block}
+</VirtualHost>
+VHDHTTP
+        fi
+
+    else
+        # ── Standard path: modify main conf + write to conf.d / sites-available ──
+        case "${DISTRO_FAMILY}" in
+            # ---------------------------------------------------------------- #
+            # DEBIAN / UBUNTU                                                   #
+            # ---------------------------------------------------------------- #
+            debian)
+                local main_conf="/etc/apache2/apache2.conf"
+                local vhost_conf="/etc/apache2/sites-available/pbx.conf"
+
+                # Main config — global PBX settings block (idempotent)
+                if ! grep -q "# PBX global settings" "${main_conf}" 2>/dev/null; then
+                    cat >> "${main_conf}" << MAINEOF
 
 # PBX global settings
 ServerName ${SYSTEM_FQDN}
@@ -3204,70 +3337,52 @@ ServerTokens Prod
     SetHandler "${php_handler}"
 </FilesMatch>
 
-# Allow .htaccess overrides on the PBX web root regardless of which
-# vhost serves the request (FreePBX UCP/Framework checks SetEnv HTACCESS
-# from admin/.htaccess; without overrides it raises a security warning).
+# Allow .htaccess overrides on the PBX web root
 <Directory "${WEB_ROOT}">
     Options -Indexes +FollowSymLinks
     AllowOverride All
     Require all granted
-    # Serve the custom portal at "/" without overwriting FreePBX's signed
-    # index.php (which would trigger the framework tampered-files warning).
     DirectoryIndex portal.php index.php
 </Directory>
 MAINEOF
-            fi
+                fi
 
-            # 2. Single vhost file
-            # Disable the old default vhost — pbx.conf replaces it
-            a2dissite 000-default default-ssl 2>/dev/null || true
-            # Clean up any old per-component conf files we used to write
-            a2disconf freepbx avantfax remoteip php-fpm php74-fpm 2>/dev/null || true
-            rm -f /etc/apache2/conf-available/freepbx.conf \
-                  /etc/apache2/conf-available/avantfax.conf \
-                  /etc/apache2/conf-available/remoteip.conf \
-                  /etc/apache2/conf-available/php-fpm.conf \
-                  /etc/apache2/conf-available/php74-fpm.conf \
-                  /etc/apache2/sites-available/pbx-ssl.conf \
-                  2>/dev/null || true
+                # Remove old per-component conf files and disable legacy vhosts
+                a2dissite 000-default default-ssl 2>/dev/null || true
+                a2disconf freepbx avantfax remoteip php-fpm php74-fpm 2>/dev/null || true
+                rm -f /etc/apache2/conf-available/freepbx.conf \
+                      /etc/apache2/conf-available/avantfax.conf \
+                      /etc/apache2/conf-available/remoteip.conf \
+                      /etc/apache2/conf-available/php-fpm.conf \
+                      /etc/apache2/conf-available/php74-fpm.conf \
+                      /etc/apache2/sites-available/pbx-ssl.conf \
+                      2>/dev/null || true
 
-            if [ "${BEHIND_PROXY:-no}" = "yes" ]; then
-                # Reverse proxy mode — HTTP only, bind loopback only
-                # Update ports.conf to listen on loopback:port only
-                if [ -f /etc/apache2/ports.conf ]; then
-                    local ports_tmp
-                    ports_tmp=$(mktemp) || return 1
-                    {
-                        printf 'Listen %s\n' "${proxy_bind}"
-                        awk '
+                if [ "${BEHIND_PROXY:-no}" = "yes" ]; then
+                    if [ -f /etc/apache2/ports.conf ]; then
+                        local ports_tmp
+                        ports_tmp=$(mktemp) || return 1
+                        {
+                            printf 'Listen %s\n' "${proxy_bind}"
+                            awk '
 BEGIN { skip_block = 0 }
 {
     stripped = $0
     sub(/^[[:space:]]+/, "", stripped)
     if (stripped ~ /^<IfModule[[:space:]]+(ssl_module|mod_ssl\.c|mod_gnutls\.c)/) {
-        skip_block = 1
-        next
+        skip_block = 1; next
     }
-    if (skip_block && stripped ~ /^<\/IfModule>/) {
-        skip_block = 0
-        next
-    }
-    if (skip_block) {
-        next
-    }
-    if (stripped ~ /^Listen[[:space:]]+(80|443)([[:space:]]|$)/) {
-        next
-    }
-    if ($0 == "Listen '"${proxy_bind}"'") {
-        next
-    }
+    if (skip_block && stripped ~ /^<\/IfModule>/) { skip_block = 0; next }
+    if (skip_block) { next }
+    if (stripped ~ /^Listen[[:space:]]+(80|443)([[:space:]]|$)/) { next }
+    if ($0 == "Listen '"${proxy_bind}"'") { next }
     print
 }
 ' /etc/apache2/ports.conf
-                    } > "${ports_tmp}"
-                    mv "${ports_tmp}" /etc/apache2/ports.conf
-                fi
-                cat > "${vhost_conf}" << PROXYVHEOF
+                        } > "${ports_tmp}"
+                        mv "${ports_tmp}" /etc/apache2/ports.conf
+                    fi
+                    cat > "${vhost_conf}" << PROXYVHEOF
 # PBX vhost config (reverse proxy mode — loopback ${proxy_bind})
 LoadModule remoteip_module   /usr/lib/apache2/modules/mod_remoteip.so
 
@@ -3294,9 +3409,8 @@ SetEnvIf X-Forwarded-Proto https HTTPS=on
 ${avantfax_block}
 </VirtualHost>
 PROXYVHEOF
-            elif [ "${have_ssl}" -eq 1 ]; then
-                # Direct mode with SSL — HTTP redirects to HTTPS
-                cat > "${vhost_conf}" << SSLVHEOF
+                elif [ "${have_ssl}" -eq 1 ]; then
+                    cat > "${vhost_conf}" << SSLVHEOF
 # PBX vhost config (direct mode with SSL)
 
 <VirtualHost *:80>
@@ -3346,9 +3460,8 @@ ${chain_line}
 ${avantfax_block}
 </VirtualHost>
 SSLVHEOF
-            else
-                # Direct mode, no SSL
-                cat > "${vhost_conf}" << HTTPVHEOF
+                else
+                    cat > "${vhost_conf}" << HTTPVHEOF
 # PBX vhost config (direct HTTP mode)
 
 <VirtualHost *:80>
@@ -3367,23 +3480,23 @@ SSLVHEOF
 ${avantfax_block}
 </VirtualHost>
 HTTPVHEOF
-            fi
+                fi
 
-            a2ensite pbx 2>/dev/null || true
-            a2enmod rewrite ssl proxy proxy_fcgi proxy_http setenvif \
-                    headers expires deflate remoteip 2>/dev/null || true
-            ;;
+                a2ensite pbx 2>/dev/null || true
+                a2enmod rewrite ssl proxy proxy_fcgi proxy_http setenvif \
+                        headers expires deflate remoteip 2>/dev/null || true
+                ;;
 
-        # ------------------------------------------------------------------ #
-        # RHEL / FEDORA                                                       #
-        # ------------------------------------------------------------------ #
-        rhel|fedora)
-            local main_conf="/etc/httpd/conf/httpd.conf"
-            local vhost_conf="/etc/httpd/conf.d/pbx.conf"
+            # ---------------------------------------------------------------- #
+            # RHEL / FEDORA                                                     #
+            # ---------------------------------------------------------------- #
+            rhel|fedora)
+                local main_conf="/etc/httpd/conf/httpd.conf"
+                local vhost_conf="/etc/httpd/conf.d/pbx.conf"
 
-            # 1. Main config — append/replace global settings block
-            if ! grep -q "# PBX global settings" "${main_conf}" 2>/dev/null; then
-                cat >> "${main_conf}" << MAINEOF
+                # Main config — global PBX settings block (idempotent)
+                if ! grep -q "# PBX global settings" "${main_conf}" 2>/dev/null; then
+                    cat >> "${main_conf}" << MAINEOF
 
 # PBX global settings
 ServerSignature Off
@@ -3394,61 +3507,54 @@ ServerTokens Prod
     SetHandler "${php_handler}"
 </FilesMatch>
 
-# Allow .htaccess overrides on the PBX web root regardless of which
-# vhost serves the request (FreePBX UCP/Framework checks SetEnv HTACCESS
-# from admin/.htaccess; without overrides it raises a security warning).
+# Allow .htaccess overrides on the PBX web root
 <Directory "${WEB_ROOT}">
     Options -Indexes +FollowSymLinks
     AllowOverride All
     Require all granted
-    # Serve the custom portal at "/" without overwriting FreePBX's signed
-    # index.php (which would trigger the framework tampered-files warning).
     DirectoryIndex portal.php index.php
 </Directory>
 MAINEOF
-            fi
-
-            # Patch the stock <Directory "/var/www/apache/pbx"> in httpd.conf
-            # (added by base RPM) to allow .htaccess overrides too.
-            if grep -q "^<Directory \"${WEB_ROOT}\">" "${main_conf}" 2>/dev/null; then
-                if awk -v root="${WEB_ROOT}" '
-                    BEGIN { in_block = 0 }
-                    {
-                        if ($0 ~ "^<Directory \"" root "\">") { in_block = 1 }
-                        if (in_block && $0 ~ /^[[:space:]]*AllowOverride[[:space:]]+None/) {
-                            sub(/AllowOverride[[:space:]]+None/, "AllowOverride All")
-                        }
-                        if (in_block && $0 ~ /^[[:space:]]*Options[[:space:]]+Indexes[[:space:]]+FollowSymLinks/) {
-                            sub(/Options[[:space:]]+Indexes[[:space:]]+FollowSymLinks/, "Options -Indexes +FollowSymLinks")
-                        }
-                        print
-                        if (in_block && $0 ~ /^<\/Directory>/) { in_block = 0 }
-                    }
-                ' "${main_conf}" > "${main_conf}.tmp" 2>/dev/null; then
-                    mv "${main_conf}.tmp" "${main_conf}" || true
-                else
-                    warn "httpd.conf AllowOverride patch failed — skipping (config unchanged)"
-                    rm -f "${main_conf}.tmp"
                 fi
-            fi
 
-            # 2. Single vhost file — remove old per-component files first
-            rm -f /etc/httpd/conf.d/freepbx.conf \
-                  /etc/httpd/conf.d/avantfax.conf \
-                  /etc/httpd/conf.d/remoteip.conf \
-                  /etc/httpd/conf.d/php-fpm.conf \
-                  /etc/httpd/conf.d/pbx-ssl.conf \
-                  2>/dev/null || true
+                # Patch stock <Directory> block if present (e.g. added by RHEL base RPM)
+                if grep -q "^<Directory \"${WEB_ROOT}\">" "${main_conf}" 2>/dev/null; then
+                    if awk -v root="${WEB_ROOT}" '
+                        BEGIN { in_block = 0 }
+                        {
+                            if ($0 ~ "^<Directory \"" root "\">") { in_block = 1 }
+                            if (in_block && $0 ~ /^[[:space:]]*AllowOverride[[:space:]]+None/) {
+                                sub(/AllowOverride[[:space:]]+None/, "AllowOverride All")
+                            }
+                            if (in_block && $0 ~ /^[[:space:]]*Options[[:space:]]+Indexes[[:space:]]+FollowSymLinks/) {
+                                sub(/Options[[:space:]]+Indexes[[:space:]]+FollowSymLinks/, "Options -Indexes +FollowSymLinks")
+                            }
+                            print
+                            if (in_block && $0 ~ /^<\/Directory>/) { in_block = 0 }
+                        }
+                    ' "${main_conf}" > "${main_conf}.tmp" 2>/dev/null; then
+                        mv "${main_conf}.tmp" "${main_conf}" || true
+                    else
+                        warn "httpd.conf AllowOverride patch failed — skipping (config unchanged)"
+                        rm -f "${main_conf}.tmp"
+                    fi
+                fi
 
-            if [ "${BEHIND_PROXY:-no}" = "yes" ]; then
-                # Update httpd.conf Listen to loopback:port only
-                sed -i "s|^Listen 80$|Listen ${proxy_bind}|g" "${main_conf}"
-                grep -q "Listen ${proxy_bind}" "${main_conf}" || \
-                    sed -i "1s|^|Listen ${proxy_bind}\n|" "${main_conf}"
-                # Disable ssl.conf if present (proxy mode doesn't need 443)
-                [ -f /etc/httpd/conf.d/ssl.conf ] && \
-                    mv /etc/httpd/conf.d/ssl.conf /etc/httpd/conf.d/ssl.conf.proxydisabled 2>/dev/null || true
-                cat > "${vhost_conf}" << PROXYVHEOF
+                # Remove old per-component conf files
+                rm -f /etc/httpd/conf.d/freepbx.conf \
+                      /etc/httpd/conf.d/avantfax.conf \
+                      /etc/httpd/conf.d/remoteip.conf \
+                      /etc/httpd/conf.d/php-fpm.conf \
+                      /etc/httpd/conf.d/pbx-ssl.conf \
+                      2>/dev/null || true
+
+                if [ "${BEHIND_PROXY:-no}" = "yes" ]; then
+                    sed -i "s|^Listen 80$|Listen ${proxy_bind}|g" "${main_conf}"
+                    grep -q "Listen ${proxy_bind}" "${main_conf}" || \
+                        sed -i "1s|^|Listen ${proxy_bind}\n|" "${main_conf}"
+                    [ -f /etc/httpd/conf.d/ssl.conf ] && \
+                        mv /etc/httpd/conf.d/ssl.conf /etc/httpd/conf.d/ssl.conf.proxydisabled 2>/dev/null || true
+                    cat > "${vhost_conf}" << PROXYVHEOF
 # PBX vhost config (reverse proxy mode — loopback ${proxy_bind})
 LoadModule remoteip_module modules/mod_remoteip.so
 
@@ -3475,8 +3581,8 @@ SetEnvIf X-Forwarded-Proto https HTTPS=on
 ${avantfax_block}
 </VirtualHost>
 PROXYVHEOF
-            elif [ "${have_ssl}" -eq 1 ]; then
-                cat > "${vhost_conf}" << SSLVHEOF
+                elif [ "${have_ssl}" -eq 1 ]; then
+                    cat > "${vhost_conf}" << SSLVHEOF
 # PBX vhost config (direct mode with SSL)
 
 <VirtualHost *:80>
@@ -3526,8 +3632,8 @@ ${chain_line}
 ${avantfax_block}
 </VirtualHost>
 SSLVHEOF
-            else
-                cat > "${vhost_conf}" << HTTPVHEOF
+                else
+                    cat > "${vhost_conf}" << HTTPVHEOF
 # PBX vhost config (direct HTTP mode)
 
 <VirtualHost *:80>
@@ -3546,9 +3652,10 @@ SSLVHEOF
 ${avantfax_block}
 </VirtualHost>
 HTTPVHEOF
-            fi
-            ;;
-    esac
+                fi
+                ;;
+        esac
+    fi
 
     svc_reload "${APACHE_SERVICE}" 2>/dev/null || true
     success "Apache vhost configured: $([ "${BEHIND_PROXY:-no}" = "yes" ] && echo "reverse proxy (HTTP:80)" || ([ "${have_ssl}" -eq 1 ] && echo "direct HTTPS:443 + HTTP redirect" || echo "direct HTTP:80"))"
@@ -7813,6 +7920,10 @@ run_installation() {
     setup_dns
     prepare_system
 
+    # Sync management scripts early so every subsequent phase can use them.
+    # Requires only curl (bootstrapped in prepare_system) and network/scripts/ dir.
+    sync_management_scripts
+
     # Phase 2: Repositories and packages
     setup_repositories
     install_core_dependencies
@@ -7892,8 +8003,7 @@ run_installation() {
     # Phase 12: Health monitoring
     setup_health_monitoring || true
 
-    # Phase 13: Management scripts (GitHub API sync) and finalization
-    sync_management_scripts
+    # Phase 13: Finalization (scripts already synced in Phase 1; retry runtime hooks)
     ensure_status_runtime_hooks
     create_root_scripts
     install_asteridex
