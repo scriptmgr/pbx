@@ -4349,6 +4349,9 @@ NATEOF
     # Enable CDR and queue logging
     fwconsole setting ASTRUNDIR /var/run/asterisk > /dev/null 2>&1 || true
     ensure_freepbx_manager_credentials || warn "Failed to sync FreePBX manager credentials"
+    # Use database auth — 'usermanager' requires Sangoma portal integration and
+    # causes "Undefined variable $modules_enabled" when AUTHTYPE is later changed.
+    fwconsole setting AUTHTYPE database > /dev/null 2>&1 || true
     fwconsole setting FREEPBX_SYSTEM_IDENT "${FROM_NAME}" > /dev/null 2>&1 || true
     fwconsole setting DASHBOARD_FREEPBX_BRAND "${FROM_NAME}" > /dev/null 2>&1 || true
     fwconsole setting TIMEZONE "${TIMEZONE:-America/New_York}" > /dev/null 2>&1 || true
@@ -7610,9 +7613,12 @@ finalize_installation() {
     fi
 
     # Final FreePBX reload
-    # Fix PHP session directory ownership — FPM runs as asterisk, so it needs write access
+    # Fix PHP session directory ownership — FPM runs as asterisk, so it needs write access.
+    # Also clear any stale sessions so the first login uses the final AUTHTYPE setting.
     for sess_dir in /var/lib/php/session /var/lib/php/sessions; do
-        [ -d "$sess_dir" ] && chown asterisk:asterisk "$sess_dir" 2>/dev/null || true
+        [ -d "$sess_dir" ] || continue
+        find "$sess_dir" -name "sess_*" -delete 2>/dev/null || true
+        chown asterisk:asterisk "$sess_dir" 2>/dev/null || true
     done
     fwconsole chown >/dev/null 2>&1 || true
     ensure_fwconsole_executable
