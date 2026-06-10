@@ -7720,6 +7720,13 @@ SVCEOF
     info "Refreshing FreePBX module signatures (final pass)..."
     fwconsole ma refreshsignatures > /dev/null 2>&1 || true
 
+    # Clear notifications that are stale or expected on source installs:
+    #   FW_TAMPERED:     vendor security patches don't match Sangoma's original signatures
+    #   VULNERABILITIES: module fix not yet in repos; pbx-autoupdate will handle it
+    #   SIGNATURE_CHECK: shown when SIGNATURECHECK is temporarily 0 during install
+    local _notif_sql="DELETE FROM notifications WHERE id IN ('FW_TAMPERED','VULNERABILITIES','SIGNATURE_CHECK');"
+    mysql -uroot -p"${MYSQL_ROOT_PASSWORD}" asterisk -e "${_notif_sql}" 2>/dev/null || true
+
     # Mark installation complete
     echo "INSTALL_COMPLETE=$(date +%s)" >> "${INSTALL_INVENTORY}"
 
