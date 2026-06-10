@@ -4381,6 +4381,45 @@ NATEOF
         " 2>/dev/null || true
     fi
 
+    # ── Misc Destinations ──────────────────────────────────────────────────────
+    # Create Misc Destinations for the demo dialplan contexts so they appear
+    # as selectable targets in inbound routes, IVRs, and ring groups.
+    mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk 2>/dev/null << 'MISCDEOF' || true
+INSERT IGNORE INTO miscdests (description, destdial) VALUES
+  ('Echo Test',        'pbx-echo,s,1'),
+  ('Speaking Clock',   'pbx-clock,s,1'),
+  ('Weather TTS',      'pbx-weather,s,1'),
+  ('Date Announcement','pbx-today,s,1'),
+  ('Lenny Bot',        'pbx-lenny,s,1'),
+  ('Music on Hold',    'pbx-moh,s,1'),
+  ('Caller ID Test',   'pbx-cidtest,s,1'),
+  ('Voicemail Main',   'pbx-voicemail,s,1');
+MISCDEOF
+
+    # ── Misc Applications ──────────────────────────────────────────────────────
+    # Register the demo extensions as Misc Applications so they appear in the
+    # FreePBX admin UI and can be used as inbound route destinations.
+    mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk 2>/dev/null << 'MISCAEOF' || true
+INSERT IGNORE INTO miscapps (ext, description, dest) VALUES
+  ('123',  'Speaking Clock',    'pbx-clock,s,1'),
+  ('947',  'Weather TTS Demo',  'pbx-weather,s,1'),
+  ('951',  'Date Announcement', 'pbx-today,s,1'),
+  ('4747', 'Lenny Bot',         'pbx-lenny,s,1'),
+  ('*43',  'Echo Test',         'pbx-echo,s,1'),
+  ('*610', 'Music on Hold',     'pbx-moh,s,1'),
+  ('*41',  'Caller ID Test',    'pbx-cidtest,s,1'),
+  ('*97',  'Voicemail Main',    'pbx-voicemail,s,1');
+MISCAEOF
+
+    # ── TTS Engines ────────────────────────────────────────────────────────────
+    # Register installed TTS engines with the FreePBX ttsengines module so the
+    # TTS configuration page shows available engines instead of an empty list.
+    mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk 2>/dev/null << 'TTSEOF' || true
+INSERT IGNORE INTO ttsengines (name, path) VALUES
+  ('Flite',      '/usr/bin/flite'),
+  ('Google TTS', '/usr/local/bin/gtts-cli');
+TTSEOF
+
     # Re-enable signature checking after module installation so the finished
     # system doesn't retain a permanent security warning.
     fwconsole setting SIGNATURECHECK 1 > /dev/null 2>&1 || true
