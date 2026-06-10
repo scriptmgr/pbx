@@ -2607,6 +2607,9 @@ socket                  = ${_mycnf_sock}
 bind-address            = 127.0.0.1
 character-set-server    = utf8mb4
 collation-server        = utf8mb4_general_ci
+# AvantFax and FreePBX use legacy SQL patterns (empty strings for DATE columns,
+# implicit GROUP BY) that MariaDB strict mode rejects. Restrict to a permissive mode.
+sql_mode                = NO_ENGINE_SUBSTITUTION
 max_connections         = 300
 key_buffer_size         = 32M
 innodb_buffer_pool_size = 256M
@@ -2624,7 +2627,13 @@ single-transaction
 quick
 max_allowed_packet      = 64M
 MYCNFEOF
-        info "Wrote /etc/my.cnf (utf8mb4, socket: ${_mycnf_sock})"
+        info "Wrote /etc/my.cnf (utf8mb4, sql_mode=NO_ENGINE_SUBSTITUTION, socket: ${_mycnf_sock})"
+    fi
+    # Ensure sql_mode is set even when we did not write my.cnf (pre-existing OS config).
+    # AvantFax and FreePBX fail with STRICT_TRANS_TABLES active (DATE '' rejection).
+    if ! grep -q "sql_mode" /etc/my.cnf 2>/dev/null; then
+        sed -i '/^\[mysqld\]/a sql_mode                = NO_ENGINE_SUBSTITUTION' /etc/my.cnf
+        info "Patched existing /etc/my.cnf: added sql_mode=NO_ENGINE_SUBSTITUTION"
     fi
 
     svc_enable mariadb 2>/dev/null || svc_enable mysql 2>/dev/null || true
