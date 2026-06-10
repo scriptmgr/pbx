@@ -261,7 +261,42 @@ touch "${LOG_FILE}" "${ERROR_LOG}" 2>/dev/null || true
 log_raw() { printf "[%s] %-5s %s\n" "$(date '+%H:%M:%S')" "$1" "$2" >> "${LOG_FILE}"; }
 
 STEP_CURRENT=0
+# STEP_TOTAL is a default for early display only — compute_step_total() recalculates it
+# accurately once all install flags and distro detection are resolved.
 STEP_TOTAL=59
+
+# Compute the exact step count for this install based on resolved flags and distro.
+# Call after detect_system, version_select, and resolve_install_flags have all run.
+# Unconditional base: 42 steps that always run regardless of flags.
+# Each block below adds the steps that fire under their respective conditions.
+compute_step_total() {
+    local _n=42
+    # Fax subsystem (7 steps; avantfax_php adds 1 when PHP versions differ)
+    if [ "${INSTALL_AVANTFAX:-yes}" = "yes" ]; then
+        _n=$((_n + 7))
+        [ "${PHP_VERSION}" != "${PHP_AVANTFAX_VERSION}" ] && _n=$((_n + 1))
+    fi
+    # Security
+    [ "${FAIL2BAN_ENABLED:-yes}" = "yes" ]                                    && _n=$((_n + 1))
+    [ "${IS_CONTAINER:-0}" = "0" ] && [ "${FIREWALL_ENABLED:-yes}" = "yes" ]  && _n=$((_n + 2))
+    [ "${IS_CONTAINER:-0}" = "0" ] && [ "${DISABLE_IPV6:-no}" = "yes" ]       && _n=$((_n + 1))
+    # Optional tools (default: no)
+    [ "${INSTALL_WEBMIN:-yes}" = "yes" ]        && _n=$((_n + 1))
+    [ "${INSTALL_KNOCKD:-no}" = "yes" ]         && _n=$((_n + 1))
+    [ "${INSTALL_SNGREP:-no}" = "yes" ]         && _n=$((_n + 1))
+    [ "${INSTALL_OPENVPN:-no}" = "yes" ]        && _n=$((_n + 1))
+    [ "${INSTALL_WIREGUARD:-no}" = "yes" ]      && _n=$((_n + 1))
+    [ "${INSTALL_FOP2:-no}" = "yes" ]           && _n=$((_n + 1))
+    [ "${INSTALL_PHONE_PROV:-no}" = "yes" ]     && _n=$((_n + 1))
+    [ "${INSTALL_REMOTE_BACKUP:-no}" = "yes" ]  && _n=$((_n + 1))
+    # Backup (3 steps: system + autoupdate + encryption)
+    [ "${BACKUP_ENABLED:-yes}" = "yes" ] && _n=$((_n + 3))
+    # QoS tuning (bare-metal only)
+    [ "${IS_CONTAINER:-0}" = "0" ] && _n=$((_n + 1))
+    # Optional web app
+    [ "${INSTALL_ASTERNIC:-yes}" = "yes" ] && _n=$((_n + 1))
+    STEP_TOTAL=$_n
+}
 
 # Strip all non-ASCII bytes (emoji, special symbols) when USE_EMOJI=0.
 # Used by output functions so callers need not worry about embedded emoji.
@@ -7694,11 +7729,13 @@ finalize_installation() {
         find "$sess_dir" -name "sess_*" -delete 2>/dev/null || true
         chown asterisk:asterisk "$sess_dir" 2>/dev/null || true
     done
-    fwconsole chown >/dev/null 2>&1 || true
+    info "Running fwconsole chown..."
+    timeout 120 fwconsole chown >/dev/null 2>&1 || true
     ensure_fwconsole_executable
     chmod +x /var/lib/asterisk/agi-bin/*.agi /var/lib/asterisk/agi-bin/*.sh \
              /var/lib/asterisk/agi-bin/*.py /var/lib/asterisk/agi-bin/*.php 2>/dev/null || true
-    fwconsole reload --skip-registry-checks >/dev/null 2>&1 || true
+    info "Running fwconsole reload..."
+    timeout 120 fwconsole reload --skip-registry-checks >/dev/null 2>&1 || true
 
     # Final module cleanup — reload/refreshsignatures can pull modules back in.
     # Remove all Commercial-licensed modules and known-problematic ones.
@@ -7719,6 +7756,7 @@ finalize_installation() {
 
     # Final ownership + permission sweep — fwconsole and module installs run as root
     # and can leave root-owned or mode-600 files that Apache cannot read.
+    info "Fixing web root ownership and permissions..."
     # 1. Re-chown non-asterisk-owned items to asterisk:asterisk
     find "${WEB_ROOT}" -not -user asterisk -exec chown asterisk:asterisk {} + 2>/dev/null || true
     # 2. Ensure all files are group-readable (FreePBX LESS compiler explicitly chmod 0600
@@ -7746,18 +7784,22 @@ SVCEOF
 
     # Start/restart all core services via their canonical service units
     # freepbx.service (oneshot, RemainAfterExit=yes) manages Asterisk via fwconsole
-    # Starting it via systemd ensures systemd tracks the state correctly
+    # Starting it via systemd ensures systemd tracks the state correctly.
+    # Use timeout to prevent the oneshot from blocking the installer indefinitely.
     if [ -f /etc/systemd/system/freepbx.service ]; then
         # Kill any directly-started Asterisk so the oneshot can take ownership
         local _apid
         _apid=$(pgrep -x asterisk 2>/dev/null || true)
         if [ -n "$_apid" ]; then
-            fwconsole stop >/dev/null 2>&1 || kill "$_apid" 2>/dev/null || true
+            info "Stopping existing Asterisk process..."
+            timeout 30 fwconsole stop >/dev/null 2>&1 || kill "$_apid" 2>/dev/null || true
             sleep 3
             rm -f /var/run/asterisk/asterisk.ctl /run/asterisk/asterisk.ctl \
                   /var/run/asterisk/asterisk.pid  /run/asterisk/asterisk.pid
         fi
-        svc_start freepbx >/dev/null 2>&1 || fwconsole start >/dev/null 2>&1 || true
+        info "Starting FreePBX via systemd (may take up to 2 minutes)..."
+        timeout 180 systemctl start freepbx >/dev/null 2>&1 \
+            || timeout 60 fwconsole start >/dev/null 2>&1 || true
         sleep 5
     else
         safe_restart_asterisk
@@ -7797,8 +7839,8 @@ SVCEOF
     # Composer vendor updates all happen AFTER the early refreshsignatures in configure_freepbx(),
     # leaving vendor files flagged as "tampered" on first login. Running it here, after all
     # work is done, gives FreePBX a clean signature baseline to compare against.
-    info "Refreshing FreePBX module signatures (final pass)..."
-    fwconsole ma refreshsignatures > /dev/null 2>&1 || true
+    info "Refreshing FreePBX module signatures (final pass, network required)..."
+    timeout 120 fwconsole ma refreshsignatures > /dev/null 2>&1 || true
 
     # Clear notifications that are stale or expected on source installs:
     #   FW_TAMPERED:     vendor security patches don't match Sangoma's original signatures
@@ -8130,6 +8172,8 @@ run_installation() {
     [ -n "${_pre_avantfax_user}" ] && AVANTFAX_ADMIN_USERNAME="${_pre_avantfax_user}"
     [ -n "${_pre_avantfax_pw}" ]   && AVANTFAX_ADMIN_PASSWORD="${_pre_avantfax_pw}"
     normalize_admin_vars
+    # Recalculate step total now that IS_CONTAINER, PHP versions, and all INSTALL_* flags are set
+    compute_step_total
 
     setup_dns
     prepare_system
