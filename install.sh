@@ -3842,6 +3842,29 @@ RestartSec=10
 WantedBy=multi-user.target
 HFAXDSVCEOF
 
+    # faxgetty@.service — modem manager (one instance per IAXmodem device).
+    # faxgetty registers each PTY modem with faxq so HylaFAX can send/receive faxes.
+    # Without it, faxstat -s shows no modems even though IAXmodem is running.
+    local faxgetty_bin
+    faxgetty_bin=$(command -v faxgetty 2>/dev/null || echo "/usr/local/sbin/faxgetty")
+    cat > /etc/systemd/system/faxgetty@.service << FAXGETTYSVCEOF
+[Unit]
+Description=HylaFAX modem manager on /dev/%I
+After=hylafax.service hfaxd.service iaxmodem-ttyIAX%i.service
+Requires=hylafax.service
+
+[Service]
+Type=simple
+ExecStart=${faxgetty_bin} /dev/%I
+Restart=always
+RestartSec=5
+StandardOutput=null
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+FAXGETTYSVCEOF
+
     svc_daemon_reload
 }
 
@@ -4827,6 +4850,9 @@ HFMODEMCFG
 
         svc_enable "iaxmodem-ttyIAX${i}" 2>/dev/null || true
         svc_start  "iaxmodem-ttyIAX${i}" 2>/dev/null || true
+        # faxgetty@ttyIAXN registers the PTY modem with hylafax so faxstat -s shows it.
+        svc_enable "faxgetty@ttyIAX${i}" 2>/dev/null || true
+        svc_start  "faxgetty@ttyIAX${i}" 2>/dev/null || true
         i=$((i + 1))
     done
 
