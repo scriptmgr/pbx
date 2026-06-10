@@ -1766,17 +1766,28 @@ detect_ssh_safety() {
 schedule_firewall_rollback() {
     # Dead-man switch: flush iptables in 5 minutes in case we get locked out.
     # Cancelled by cancel_firewall_rollback() once rules are verified safe.
+    # Uses `at` when available, falls back to a background sleep process.
     if command_exists at; then
-        FIREWALL_ROLLBACK_JOB=$(echo "iptables -F INPUT; iptables -P INPUT ACCEPT" \
+        FIREWALL_ROLLBACK_JOB=$(echo "iptables -F INPUT; iptables -P INPUT ACCEPT; firewall-cmd --panic-off 2>/dev/null; true" \
             | at "now + 5 minutes" 2>&1 | awk '/^job/{print $2}')
-        info "Firewall rollback scheduled (job ${FIREWALL_ROLLBACK_JOB}) — cancels in 5m if not confirmed"
+        info "Firewall rollback scheduled via at (job ${FIREWALL_ROLLBACK_JOB}) — cancels in 5m if not confirmed"
+    else
+        # `at` not available — use a background sleep process instead
+        ( sleep 300; iptables -F INPUT; iptables -P INPUT ACCEPT
+          firewall-cmd --panic-off 2>/dev/null; true ) &
+        FIREWALL_ROLLBACK_JOB="$!"
+        info "Firewall rollback scheduled via background process (PID ${FIREWALL_ROLLBACK_JOB}) — cancels in 5m if not confirmed"
     fi
 }
 
 cancel_firewall_rollback() {
     [ -n "${FIREWALL_ROLLBACK_JOB:-}" ] || return 0
-    atrm "${FIREWALL_ROLLBACK_JOB}" 2>/dev/null && \
-        success "Firewall rollback cancelled — rules verified safe" || true
+    # Cancel `at` job if numeric, otherwise kill the background sleep process
+    if [[ "${FIREWALL_ROLLBACK_JOB}" =~ ^[0-9]+$ ]]; then
+        atrm "${FIREWALL_ROLLBACK_JOB}" 2>/dev/null || \
+            kill "${FIREWALL_ROLLBACK_JOB}" 2>/dev/null || true
+    fi
+    success "Firewall rollback cancelled — rules verified safe"
     FIREWALL_ROLLBACK_JOB=""
 }
 
@@ -5959,6 +5970,14 @@ configure_firewall() {
 configure_iptables() {
     step "🔥 Configuring iptables rules..."
     [ "${FIREWALL_ENABLED}" != "yes" ] && return 0
+
+    # Skip raw iptables when firewalld is active — firewalld manages its own
+    # nftables/iptables rules and flushing INPUT here will break its chains,
+    # leaving a DROP policy with nothing accepted (full lockout).
+    if command_exists firewall-cmd && svc_active firewalld 2>/dev/null; then
+        info "firewalld is active — skipping raw iptables (ports already opened by configure_firewall)"
+        return 0
+    fi
 
     local server_ip user_ip public_ip
     server_ip="${PRIMARY_IP:-}"
