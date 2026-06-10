@@ -7607,11 +7607,23 @@ finalize_installation() {
     # Ensure pbx_config.so (dialplan) is loaded after FreePBX generates configs
     asterisk -rx "module load pbx_config.so" >/dev/null 2>&1 || true
 
-    # Final ownership sweep — fwconsole and module installs run as root and can
-    # leave root-owned files in the web root that Apache cannot serve.
-    # Re-chown everything under WEB_ROOT to asterisk:asterisk after all fwconsole
-    # commands have finished generating files.
+    # Final ownership + permission sweep — fwconsole and module installs run as root
+    # and can leave root-owned or mode-600 files that Apache cannot read.
+    # 1. Re-chown non-asterisk-owned items to asterisk:asterisk
     find "${WEB_ROOT}" -not -user asterisk -exec chown asterisk:asterisk {} + 2>/dev/null || true
+    # 2. Ensure all files are group-readable (FreePBX LESS compiler explicitly chmod 0600
+    #    on cache files; Apache needs group read via its asterisk group membership)
+    find "${WEB_ROOT}" -type f -not -perm /g+r -exec chmod g+r {} + 2>/dev/null || true
+    find "${WEB_ROOT}" -type d -not -perm /g+rx -exec chmod g+rx {} + 2>/dev/null || true
+    # 3. Set default ACLs on FreePBX cache directories so future PHP-generated files
+    #    are group-readable by apache regardless of FreePBX's explicit chmod calls
+    if command_exists setfacl; then
+        for _cdir in \
+            "${WEB_ROOT}/admin/assets/less/cache" \
+            "${WEB_ROOT}/admin/assets"; do
+            [ -d "${_cdir}" ] && setfacl -d -m "g:${APACHE_USER}:rx" "${_cdir}" 2>/dev/null || true
+        done
+    fi
 
     # Add systemd override so pbx_config.so loads on every Asterisk start
     # (needed when preload fails because extensions.conf doesn't exist yet at boot)
