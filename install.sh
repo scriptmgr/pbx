@@ -2572,6 +2572,38 @@ install_mariadb() {
 
     pkg_install $PACKAGES_DISTRO_MARIADB
 
+    # Write /etc/my.cnf before starting MariaDB — sets charset, socket path, and tuning.
+    # Without this, MariaDB defaults to latin1 and may use the wrong socket path.
+    local _mycnf_sock="/var/lib/mysql/mysql.sock"
+    [ "${DISTRO_FAMILY}" = "debian" ] && _mycnf_sock="/var/run/mysqld/mysqld.sock"
+    if [ ! -f /etc/my.cnf ] || ! grep -q "# PBX managed" /etc/my.cnf 2>/dev/null; then
+        cat > /etc/my.cnf << MYCNFEOF
+# PBX managed — written by installer; safe to tune values below
+[mysqld]
+socket                  = ${_mycnf_sock}
+bind-address            = 127.0.0.1
+character-set-server    = utf8mb4
+collation-server        = utf8mb4_general_ci
+max_connections         = 300
+key_buffer_size         = 32M
+innodb_buffer_pool_size = 256M
+innodb_log_file_size    = 64M
+innodb_file_per_table   = 1
+slow_query_log          = 0
+skip_name_resolve
+
+[client]
+socket                  = ${_mycnf_sock}
+default-character-set   = utf8mb4
+
+[mysqldump]
+single-transaction
+quick
+max_allowed_packet      = 64M
+MYCNFEOF
+        info "Wrote /etc/my.cnf (utf8mb4, socket: ${_mycnf_sock})"
+    fi
+
     svc_enable mariadb 2>/dev/null || svc_enable mysql 2>/dev/null || true
     svc_start  mariadb 2>/dev/null || svc_start  mysql 2>/dev/null || true
 
@@ -3379,7 +3411,7 @@ MAINEOF
             # Patch the stock <Directory "/var/www/apache/pbx"> in httpd.conf
             # (added by base RPM) to allow .htaccess overrides too.
             if grep -q "^<Directory \"${WEB_ROOT}\">" "${main_conf}" 2>/dev/null; then
-                awk -v root="${WEB_ROOT}" '
+                if awk -v root="${WEB_ROOT}" '
                     BEGIN { in_block = 0 }
                     {
                         if ($0 ~ "^<Directory \"" root "\">") { in_block = 1 }
@@ -3392,7 +3424,12 @@ MAINEOF
                         print
                         if (in_block && $0 ~ /^<\/Directory>/) { in_block = 0 }
                     }
-                ' "${main_conf}" > "${main_conf}.tmp" && mv "${main_conf}.tmp" "${main_conf}"
+                ' "${main_conf}" > "${main_conf}.tmp" 2>/dev/null; then
+                    mv "${main_conf}.tmp" "${main_conf}" || true
+                else
+                    warn "httpd.conf AllowOverride patch failed — skipping (config unchanged)"
+                    rm -f "${main_conf}.tmp"
+                fi
             fi
 
             # 2. Single vhost file — remove old per-component files first
@@ -3923,7 +3960,7 @@ XMPPEOF
 
     # Disable module signature checking before repo/module downloads — prevents
     # slow or timing-sensitive GPG verification from breaking community installs.
-    fwconsole setting SIGNATURECHECK 0 2>/dev/null || true
+    fwconsole setting SIGNATURECHECK 0 > /dev/null 2>&1 || true
     mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk 2>/dev/null << 'NOSIGEARLYEOF' || true
 INSERT INTO admin (variable, value) VALUES ('SIGNATURECHECK', '0')
 ON DUPLICATE KEY UPDATE value='0';
@@ -3932,10 +3969,10 @@ NOSIGEARLYEOF
     info "Installing FreePBX modules..."
     seed_freepbx_module_defaults || warn "Failed to seed FreePBX module defaults"
     # Enable repos BEFORE installall — installall downloads from repos
-    fwconsole ma enablerepo standard    2>/dev/null || true
-    fwconsole ma enablerepo extended    2>/dev/null || true
-    fwconsole ma enablerepo unsupported 2>/dev/null || true
-    fwconsole ma installall 2>/dev/null || warn "Module installall had errors"
+    fwconsole ma enablerepo standard    > /dev/null 2>&1 || true
+    fwconsole ma enablerepo extended    > /dev/null 2>&1 || true
+    fwconsole ma enablerepo unsupported > /dev/null 2>&1 || true
+    fwconsole ma installall > /dev/null 2>&1 || warn "Module installall had errors"
 
     # Several legacy/virtual modules are no longer published as separate downloads.
     # Keep the explicit loop limited to modules that remain online.
@@ -3945,27 +3982,27 @@ NOSIGEARLYEOF
                callforward findmefollow donotdisturb parking paging \
                callrecording recordings announcement conferences \
                cidlookup directory ucp userman hotelwakeup; do
-        fwconsole ma downloadinstall "${mod}" 2>/dev/null || true
+        fwconsole ma downloadinstall "${mod}" > /dev/null 2>&1 || true
     done
 
     local installed_modules
     installed_modules=$(fwconsole ma list 2>/dev/null || true)
     printf '%s\n' "${installed_modules}" | grep -qE '^firewall[[:space:]]' \
-        && fwconsole ma remove firewall 2>/dev/null || true
+        && fwconsole ma remove firewall > /dev/null 2>&1 || true
     printf '%s\n' "${installed_modules}" | grep -qE '^synologyabb[[:space:]]' \
-        && fwconsole ma remove synologyabb 2>/dev/null || true
+        && fwconsole ma remove synologyabb > /dev/null 2>&1 || true
 
     local ari_user ari_pass
     ari_user="ari_$(generate_password 4 2>/dev/null | tr '[:upper:]' '[:lower:]' || echo "pbxuser")"
     ari_pass=$(generate_password 20)
-    fwconsole setting FPBX_ARI_USER      "${ari_user}"    2>/dev/null || true
-    fwconsole setting FPBX_ARI_PASSWORD  "${ari_pass}"    2>/dev/null || true
+    fwconsole setting FPBX_ARI_USER      "${ari_user}"    > /dev/null 2>&1 || true
+    fwconsole setting FPBX_ARI_PASSWORD  "${ari_pass}"    > /dev/null 2>&1 || true
     # FreePBX generates tlsbindaddr=${HTTPTLSBINDADDRESS}:${HTTPTLSBINDPORT} —
     # do NOT include the port in HTTPTLSBINDADDRESS or the result is "ip:port:port".
-    fwconsole setting HTTPTLSBINDADDRESS "0.0.0.0"        2>/dev/null || true
-    fwconsole setting HTTPTLSBINDPORT    "8089"            2>/dev/null || true
-    fwconsole setting HTTPBINDADDRESS    "127.0.0.1"       2>/dev/null || true
-    fwconsole setting HTTPBINDPORT       "8088"            2>/dev/null || true
+    fwconsole setting HTTPTLSBINDADDRESS "0.0.0.0"        > /dev/null 2>&1 || true
+    fwconsole setting HTTPTLSBINDPORT    "8089"            > /dev/null 2>&1 || true
+    fwconsole setting HTTPBINDADDRESS    "127.0.0.1"       > /dev/null 2>&1 || true
+    fwconsole setting HTTPBINDPORT       "8088"            > /dev/null 2>&1 || true
     seed_freepbx_module_defaults || warn "Failed to refresh FreePBX module defaults"
 
     # Create the initial FreePBX admin user via SQL for consistent unattended installs.
@@ -4111,43 +4148,43 @@ NATEOF
 
     # User-facing modules
     for mod in ucp hotelwakeup userman voicemail recordings; do
-        fwconsole ma downloadinstall "${mod}" 2>/dev/null || true
+        fwconsole ma downloadinstall "${mod}" > /dev/null 2>&1 || true
     done
 
     # Remove problematic/unneeded modules only if they are present.
     installed_modules=$(fwconsole ma list 2>/dev/null || true)
     for mod in firewall sysadmin synologyabb; do
         printf '%s\n' "${installed_modules}" | grep -qE "^${mod}[[:space:]]" \
-            && fwconsole ma remove "${mod}" 2>/dev/null || true
+            && fwconsole ma remove "${mod}" > /dev/null 2>&1 || true
     done
     if ! lsmod 2>/dev/null | grep -q "^dahdi"; then
         for mod in dahdi dahdichandids; do
             printf '%s\n' "${installed_modules}" | grep -qE "^${mod}[[:space:]]" \
-                && fwconsole ma remove "${mod}" 2>/dev/null || true
+                && fwconsole ma remove "${mod}" > /dev/null 2>&1 || true
         done
         rm -rf /etc/dahdi 2>/dev/null || true
         rm -f /etc/asterisk/dahdi* 2>/dev/null || true
     fi
 
     # Enable CDR and queue logging
-    fwconsole setting ASTRUNDIR /var/run/asterisk 2>/dev/null || true
+    fwconsole setting ASTRUNDIR /var/run/asterisk > /dev/null 2>&1 || true
     ensure_freepbx_manager_credentials || warn "Failed to sync FreePBX manager credentials"
-    fwconsole setting FREEPBX_SYSTEM_IDENT "${FROM_NAME}" 2>/dev/null || true
-    fwconsole setting DASHBOARD_FREEPBX_BRAND "${FROM_NAME}" 2>/dev/null || true
+    fwconsole setting FREEPBX_SYSTEM_IDENT "${FROM_NAME}" > /dev/null 2>&1 || true
+    fwconsole setting DASHBOARD_FREEPBX_BRAND "${FROM_NAME}" > /dev/null 2>&1 || true
     fwconsole setting TIMEZONE "${TIMEZONE:-America/New_York}" > /dev/null 2>&1 || true
-    fwconsole setting RSSFEEDS "" 2>/dev/null || true
-    fwconsole setting BROWSER_STATS 0 2>/dev/null || true
+    fwconsole setting RSSFEEDS "" > /dev/null 2>&1 || true
+    fwconsole setting BROWSER_STATS 0 > /dev/null 2>&1 || true
 
     # Set AMPWEBADDRESS so voicemail email notifications contain a working link to UCP.
     # Without this, the link in voicemail emails resolves to /ucp (relative, broken).
     local _ampweb_scheme="http"
     [ "${SSL_ENABLED:-yes}" = "yes" ] && _ampweb_scheme="https"
-    fwconsole setting AMPWEBADDRESS "${_ampweb_scheme}://${SYSTEM_FQDN}" 2>/dev/null || true
+    fwconsole setting AMPWEBADDRESS "${_ampweb_scheme}://${SYSTEM_FQDN}" > /dev/null 2>&1 || true
 
     # Force AMI host to IPv4 loopback. "localhost" resolves to ::1 on most
     # modern distros, but Asterisk AMI binds IPv4-only by default — Node-based
     # daemons (UCP, etc.) hit ECONNREFUSED on ::1 and crash-loop.
-    fwconsole setting ASTMANAGERHOST 127.0.0.1 2>/dev/null || true
+    fwconsole setting ASTMANAGERHOST 127.0.0.1 > /dev/null 2>&1 || true
 
     # Seed UpdateManager notification email so security/update mails actually
     # have a recipient (otherwise FreePBX raises "Failed to send email to ''").
@@ -4163,7 +4200,7 @@ NATEOF
 
     # Re-enable signature checking after module installation so the finished
     # system doesn't retain a permanent security warning.
-    fwconsole setting SIGNATURECHECK 1 2>/dev/null || true
+    fwconsole setting SIGNATURECHECK 1 > /dev/null 2>&1 || true
     mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk 2>/dev/null << 'SIGEOF' || true
 INSERT INTO admin (variable, value) VALUES ('SIGNATURECHECK', '1')
 ON DUPLICATE KEY UPDATE value='1';
@@ -4262,9 +4299,7 @@ HCEOF
         warn "postconf not found — skipping postfix configuration (postfix not installed?)"
     fi
 
-    # enable-gmail-smarthost is deployed via scripts/ directory.
-    [ -x /usr/local/bin/enable-gmail-smarthost ] || \
-        warn "enable-gmail-smarthost not in /usr/local/bin (deployed via scripts/)"
+    # enable-gmail-smarthost is deployed via sync_management_scripts later in the run
 
     mark_done postfix
     success "Postfix installed"
@@ -4280,15 +4315,16 @@ install_hylafax() {
     if command_exists faxstat; then
         info "HylaFAX binaries already installed — ensuring config and services"
     else
-        # Try package install first
-        if [ -n "${PACKAGES_DISTRO_FAX:-}" ]; then
-            pkg_install_one_by_one $PACKAGES_DISTRO_FAX
-        fi
-
-        # On RHEL/Fedora, hylafax+ has no package in EPEL9/10 — compile from source
-        if ! command_exists faxstat && [ "${DISTRO_FAMILY}" = "rhel" -o "${DISTRO_FAMILY}" = "fedora" ]; then
-            info "HylaFAX+ package not available — compiling from source..."
+        # hylafax+ is absent from EPEL9/10 — skip the package attempt on RHEL/Fedora
+        # to avoid a noisy expected failure; go straight to source compile instead.
+        if [ "${DISTRO_FAMILY}" = "rhel" ] || [ "${DISTRO_FAMILY}" = "fedora" ]; then
+            info "hylafax+ not in EPEL9 — compiling from source..."
             _compile_hylafax_source || warn "HylaFAX+ source compile failed"
+        else
+            # Debian/Ubuntu: package is available
+            if [ -n "${PACKAGES_DISTRO_FAX:-}" ]; then
+                pkg_install_one_by_one $PACKAGES_DISTRO_FAX
+            fi
         fi
 
         if ! command_exists faxstat; then
@@ -4764,9 +4800,7 @@ configure_email_to_fax() {
     [ -z "${EMAIL_TO_FAX_ALIAS}" ] && generate_fax_alias
     save_pbx_env
 
-    # email-to-fax.sh is deployed via scripts/ directory.
-    [ -x /usr/local/bin/email-to-fax.sh ] || \
-        warn "email-to-fax.sh not in /usr/local/bin (deployed via scripts/)"
+    # email-to-fax.sh is deployed via sync_management_scripts later in the run
     # Pre-create the spool dir the script writes into, so the MTA can
     # pipe the message even before the script's first invocation.
     mkdir -p /var/spool/fax/email
@@ -4780,11 +4814,8 @@ configure_fax_to_email() {
     [ -z "${FAX_FROM_EMAIL}" ]       && FAX_FROM_EMAIL="${FROM_EMAIL:-no-reply@localhost}"
     [ -z "${FAX_FROM_NAME}" ]        && FAX_FROM_NAME="${FROM_NAME:-PBX Fax System}"
 
-    # fax-to-email.sh is deployed via scripts/ directory and reads
-    # FAX_TO_EMAIL_ADDRESS / FAX_FROM_EMAIL / FAX_FROM_NAME from
-    # /etc/pbx/.env at runtime — no install-time interpolation.
-    [ -x /usr/local/bin/fax-to-email.sh ] || \
-        warn "fax-to-email.sh not in /usr/local/bin (deployed via scripts/)"
+    # fax-to-email.sh reads FAX_TO_EMAIL_ADDRESS / FAX_FROM_EMAIL / FAX_FROM_NAME from
+    # /etc/pbx/.env at runtime — deployed via sync_management_scripts later in the run
 
     # Register with HylaFAX FaxDispatch if present
     if [ -f /var/spool/hylafax/etc/FaxDispatch ]; then
@@ -6319,9 +6350,9 @@ setup_backup_system() {
 
     mkdir -p "${BACKUP_BASE}"/{daily,weekly,monthly}
 
-    # pbx-backup-run is deployed via scripts/ directory.
+    # pbx-backup-run is deployed via sync_management_scripts; skip cron setup if not yet present
     if [ ! -x /usr/local/bin/pbx-backup-run ]; then
-        warn "pbx-backup-run not found in /usr/local/bin — skipping backup cron"
+        info "pbx-backup-run not yet deployed — backup cron will be configured after script sync"
         return 0
     fi
 
@@ -6721,15 +6752,7 @@ RCLCRONEOF
 
 create_root_scripts() {
     step "📜 Creating root utility scripts..."
-    info "Verifying admin shortcuts (deployed via scripts/)"
-
-    # ipchecker is deployed via scripts/ directory.
-    [ -x /usr/local/bin/ipchecker ] || warn "ipchecker missing in /usr/local/bin"
-
-    # admin-pw-change, sig-fix, timezone-setup are all deployed via scripts/.
-    [ -x /usr/local/bin/admin-pw-change ] || warn "admin-pw-change missing in /usr/local/bin"
-    [ -x /usr/local/bin/sig-fix ]         || warn "sig-fix missing in /usr/local/bin"
-    [ -x /usr/local/bin/timezone-setup ]  || warn "timezone-setup missing in /usr/local/bin"
+    info "Setting up admin shortcuts"
 
     # System-wide shell aliases
     cat > /etc/profile.d/pbx-aliases.sh << 'BPEOF'
@@ -6939,9 +6962,9 @@ setup_qos() {
     [ "${IS_CONTAINER:-0}" = "1" ] && return 0
     step "Configuring QoS for VoIP..."
 
-    # pbx-qos-apply is deployed via scripts/ directory.
+    # pbx-qos-apply is deployed via sync_management_scripts
     if [ ! -x /usr/local/bin/pbx-qos-apply ]; then
-        warn "pbx-qos-apply not found in /usr/local/bin — skipping QoS"
+        info "pbx-qos-apply not yet deployed — skipping QoS setup"
         return 0
     fi
 
@@ -7164,10 +7187,8 @@ HEALTHEOF
 
     chown -R "${APACHE_USER:-www-data}:${APACHE_GROUP:-www-data}" "${status_dir}" "${health_dir}" 2>/dev/null || true
 
-    # pbx-status-update is deployed via scripts/ directory.
-    if [ ! -x /usr/local/bin/pbx-status-update ]; then
-        warn "pbx-status-update not found in /usr/local/bin — status endpoint will be stale"
-    else
+    # pbx-status-update is deployed via sync_management_scripts (runs after build_status_page)
+    if [ -x /usr/local/bin/pbx-status-update ]; then
         /usr/local/bin/pbx-status-update 2>/dev/null || true
         echo "* * * * * root /usr/local/bin/pbx-status-update" > /etc/cron.d/pbx-status
         chmod 644 /etc/cron.d/pbx-status
@@ -7184,15 +7205,11 @@ ensure_status_runtime_hooks() {
         /usr/local/bin/pbx-status-update >/dev/null 2>&1 || true
         echo "* * * * * root /usr/local/bin/pbx-status-update" > /etc/cron.d/pbx-status
         chmod 644 /etc/cron.d/pbx-status
-    else
-        warn "pbx-status-update not found in /usr/local/bin — status endpoint will be stale"
     fi
 
     if [ -x /usr/local/bin/pbx-health-check ]; then
         echo "*/5 * * * * root /usr/local/bin/pbx-health-check" > /etc/cron.d/pbx-health
         chmod 644 /etc/cron.d/pbx-health
-    else
-        warn "pbx-health-check not found in /usr/local/bin — health cron remains disabled"
     fi
 }
 
@@ -7203,10 +7220,9 @@ ensure_status_runtime_hooks() {
 setup_health_monitoring() {
     step "Setting up health monitoring..."
 
-    # pbx-health-check is deployed via scripts/ directory and reads
-    # ADMIN_EMAIL / FROM_EMAIL / FROM_NAME from /etc/pbx/.env at runtime.
+    # pbx-health-check is deployed via sync_management_scripts; reads ADMIN_EMAIL from /etc/pbx/.env
     if [ ! -x /usr/local/bin/pbx-health-check ]; then
-        warn "pbx-health-check not found in /usr/local/bin — skipping health cron"
+        info "pbx-health-check not yet deployed — skipping health cron"
         return 0
     fi
 
@@ -7468,7 +7484,7 @@ SVCEOF
     # leaving vendor files flagged as "tampered" on first login. Running it here, after all
     # work is done, gives FreePBX a clean signature baseline to compare against.
     info "Refreshing FreePBX module signatures (final pass)..."
-    fwconsole ma refreshsignatures 2>/dev/null || true
+    fwconsole ma refreshsignatures > /dev/null 2>&1 || true
 
     # Mark installation complete
     echo "INSTALL_COMPLETE=$(date +%s)" >> "${INSTALL_INVENTORY}"
