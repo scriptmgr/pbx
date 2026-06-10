@@ -1894,7 +1894,7 @@ sync_management_scripts() {
         local target="${install_dir}/${name}"
 
         # Download
-        if curl -fsSL "${download_url}" -o "${target}.tmp" 2>/dev/null; then
+        if curl -fsSL "${download_url}" -o "${target}.tmp" > /dev/null 2>/dev/null; then
             chmod 755 "${target}.tmp"
             mv "${target}.tmp" "${target}"
             updated=$(( updated + 1 ))
@@ -2331,16 +2331,18 @@ setup_repositories() {
                 info "Added EPEL repository"
             fi
 
-            # CRB/PowerTools (RHEL 8+)
+            # CRB/PowerTools (RHEL 8+) — skip entirely when any CRB-like repo is already enabled
             local major_ver
             major_ver=$(echo "${DETECTED_VERSION}" | cut -d. -f1)
             if [ "${major_ver}" -ge 8 ] 2>/dev/null; then
-                # Oracle Linux uses "ol{N}_codeready_builder", others use "crb" or "powertools"
-                if [ "${DETECTED_OS}" = "ol" ] || [ "${DETECTED_OS}" = "oraclelinux" ]; then
+                if ${PACKAGE_MGR_BIN} repolist enabled 2>/dev/null | grep -qi "crb\|powertools\|codeready"; then
+                    info "CRB/PowerTools already enabled — skipping"
+                elif [ "${DETECTED_OS}" = "ol" ] || [ "${DETECTED_OS}" = "oraclelinux" ]; then
                     run_logged "repo: enable ol${major_ver}_codeready_builder" \
                         ${PACKAGE_MGR_BIN} config-manager --set-enabled "ol${major_ver}_codeready_builder" || \
                         run_logged "repo: enable ol${major_ver}_codeready_builder (alt)" \
                             ${PACKAGE_MGR_BIN} config-manager --enable "ol${major_ver}_codeready_builder" || true
+                    info "Enabled CRB/PowerTools"
                 else
                     run_logged "repo: enable CRB" \
                         ${PACKAGE_MGR_BIN} config-manager --set-enabled crb || \
@@ -2348,8 +2350,8 @@ setup_repositories() {
                             ${PACKAGE_MGR_BIN} config-manager --set-enabled powertools || \
                         run_logged "repo: enable crb (alt)" \
                             ${PACKAGE_MGR_BIN} config-manager --enable crb || true
+                    info "Enabled CRB/PowerTools"
                 fi
-                info "Enabled CRB/PowerTools"
             fi
 
             # Remi PHP repository
@@ -6099,6 +6101,16 @@ install_fail2ban() {
     pkg_install fail2ban
 
     mkdir -p /etc/fail2ban/jail.d
+
+    # Deduplicate 'backend' in [DEFAULT] of jail.conf — re-runs or package upgrades
+    # can leave duplicate entries that prevent fail2ban from starting.
+    if [ -f /etc/fail2ban/jail.conf ] && \
+       [ "$(grep -c '^backend' /etc/fail2ban/jail.conf 2>/dev/null)" -gt 1 ]; then
+        awk '/^backend/{count++; if(count>1) next} {print}' \
+            /etc/fail2ban/jail.conf > /tmp/jail.conf.dedup && \
+            mv /tmp/jail.conf.dedup /etc/fail2ban/jail.conf || true
+        info "Deduplicated backend entries in jail.conf"
+    fi
 
     # Ensure Asterisk log directory/file exist so fail2ban can start
     mkdir -p /var/log/asterisk
