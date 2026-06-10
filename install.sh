@@ -603,7 +603,9 @@ detect_system() {
         ADMIN_EMAIL="admin@${SYSTEM_DOMAIN}"
     fi
     # Set FROM_EMAIL/FROM_NAME defaults now that FQDN is known
-    [ -z "${FROM_EMAIL:-}" ] && FROM_EMAIL="no-reply@${SYSTEM_FQDN}"
+    # Use the parent domain (casjay.tel) not the hostname (pbx.casjay.tel) so FROM_EMAIL
+    # matches the domain's SPF/DKIM records and looks like a proper no-reply address.
+    [ -z "${FROM_EMAIL:-}" ] && FROM_EMAIL="no-reply@${SYSTEM_DOMAIN:-${SYSTEM_FQDN}}"
     [ -z "${FROM_NAME:-}" ]  && FROM_NAME="PBX System"
 
     info "OS: ${DETECTED_OS} ${DETECTED_VERSION} (${DISTRO_FAMILY} gen${DISTRO_GEN})"
