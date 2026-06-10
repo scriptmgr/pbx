@@ -2771,9 +2771,19 @@ install_php() {
                 sed -i "s|^group = .*|group = asterisk|" "${fpm_www}"
                 if [ -n "${PHP_FPM_SOCK}" ]; then
                     sed -i "s|^listen = .*|listen = ${PHP_FPM_SOCK}|" "${fpm_www}"
-                    sed -i "s|^;listen.owner.*\|^listen.owner.*|listen.owner = apache|" "${fpm_www}"
-                    sed -i "s|^;listen.group.*\|^listen.group.*|listen.group = apache|" "${fpm_www}"
-                    sed -i "s|^listen.acl_users.*|listen.acl_users = apache,nginx,asterisk|" "${fpm_www}"
+                    # Set listen.owner/group so Apache can connect to the socket.
+                    # sed only replaces existing lines; append after listen = if absent.
+                    grep -q "^listen\.owner" "${fpm_www}" \
+                        && sed -i "s|^listen\.owner.*|listen.owner = apache|" "${fpm_www}" \
+                        || sed -i "/^listen = /a listen.owner = apache" "${fpm_www}"
+                    grep -q "^listen\.group" "${fpm_www}" \
+                        && sed -i "s|^listen\.group.*|listen.group = apache|" "${fpm_www}" \
+                        || sed -i "/^listen = /a listen.group = apache" "${fpm_www}"
+                    grep -q "^listen\.mode" "${fpm_www}" \
+                        && sed -i "s|^listen\.mode.*|listen.mode = 0660|" "${fpm_www}" \
+                        || sed -i "/^listen\.group = apache/a listen.mode = 0660" "${fpm_www}"
+                    sed -i "s|^;listen\.owner.*||; s|^;listen\.group.*||; s|^;listen\.mode.*||" "${fpm_www}"
+                    sed -i "s|^listen\.acl_users.*|listen.acl_users = apache,nginx,asterisk|" "${fpm_www}"
                 elif [ -n "${PHP_FPM_PORT}" ]; then
                     sed -i "s|^listen = .*|listen = 127.0.0.1:${PHP_FPM_PORT}|" "${fpm_www}"
                 fi
