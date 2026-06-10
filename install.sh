@@ -7604,6 +7604,16 @@ finalize_installation() {
     chmod +x /var/lib/asterisk/agi-bin/*.agi /var/lib/asterisk/agi-bin/*.sh \
              /var/lib/asterisk/agi-bin/*.py /var/lib/asterisk/agi-bin/*.php 2>/dev/null || true
     fwconsole reload --skip-registry-checks >/dev/null 2>&1 || true
+
+    # Final module cleanup — some modules get pulled back in during reload/refresh.
+    # synologyabb: throws "Sysadmin RPM not up to date" on source-installed systems.
+    # sysadmin: commercial module, irrelevant on source installs.
+    # firewall: conflicts with system firewall management.
+    for _rm_mod in synologyabb sysadmin firewall; do
+        fwconsole ma list 2>/dev/null | grep -qE "^${_rm_mod}[[:space:]]" \
+            && fwconsole ma remove "${_rm_mod}" > /dev/null 2>&1 || true
+    done
+
     # Ensure pbx_config.so (dialplan) is loaded after FreePBX generates configs
     asterisk -rx "module load pbx_config.so" >/dev/null 2>&1 || true
 
