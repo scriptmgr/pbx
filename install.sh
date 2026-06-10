@@ -3231,16 +3231,25 @@ generate_apache_vhost_config() {
         info "vhosts.d detected — writing ${vhost_conf}"
 
         # Ensure the directory is included by the main conf (one-time add only)
+        # In proxy mode also write a dedicated Listen directive — VirtualHost
+        # binds will be silently ignored if no matching Listen is present.
         case "${DISTRO_FAMILY}" in
             rhel|fedora)
                 local _mc="/etc/httpd/conf/httpd.conf"
                 grep -q "vhosts.d" "${_mc}" 2>/dev/null || \
                     echo "IncludeOptional conf/vhosts.d/*.conf" >> "${_mc}"
+                if [ "${BEHIND_PROXY:-no}" = "yes" ] && [ -n "${proxy_bind:-}" ]; then
+                    echo "Listen ${proxy_bind}" > /etc/httpd/conf.d/pbx-listen.conf
+                fi
                 ;;
             debian)
                 local _mc="/etc/apache2/apache2.conf"
                 grep -q "vhosts.d" "${_mc}" 2>/dev/null || \
                     echo "IncludeOptional vhosts.d/*.conf" >> "${_mc}"
+                if [ "${BEHIND_PROXY:-no}" = "yes" ] && [ -n "${proxy_bind:-}" ]; then
+                    echo "Listen ${proxy_bind}" > /etc/apache2/conf-available/pbx-listen.conf
+                    a2enconf pbx-listen 2>/dev/null || true
+                fi
                 a2enmod rewrite ssl proxy proxy_fcgi proxy_http setenvif \
                         headers expires deflate remoteip 2>/dev/null || true
                 ;;
