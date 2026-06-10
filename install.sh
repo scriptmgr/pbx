@@ -7577,10 +7577,12 @@ CCAEOF
 finalize_installation() {
     step "🏁 Finalizing installation..."
 
-    # Set correct permissions on key directories
+    # Set correct permissions on key directories.
+    # Web root must be asterisk:asterisk so PHP-FPM (runs as asterisk) can write.
+    # Apache reads via group membership (apache is in the asterisk group).
     chown -R asterisk:asterisk \
-        /etc/asterisk /var/lib/asterisk /var/log/asterisk /var/spool/asterisk 2>/dev/null || true
-    chown -R "${APACHE_USER}":"${APACHE_GROUP}" "${WEB_ROOT}" 2>/dev/null || true
+        /etc/asterisk /var/lib/asterisk /var/log/asterisk /var/spool/asterisk \
+        "${WEB_ROOT}" 2>/dev/null || true
     chmod 750 "${PBX_ENV_DIR}" 2>/dev/null || true
     chmod 600 "${PBX_ENV_FILE}" 2>/dev/null || true
 
@@ -7604,6 +7606,12 @@ finalize_installation() {
     fwconsole reload --skip-registry-checks >/dev/null 2>&1 || true
     # Ensure pbx_config.so (dialplan) is loaded after FreePBX generates configs
     asterisk -rx "module load pbx_config.so" >/dev/null 2>&1 || true
+
+    # Final ownership sweep — fwconsole and module installs run as root and can
+    # leave root-owned files in the web root that Apache cannot serve.
+    # Re-chown everything under WEB_ROOT to asterisk:asterisk after all fwconsole
+    # commands have finished generating files.
+    find "${WEB_ROOT}" -not -user asterisk -exec chown asterisk:asterisk {} + 2>/dev/null || true
 
     # Add systemd override so pbx_config.so loads on every Asterisk start
     # (needed when preload fails because extensions.conf doesn't exist yet at boot)
