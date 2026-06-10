@@ -337,7 +337,7 @@ _spinner_stop() {
 
 run_logged() {
     local label="$1"; shift
-    printf "\n=== [%s] %s: %s ===\n" "$(date '+%H:%M:%S')" "${label}" "$*" >> "${LOG_FILE}"
+    printf "=== [%s] %s: %s ===\n" "$(date '+%H:%M:%S')" "${label}" "$*" >> "${LOG_FILE}"
     _spinner_start "${label}"
     local rc=0
     "$@" >> "${LOG_FILE}" 2>&1 || rc=$?
@@ -2308,12 +2308,15 @@ setup_repositories() {
 
         rhel)
             # dnf-plugins-core required for config-manager
-            ${PACKAGE_MGR_BIN} ${PACKAGE_MGR_ARG} dnf-plugins-core 2>/dev/null \
-                || ${PACKAGE_MGR_BIN} ${PACKAGE_MGR_ARG} yum-utils 2>/dev/null || true
+            run_logged "repo: dnf-plugins-core" \
+                ${PACKAGE_MGR_BIN} ${PACKAGE_MGR_ARG} dnf-plugins-core || \
+                run_logged "repo: yum-utils" \
+                    ${PACKAGE_MGR_BIN} ${PACKAGE_MGR_ARG} yum-utils || true
 
             # EPEL
             if ! repo_exists "epel"; then
-                ${PACKAGE_MGR_BIN} ${PACKAGE_MGR_ARG} epel-release 2>/dev/null || true
+                run_logged "repo: EPEL" \
+                    ${PACKAGE_MGR_BIN} ${PACKAGE_MGR_ARG} epel-release || true
                 info "Added EPEL repository"
             fi
 
@@ -2323,14 +2326,17 @@ setup_repositories() {
             if [ "${major_ver}" -ge 8 ] 2>/dev/null; then
                 # Oracle Linux uses "ol{N}_codeready_builder", others use "crb" or "powertools"
                 if [ "${DETECTED_OS}" = "ol" ] || [ "${DETECTED_OS}" = "oraclelinux" ]; then
-                    ${PACKAGE_MGR_BIN} config-manager --set-enabled "ol${major_ver}_codeready_builder" 2>/dev/null \
-                        || ${PACKAGE_MGR_BIN} config-manager --enable "ol${major_ver}_codeready_builder" 2>/dev/null \
-                        || true
+                    run_logged "repo: enable ol${major_ver}_codeready_builder" \
+                        ${PACKAGE_MGR_BIN} config-manager --set-enabled "ol${major_ver}_codeready_builder" || \
+                        run_logged "repo: enable ol${major_ver}_codeready_builder (alt)" \
+                            ${PACKAGE_MGR_BIN} config-manager --enable "ol${major_ver}_codeready_builder" || true
                 else
-                    ${PACKAGE_MGR_BIN} config-manager --set-enabled crb 2>/dev/null \
-                        || ${PACKAGE_MGR_BIN} config-manager --set-enabled powertools 2>/dev/null \
-                        || ${PACKAGE_MGR_BIN} config-manager --enable crb 2>/dev/null \
-                        || true
+                    run_logged "repo: enable CRB" \
+                        ${PACKAGE_MGR_BIN} config-manager --set-enabled crb || \
+                        run_logged "repo: enable powertools" \
+                            ${PACKAGE_MGR_BIN} config-manager --set-enabled powertools || \
+                        run_logged "repo: enable crb (alt)" \
+                            ${PACKAGE_MGR_BIN} config-manager --enable crb || true
                 fi
                 info "Enabled CRB/PowerTools"
             fi
@@ -2338,18 +2344,19 @@ setup_repositories() {
             # Remi PHP repository
             if ! repo_exists "remirepo"; then
                 case "${major_ver}" in
-                    6) ${PACKAGE_MGR_BIN} ${PACKAGE_MGR_ARG} https://rpms.remirepo.net/enterprise/remi-release-6.rpm 2>/dev/null || true ;;
-                    7) ${PACKAGE_MGR_BIN} ${PACKAGE_MGR_ARG} https://rpms.remirepo.net/enterprise/remi-release-7.rpm 2>/dev/null || true ;;
-                    8) ${PACKAGE_MGR_BIN} ${PACKAGE_MGR_ARG} https://rpms.remirepo.net/enterprise/remi-release-8.rpm 2>/dev/null || true ;;
-                    9) ${PACKAGE_MGR_BIN} ${PACKAGE_MGR_ARG} https://rpms.remirepo.net/enterprise/remi-release-9.rpm 2>/dev/null || true ;;
-                    *) ${PACKAGE_MGR_BIN} ${PACKAGE_MGR_ARG} https://rpms.remirepo.net/enterprise/remi-release-10.rpm 2>/dev/null || true ;;
+                    6) run_logged "repo: Remi el6" ${PACKAGE_MGR_BIN} ${PACKAGE_MGR_ARG} https://rpms.remirepo.net/enterprise/remi-release-6.rpm || true ;;
+                    7) run_logged "repo: Remi el7" ${PACKAGE_MGR_BIN} ${PACKAGE_MGR_ARG} https://rpms.remirepo.net/enterprise/remi-release-7.rpm || true ;;
+                    8) run_logged "repo: Remi el8" ${PACKAGE_MGR_BIN} ${PACKAGE_MGR_ARG} https://rpms.remirepo.net/enterprise/remi-release-8.rpm || true ;;
+                    9) run_logged "repo: Remi el9" ${PACKAGE_MGR_BIN} ${PACKAGE_MGR_ARG} https://rpms.remirepo.net/enterprise/remi-release-9.rpm || true ;;
+                    *) run_logged "repo: Remi el10" ${PACKAGE_MGR_BIN} ${PACKAGE_MGR_ARG} https://rpms.remirepo.net/enterprise/remi-release-10.rpm || true ;;
                 esac
                 info "Added Remi repository"
             fi
 
             # NodeSource
             if ! repo_exists "nodesource"; then
-                curl -fsSL "https://rpm.nodesource.com/setup_${NODEJS_MAJOR}.x" | bash - 2>/dev/null || true
+                run_logged "repo: NodeSource setup" \
+                    bash -c "curl -fsSL 'https://rpm.nodesource.com/setup_${NODEJS_MAJOR}.x' | bash -" || true
                 info "Added NodeSource repository"
             fi
 
@@ -2377,16 +2384,19 @@ VAULTEOF
             ;;
 
         fedora)
-            ${PACKAGE_MGR_BIN} ${PACKAGE_MGR_ARG} dnf-plugins-core 2>/dev/null || true
+            run_logged "repo: dnf-plugins-core" \
+                ${PACKAGE_MGR_BIN} ${PACKAGE_MGR_ARG} dnf-plugins-core || true
             if ! repo_exists "remirepo"; then
                 local fedora_ver
                 fedora_ver=$(echo "${DETECTED_VERSION}" | cut -d. -f1)
-                ${PACKAGE_MGR_BIN} ${PACKAGE_MGR_ARG} \
-                    "https://rpms.remirepo.net/fedora/remi-release-${fedora_ver}.rpm" 2>/dev/null || true
+                run_logged "repo: Remi fedora${fedora_ver}" \
+                    ${PACKAGE_MGR_BIN} ${PACKAGE_MGR_ARG} \
+                    "https://rpms.remirepo.net/fedora/remi-release-${fedora_ver}.rpm" || true
                 info "Added Remi repository for Fedora"
             fi
             if ! repo_exists "nodesource"; then
-                curl -fsSL "https://rpm.nodesource.com/setup_${NODEJS_MAJOR}.x" | bash - 2>/dev/null || true
+                run_logged "repo: NodeSource setup" \
+                    bash -c "curl -fsSL 'https://rpm.nodesource.com/setup_${NODEJS_MAJOR}.x' | bash -" || true
             fi
             ;;
     esac
