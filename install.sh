@@ -3255,25 +3255,31 @@ generate_apache_vhost_config() {
                 ;;
         esac
 
-        # Build the PHP FilesMatch block — goes inside every VirtualHost
+        # PHP handler — nest inside <Directory> so it overrides any global <FilesMatch>
+        # in conf.d/php.conf (e.g. pre-existing pointing to TCP 9000).
+        # <FilesMatch> inside <Directory> is more specific than a bare server-level
+        # <FilesMatch> and wins during Apache's per-request config merge.
         local php_fmatch="
-    <FilesMatch \\.php\$>
-        SetHandler \"${php_handler}\"
-    </FilesMatch>"
+        <FilesMatch \\.php\$>
+            SetHandler \"${php_handler}\"
+        </FilesMatch>"
 
         # Build common Directory directives (reused across modes)
+        # FilesMatch is placed inside each Directory so it takes precedence over
+        # any global FilesMatch SetHandler in conf.d/php.conf
         local dir_block="
     DirectoryIndex portal.php index.php
-${php_fmatch}
     <Directory ${WEB_ROOT}>
         Options -Indexes +FollowSymLinks
         AllowOverride All
         Require all granted
+${php_fmatch}
     </Directory>
     <Directory ${WEB_ROOT}/admin>
         AllowOverride All
         Require all granted
         Options -Indexes +FollowSymLinks
+${php_fmatch}
     </Directory>
 ${avantfax_block}"
 
