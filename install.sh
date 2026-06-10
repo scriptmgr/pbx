@@ -4175,8 +4175,8 @@ NOSIGEARLYEOF
     pass_hash=$(echo -n "${FREEPBX_ADMIN_PASSWORD}" | sha1sum | cut -d' ' -f1)
     mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk 2>/dev/null << ADMINEOF || true
 INSERT INTO ampusers (username, email, password_sha1, extension_low, extension_high, deptname, sections)
-VALUES ('${FREEPBX_ADMIN_USERNAME}', '${ADMIN_EMAIL}', '${pass_hash}', '', '', '', 'all')
-ON DUPLICATE KEY UPDATE password_sha1='${pass_hash}', sections='all', email='${ADMIN_EMAIL}';
+VALUES ('${FREEPBX_ADMIN_USERNAME}', '${ADMIN_EMAIL}', '${pass_hash}', '', '', '', '*')
+ON DUPLICATE KEY UPDATE password_sha1='${pass_hash}', sections='*', email='${ADMIN_EMAIL}';
 ADMINEOF
     info "FreePBX admin user '${FREEPBX_ADMIN_USERNAME}' created"
 
@@ -4411,13 +4411,13 @@ SIGEOF
     ensure_freepbx_gui_admin_user_sql_fallback "${FREEPBX_ADMIN_USERNAME}" "${FREEPBX_ADMIN_PASSWORD}" "${ADMIN_EMAIL}" \
         || warn "Failed SQL fallback sync for FreePBX GUI admin"
     # Also ensure ampusers row has correct hash and full admin sections.
-    # sections='all' grants full PBX admin access to the GUI.
+    # sections='*' grants full PBX admin access to the GUI.
     local pass_hash_new
     pass_hash_new=$(echo -n "${FREEPBX_ADMIN_PASSWORD}" | sha1sum | cut -d' ' -f1)
     mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk 2>/dev/null << ADMINEOF2 || true
 INSERT INTO ampusers (username, email, password_sha1, extension_low, extension_high, deptname, sections)
-    VALUES ('${FREEPBX_ADMIN_USERNAME}', '${ADMIN_EMAIL}', '${pass_hash_new}', '', '', '', 'all')
-    ON DUPLICATE KEY UPDATE password_sha1='${pass_hash_new}', sections='all', email='${ADMIN_EMAIL}';
+    VALUES ('${FREEPBX_ADMIN_USERNAME}', '${ADMIN_EMAIL}', '${pass_hash}', '', '', '', '*')
+    ON DUPLICATE KEY UPDATE password_sha1='${pass_hash_new}', sections='*', email='${ADMIN_EMAIL}';
 ADMINEOF2
     fwconsole notifications --delete api key-regenerated >/dev/null 2>&1 || true
     fwconsole notifications --delete framework BROWSER_STATS >/dev/null 2>&1 || true
