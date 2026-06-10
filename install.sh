@@ -4316,8 +4316,23 @@ NATEOF
         fwconsole ma downloadinstall "${mod}" > /dev/null 2>&1 || true
     done
 
-    # Remove problematic/unneeded modules only if they are present.
+    # Remove commercial and problematic modules.
+    # Commercial modules require Sangoma portal activation and show errors on
+    # source-installed systems. Query the list once and remove any found.
     installed_modules=$(fwconsole ma list 2>/dev/null || true)
+
+    # 1. Remove all modules with "Commercial" license (requires paid Sangoma activation)
+    while IFS= read -r _cm; do
+        [ -z "${_cm}" ] && continue
+        info "Removing commercial module: ${_cm}"
+        fwconsole ma remove "${_cm}" > /dev/null 2>&1 || true
+    done < <(printf '%s\n' "${installed_modules}" \
+        | awk '/Commercial/{print $2}' | tr -d '|' | grep -v '^$')
+
+    # 2. Remove known-problematic modules regardless of license label
+    #    synologyabb: throws "Sysadmin RPM not up to date" on source installs
+    #    sysadmin:    commercial Sangoma Pro — requires portal activation
+    #    firewall:    conflicts with system firewall management
     for mod in firewall sysadmin synologyabb; do
         printf '%s\n' "${installed_modules}" | grep -qE "^${mod}[[:space:]]" \
             && fwconsole ma remove "${mod}" > /dev/null 2>&1 || true
@@ -7605,12 +7620,17 @@ finalize_installation() {
              /var/lib/asterisk/agi-bin/*.py /var/lib/asterisk/agi-bin/*.php 2>/dev/null || true
     fwconsole reload --skip-registry-checks >/dev/null 2>&1 || true
 
-    # Final module cleanup — some modules get pulled back in during reload/refresh.
-    # synologyabb: throws "Sysadmin RPM not up to date" on source-installed systems.
-    # sysadmin: commercial module, irrelevant on source installs.
-    # firewall: conflicts with system firewall management.
+    # Final module cleanup — reload/refreshsignatures can pull modules back in.
+    # Remove all Commercial-licensed modules and known-problematic ones.
+    local _final_modules
+    _final_modules=$(fwconsole ma list 2>/dev/null || true)
+    while IFS= read -r _cm; do
+        [ -z "${_cm}" ] && continue
+        fwconsole ma remove "${_cm}" > /dev/null 2>&1 || true
+    done < <(printf '%s\n' "${_final_modules}" \
+        | awk '/Commercial/{print $2}' | tr -d '|' | grep -v '^$')
     for _rm_mod in synologyabb sysadmin firewall; do
-        fwconsole ma list 2>/dev/null | grep -qE "^${_rm_mod}[[:space:]]" \
+        printf '%s\n' "${_final_modules}" | grep -qE "^${_rm_mod}[[:space:]]" \
             && fwconsole ma remove "${_rm_mod}" > /dev/null 2>&1 || true
     done
 
