@@ -2671,17 +2671,22 @@ install_php() {
         rhel|fedora)
             case "${DISTRO_GEN}" in
                 3)
-                    ${PACKAGE_MGR_BIN} module reset php -y 2>/dev/null || true
-                    ${PACKAGE_MGR_BIN} module enable "php:remi-${PHP_VERSION}" -y 2>/dev/null || true
+                    run_logged "PHP: reset module stream" \
+                        ${PACKAGE_MGR_BIN} module reset php -y || true
+                    run_logged "PHP: enable remi-${PHP_VERSION} stream" \
+                        ${PACKAGE_MGR_BIN} module enable "php:remi-${PHP_VERSION}" -y || true
                     ;;
                 2)
                     if [ "${php_major_ver}" -ge 8 ] 2>/dev/null; then
-                        ${PACKAGE_MGR_BIN} module reset php -y 2>/dev/null || true
-                        ${PACKAGE_MGR_BIN} module enable "php:remi-${PHP_VERSION}" -y 2>/dev/null || true
+                        run_logged "PHP: reset module stream" \
+                            ${PACKAGE_MGR_BIN} module reset php -y || true
+                        run_logged "PHP: enable remi-${PHP_VERSION} stream" \
+                            ${PACKAGE_MGR_BIN} module enable "php:remi-${PHP_VERSION}" -y || true
                     else
                         local php_ver_nodot
                         php_ver_nodot=$(echo "${PHP_VERSION}" | tr -d '.')
-                        ${PACKAGE_MGR_BIN} config-manager --enable "remi-php${php_ver_nodot}" 2>/dev/null || true
+                        run_logged "PHP: enable remi-php${php_ver_nodot} repo" \
+                            ${PACKAGE_MGR_BIN} config-manager --enable "remi-php${php_ver_nodot}" || true
                     fi
                     ;;
                 1)
@@ -3122,6 +3127,10 @@ find_free_proxy_port() {
 
 generate_apache_vhost_config() {
     step "🌐 Writing Apache configuration files..."
+
+    # Trap so any unguarded failure reports the exact failing command + line number
+    # instead of a silent exit 1.
+    trap 'error "Apache config failed at line ${LINENO}: ${BASH_COMMAND}"; trap - ERR' ERR
 
     # Proxy mode: determine loopback port (persisted across re-runs)
     local proxy_port="" proxy_bind=""
@@ -3667,6 +3676,7 @@ HTTPVHEOF
         esac
     fi
 
+    trap - ERR
     svc_reload "${APACHE_SERVICE}" 2>/dev/null || true
     success "Apache vhost configured: $([ "${BEHIND_PROXY:-no}" = "yes" ] && echo "reverse proxy (HTTP:80)" || ([ "${have_ssl}" -eq 1 ] && echo "direct HTTPS:443 + HTTP redirect" || echo "direct HTTP:80"))"
 }
@@ -4380,7 +4390,8 @@ install_postfix() {
             echo "postfix postfix/main_mailer_type string 'Internet Site'" | debconf-set-selections
             ;;
         rhel|fedora)
-            $PACKAGE_MGR_BIN remove -y sendmail 2>/dev/null || true
+            run_logged "postfix: remove sendmail" \
+                ${PACKAGE_MGR_BIN} remove -y sendmail || true
             ;;
     esac
 
