@@ -6087,6 +6087,8 @@ configure_firewall() {
         firewall-cmd --permanent --add-port=10000-20000/udp 2>/dev/null || true
         [ "${INSTALL_FOP2:-no}" = "yes" ] && \
             firewall-cmd --permanent --add-port=4445/tcp 2>/dev/null || true
+        # Mosh server uses UDP 60000-61000 for encrypted remote terminal sessions
+        firewall-cmd --permanent --add-port=60000-61000/udp 2>/dev/null || true
         # Allow ICMP (ping) for monitoring
         firewall-cmd --permanent --remove-icmp-block=echo-request 2>/dev/null || true
         firewall-cmd --permanent --remove-icmp-block=echo-reply 2>/dev/null || true
@@ -6102,6 +6104,8 @@ configure_firewall() {
         ufw allow 4569/udp 2>/dev/null || true
         ufw allow 10000:20000/udp 2>/dev/null || true
         [ "${INSTALL_FOP2:-no}" = "yes" ] && ufw allow 4445/tcp 2>/dev/null || true
+        # Mosh server uses UDP 60000-61000 for encrypted remote terminal sessions
+        ufw allow 60000:61000/udp 2>/dev/null || true
         # Allow ICMP (ping) for monitoring — UFW needs before.rules entries, not
         # "ufw allow proto icmp".
         if [ -f /etc/ufw/before.rules ] && ! grep -q "PBX ICMP allow" /etc/ufw/before.rules 2>/dev/null; then
@@ -6174,6 +6178,8 @@ configure_iptables() {
     iptables -A INPUT -p tcp --dport 8089  -j ACCEPT
     [ "${INSTALL_FOP2:-no}" = "yes" ] && iptables -A INPUT -p tcp --dport 4445 -j ACCEPT || true
     iptables -A INPUT -p udp --dport 10000:20000 -j ACCEPT
+    # Mosh server uses UDP 60000-61000 for encrypted remote terminal sessions
+    iptables -A INPUT -p udp --dport 60000:61000 -j ACCEPT
 
     case "${DISTRO_FAMILY}" in
         debian)
