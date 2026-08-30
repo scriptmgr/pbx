@@ -139,7 +139,7 @@ incus exec pbx-alma9 -- chmod +x /usr/local/bin/pbx-status
 | Purpose | Path |
 |---|---|
 | Management scripts | `/usr/local/bin/pbx-*` |
-| Credentials file | `/etc/pbx/pbx_passwords` (chmod 600) |
+| Credentials file | `/etc/pbx/creds.conf` (chmod 600) |
 | Environment/config | `/etc/pbx/.env` (chmod 600) |
 | MySQL root password file | `/etc/pbx/mysql_root_password` (chmod 600) |
 | Install state JSON | `/etc/pbx/state.json` |

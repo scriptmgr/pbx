@@ -104,7 +104,7 @@ AVANTFAX_WEB_DIR="${WEB_ROOT}/avantfax"
 BACKUP_BASE="${BACKUP_BASE:-/mnt/backups/pbx}"
 LOG_FILE="${LOG_FILE:-/var/log/pbx-install.log}"
 ERROR_LOG="${ERROR_LOG:-/var/log/pbx-install-errors.log}"
-AUTO_PASSWORDS_FILE="${AUTO_PASSWORDS_FILE:-/etc/pbx/pbx_passwords}"
+AUTO_PASSWORDS_FILE="${AUTO_PASSWORDS_FILE:-/etc/pbx/creds.conf}"
 MYSQL_ROOT_PASSWORD_FILE="${MYSQL_ROOT_PASSWORD_FILE:-/etc/pbx/mysql_root_password}"
 WORK_DIR="${WORK_DIR:-/var/cache/pbx-install}"
 
@@ -1544,7 +1544,7 @@ load_pbx_env() {
         source "${PBX_ENV_FILE}"
         info "Loaded PBX env from ${PBX_ENV_FILE}"
     elif [ -f "${AUTO_PASSWORDS_FILE}" ]; then
-        # Fallback: load from /etc/pbx/pbx_passwords (written early in prepare_system)
+        # Fallback: load from /etc/pbx/creds.conf (written early in prepare_system)
         # shellcheck source=/dev/null
         source "${AUTO_PASSWORDS_FILE}" 2>/dev/null || true
         info "Loaded PBX env from ${AUTO_PASSWORDS_FILE}"
@@ -8085,7 +8085,7 @@ show_completion_message() {
     echo "    AvantFax    : ${avantfax_url}"
     echo "    Webmin      : https://${SYSTEM_FQDN:-${PUBLIC_IP}}:9001"
     echo ""
-    echo "${CYAN}  Credentials (also saved in /etc/pbx/pbx_passwords):${NC}"
+    echo "${CYAN}  Credentials (also saved in /etc/pbx/creds.conf):${NC}"
     echo "    FreePBX Admin  : User: ${ADMIN_USERNAME}  Pass: ${ADMIN_PASSWORD}"
     echo "    AvantFax Admin : User: ${AVANTFAX_ADMIN_USERNAME}  Pass: ${AVANTFAX_ADMIN_PASSWORD}"
     echo "    Reminder/CC    : User: ${ADMIN_USERNAME}  Pass: ${ADMIN_PASSWORD}"
@@ -8121,7 +8121,7 @@ show_completion_message() {
     echo "    *43  Echo test        *610 Music on hold  4747 Lenny bot"
     echo "    *41  Caller ID        *97  Voicemail      *469 Conference 1"
     echo ""
-    echo "${YELLOW}  ⚠️  Credentials saved to /etc/pbx/pbx_passwords — review before exposing to the internet.${NC}"
+    echo "${YELLOW}  ⚠️  Credentials saved to /etc/pbx/creds.conf — review before exposing to the internet.${NC}"
     echo "${YELLOW}  ⚠️  Review firewall rules for your network topology.${NC}"
     echo ""
     echo "${GREEN}  Installation log: ${LOG_FILE}${NC}"

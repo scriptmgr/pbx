@@ -33,14 +33,14 @@ case "${1:-}" in
     --help|-h)
         printf "Usage: admin-pw-change\n\n"
         printf "Interactive: prompts for the new admin password.\n"
-        printf "Updates ampusers, userman_users, /etc/pbx/.env, /etc/pbx/pbx_passwords.\n"
+        printf "Updates ampusers, userman_users, /etc/pbx/.env, /etc/pbx/creds.conf.\n"
         exit 0 ;;
 esac
 
 [ "$(id -u)" -ne 0 ] && { echo "Must run as root" >&2; exit 1; }
 
 ENV_FILE="/etc/pbx/.env"
-PASSWORDS_FILE="/etc/pbx/pbx_passwords"
+PASSWORDS_FILE="/etc/pbx/creds.conf"
 FREEPBX_ADMIN_USERNAME="${FREEPBX_ADMIN_USERNAME:-administrator}"
 
 __sql_escape() { printf '%s' "$1" | sed "s/'/''/g"; }

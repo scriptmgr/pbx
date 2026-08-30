@@ -45,7 +45,7 @@ err()  { printf "${RED}%s${NC}\n"     "$*" >&2; }
 hdr()  { printf "\n${BOLD}%s${NC}\n" "$*"; }
 
 [ -f /etc/pbx/.env ] && . /etc/pbx/.env
-[ -f /etc/pbx/pbx_passwords ] && . /etc/pbx/pbx_passwords 2>/dev/null || true
+[ -f /etc/pbx/creds.conf ] && . /etc/pbx/creds.conf 2>/dev/null || true
 [ "$(id -u)" -ne 0 ] && { err "Must run as root"; exit 1; }
 WEB_ROOT="${WEB_ROOT:-/var/www/apache/pbx}"
 
@@ -123,8 +123,8 @@ show_urls() {
     printf "  UCP Portal     : %s://%s/ucp/\n" "${_scheme}" "${DISP}"
     [ -n "${WEBMIN_PORT:-}" ] && printf "  Webmin         : https://%s:%s/\n" "${DISP}" "$WEBMIN_PORT"
     hdr "Admin Credentials"
-    [ -f /etc/pbx/pbx_passwords ] && grep -E -- "^FREEPBX_ADMIN" /etc/pbx/pbx_passwords | head -1 || \
-        info "Credentials in /etc/pbx/pbx_passwords"
+    [ -f /etc/pbx/creds.conf ] && grep -E -- "^FREEPBX_ADMIN" /etc/pbx/creds.conf | head -1 || \
+        info "Credentials in /etc/pbx/creds.conf"
 }
 
 case "${1:-}" in

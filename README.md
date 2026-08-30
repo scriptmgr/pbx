@@ -198,7 +198,7 @@ ADMIN_PASSWORD='MySecurePass123' \
 | `GITHUB_TOKEN` | Token for private forks | optional |
 | `NO_COLOR` | Disable colors and emojis | unset |
 
-All generated passwords are stored in `/etc/pbx/pbx_passwords` (mode 600).
+All generated passwords are stored in `/etc/pbx/creds.conf` (mode 600).
 
 When `INSTALL_OPENVPN=yes` or `INSTALL_WIREGUARD=yes`, the installer only installs VPN **client** tooling. It does **not** configure or run an OpenVPN or WireGuard server, and it does not generate client example configs. Use `pbx-vpn` for connection guidance after install, and supply your own client details from an existing VPN server.
 
@@ -298,7 +298,7 @@ pbx.example.com {
 ```
 /etc/pbx/
 ├── .env                    # Runtime config (mode 600)
-├── pbx_passwords           # All credentials (mode 600)
+├── creds.conf             # All credentials (mode 600)
 └── state.json              # Installation state
 
 /var/www/apache/pbx/        # Web root
@@ -331,10 +331,10 @@ After installation, access your PBX through its FQDN:
 | Interface | URL | Credentials |
 |---|---|---|
 | **Main Portal** | `https://pbx.example.com/` | — |
-| **FreePBX Admin** | `https://pbx.example.com/admin/` | `/etc/pbx/pbx_passwords` |
+| **FreePBX Admin** | `https://pbx.example.com/admin/` | `/etc/pbx/creds.conf` |
 | **User Control Panel** | `https://pbx.example.com/ucp/` | Extension credentials |
-| **AvantFax** | `https://pbx.example.com/avantfax/` | `/etc/pbx/pbx_passwords` |
-| **Webmin** | `https://pbx.example.com:9001/` | `/etc/pbx/pbx_passwords` |
+| **AvantFax** | `https://pbx.example.com/avantfax/` | `/etc/pbx/creds.conf` |
+| **Webmin** | `https://pbx.example.com:9001/` | `/etc/pbx/creds.conf` |
 | **Call Center Stats** | `https://pbx.example.com/callcenter/` | — |
 | **System Status** | `https://pbx.example.com/status/` | — |
 | **Health Endpoint** | `https://pbx.example.com/health/` | Public JSON |
@@ -348,7 +348,7 @@ After installation, access your PBX through its FQDN:
 ## ✅ Post-Installation
 
 1. Access the web interface at your FQDN
-2. Log in to FreePBX — credentials in `/etc/pbx/pbx_passwords`
+2. Log in to FreePBX — credentials in `/etc/pbx/creds.conf`
 3. Add VoIP trunks: `pbx-config` → Add Trunk
 4. Create extensions: `pbx-config` → Add Extension
 5. Configure IVR and call flows in FreePBX Admin
@@ -449,7 +449,7 @@ pbx-moh remove                                            # Remove a source
 | Disk space | `pbx-cleanup force` |
 | SSL problems | `pbx-ssl status` then `pbx-ssl install` |
 | VPN client setup | `pbx-vpn --openvpn` or `pbx-vpn --wireguard` |
-| Credential lookup | `pbx-passwords` or `/etc/pbx/pbx_passwords` |
+| Credential lookup | `pbx-passwords` or `/etc/pbx/creds.conf` |
 | SIP trunk down | `pbx-trunks` |
 | No active calls showing | `pbx-calls active` |
 

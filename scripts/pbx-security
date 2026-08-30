@@ -45,7 +45,7 @@ err()  { printf "${RED}%s${NC}\n"     "$*" >&2; }
 hdr()  { printf "\n${BOLD}%s${NC}\n" "$*"; }
 
 [ -f /etc/pbx/.env ] && . /etc/pbx/.env
-[ -f /etc/pbx/pbx_passwords ] && . /etc/pbx/pbx_passwords 2>/dev/null || true
+[ -f /etc/pbx/creds.conf ] && . /etc/pbx/creds.conf 2>/dev/null || true
 [ -z "${MYSQL_ROOT_PASSWORD_FILE:-}" ] && MYSQL_ROOT_PASSWORD_FILE="/etc/pbx/mysql_root_password"
 [ -z "${MYSQL_ROOT_PASSWORD:-}" ] && [ -f "${MYSQL_ROOT_PASSWORD_FILE}" ] && \
     MYSQL_ROOT_PASSWORD=$(tr -d '\r\n' < "${MYSQL_ROOT_PASSWORD_FILE}" 2>/dev/null)
