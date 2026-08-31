@@ -488,12 +488,13 @@ incus launch images:almalinux/9 pbx-alma9
 incus launch images:debian/12   pbx-deb12
 
 # Push and run
-incus file push install.sh pbx-alma9/var/tmp/install.sh
-incus exec pbx-alma9 -- bash -c 'nohup bash /var/tmp/install.sh > /var/log/pbx-test-install.log 2>&1 &'
-incus exec pbx-alma9 -- tail -f /var/log/pbx-test-install.log
+incus file push install.sh pbx-alma9/root/install.sh
+incus exec pbx-alma9 -- bash -c 'nohup bash /root/install.sh > /root/install.log 2>&1 &'
+incus exec pbx-alma9 -- tail -f /root/install.log
 
 # Run test suite
-incus exec pbx-alma9 -- bash /var/tmp/full-script-test.sh
+incus file push tests/full-script-test.sh pbx-alma9/root/full-script-test.sh
+incus exec pbx-alma9 -- bash /root/full-script-test.sh
 ```
 
 ### Guidelines

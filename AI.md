@@ -101,8 +101,8 @@ needed, but keep lines readable.
 ## 🧪 Testing Rules
 
 - **Primary test containers:** `pbx-alma9` (AlmaLinux 9), `pbx-deb12` (Debian 12)
-- **Full test suite:** `incus exec pbx-alma9 -- bash /root/full-script-test.sh`
-- **Expected baseline:** 41P / 1W / 0F (1 WARN = rclone not installed, expected)
+- **Full test suite:** `incus file push tests/full-script-test.sh pbx-alma9/root/full-script-test.sh && incus exec pbx-alma9 -- bash /root/full-script-test.sh`
+- **Expected baseline:** 182P / 5W / 0F (WARNs: chrony not synced [OK in container], no recent CDR entries, no SSH jail, SSH PermitRootLogin may allow root, rclone not installed [expected unless `INSTALL_REMOTE_BACKUP=yes`])
 - **Syntax check all scripts before pushing:** `bash -n scriptname`
 - **Always test on both alma9 AND deb12** — never just one distro.
 - **Push scripts to containers:** `incus file push scripts/pbx-X pbx-alma9/usr/local/bin/pbx-X`
