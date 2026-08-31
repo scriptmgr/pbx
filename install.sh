@@ -4572,8 +4572,18 @@ install_postfix() {
         postconf -e "myhostname = ${SYSTEM_FQDN}"       2>/dev/null || true
         postconf -e "mydomain = ${SYSTEM_DOMAIN}"        2>/dev/null || true
         postconf -e "myorigin = ${SYSTEM_FQDN}"          2>/dev/null || true
-        postconf -e "inet_interfaces = loopback-only"    2>/dev/null || true
-        postconf -e "inet_protocols = ipv4"              2>/dev/null || true
+
+        # A pre-existing casjay-base satellite-relay main.cf sets its own
+        # inet_interfaces/inet_protocols (typically "all", to relay through a
+        # smarthost). Detect it via its distinctive banner and leave those two
+        # directives alone rather than silently forcing loopback-only/ipv4 over
+        # an already-deliberate network policy.
+        if postconf -h smtpd_banner 2>/dev/null | grep -qi -- "CasjaysDev"; then
+            info "Existing casjay-base Postfix satellite-relay config detected — leaving inet_interfaces/inet_protocols as configured"
+        else
+            postconf -e "inet_interfaces = loopback-only"    2>/dev/null || true
+            postconf -e "inet_protocols = ipv4"              2>/dev/null || true
+        fi
 
         # Rewrite all outgoing From: headers to FROM_EMAIL / FROM_NAME
         mkdir -p /etc/postfix
@@ -6335,6 +6345,20 @@ install_fail2ban() {
         _f2b_email_block="destemail = ${ADMIN_EMAIL}
 sender   = ${FROM_EMAIL:-fail2ban@localhost}"
     fi
+
+    # jail.local is not shipped by the fail2ban package itself — its presence
+    # means a pre-existing global policy (e.g. a casjay-base bootstrap) already
+    # set [DEFAULT] action/banaction. jail.local loads AFTER jail.d/*.conf, so
+    # it would silently override whatever action we set here anyway — omit our
+    # own action line in that case and let the existing policy win, instead of
+    # writing a value that gets silently discarded.
+    local _f2b_action_line="action   = ${_f2b_action}"
+    if [ -f /etc/fail2ban/jail.local ]; then
+        _f2b_action_line=""
+        info "Existing /etc/fail2ban/jail.local found — deferring to its [DEFAULT] action/banaction policy"
+    fi
+
+    backup_config /etc/fail2ban/jail.d/pbx-defaults.conf
     cat > /etc/fail2ban/jail.d/pbx-defaults.conf << F2BGEOF
 [DEFAULT]
 bantime  = 3600
@@ -6342,11 +6366,12 @@ findtime = 600
 maxretry = 10
 ignoreip = 127.0.0.1/8 ::1 ${SSH_CLIENT_IP:-}
 ${_f2b_email_block}
-action   = ${_f2b_action}
+${_f2b_action_line}
 F2BGEOF
 
     # Write sshd jail override AFTER defaults-debian.conf alphabetically
     # ("pbx-sshd.conf" > "defaults-debian.conf")
+    backup_config /etc/fail2ban/jail.d/pbx-sshd.conf
     {
         echo "[sshd]"
         echo "enabled  = ${sshd_enabled}"
@@ -6359,6 +6384,7 @@ F2BGEOF
     } > /etc/fail2ban/jail.d/pbx-sshd.conf
 
     # Asterisk jails
+    backup_config /etc/fail2ban/jail.d/asterisk.conf
     cat > /etc/fail2ban/jail.d/asterisk.conf << 'F2BEOF'
 [asterisk]
 enabled  = true
@@ -6388,7 +6414,16 @@ findtime = 600
 F2BEOF
 
     svc_enable fail2ban
-    svc_restart fail2ban 2>/dev/null || warn "fail2ban failed to start — check logs"
+    svc_restart fail2ban 2>/dev/null || warn "fail2ban restart command failed — check logs"
+
+    # The restart command above can exit 0 even though the service then
+    # crashes on config load (e.g. a malformed pre-existing jail.local from an
+    # external bootstrap) — verify it is actually active, don't just trust the
+    # restart exit code.
+    sleep 1
+    if ! systemctl is-active --quiet fail2ban 2>/dev/null; then
+        warn "fail2ban is not running after restart — check 'journalctl -u fail2ban' (often a pre-existing /etc/fail2ban/jail.local syntax error)"
+    fi
 
     # Whitelist current SSH client IP
     if [ -n "${SSH_CLIENT_IP:-}" ] && [ "$sshd_enabled" = "true" ]; then
@@ -6398,7 +6433,11 @@ F2BEOF
     fi
 
     mark_done fail2ban
-    success "Fail2ban installed (maxretry=10, bantime=1h)"
+    if systemctl is-active --quiet fail2ban 2>/dev/null; then
+        success "Fail2ban installed (maxretry=10, bantime=1h)"
+    else
+        warn "Fail2ban installed but not running — jails are NOT enforced until this is fixed"
+    fi
 }
 
 # =============================================================================
@@ -7970,6 +8009,19 @@ verify_installation() {
             success "Webmin running (port ${wm_port})"
         else
             warn "Webmin installed but not listening on port ${wm_port}"
+        fi
+    fi
+
+    # Check Fail2ban (warn only — not fatal, but jails are unenforced if down)
+    if [ "${FAIL2BAN_ENABLED:-yes}" = "yes" ]; then
+        if command -v fail2ban-client >/dev/null 2>&1; then
+            if svc_active fail2ban 2>/dev/null; then
+                success "Fail2ban running"
+            else
+                warn "Fail2ban installed but not running — jails are NOT enforced (check journalctl -u fail2ban; a common cause is a syntax error in a pre-existing /etc/fail2ban/jail.local)"
+            fi
+        else
+            warn "fail2ban-client not found (was FAIL2BAN_ENABLED=yes)"
         fi
     fi
 
