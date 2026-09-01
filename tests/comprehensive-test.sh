@@ -132,7 +132,7 @@ sep "3. ASTERISK CORE"
 VER=$(ast "core show version" | head -1)
 echo "$VER" | grep -q "Asterisk" && ok "Version: $VER" || fail "Asterisk CLI not responding"
 
-CTX=$(ast "dialplan show" | grep -c "Context" || echo 0)
+CTX=$(ast "dialplan show" | grep -c -- "Context") || CTX=0
 [ "${CTX:-0}" -ge 50 ] && ok "Dialplan: $CTX contexts loaded" || fail "Dialplan too small: $CTX contexts"
 
 for ctx in from-internal from-pstn from-trunk default macro-dialout-trunk-predial-hook; do
@@ -209,7 +209,7 @@ cat <&3' 2>/dev/null || true)
         || warn "CDR: no recent entries (call may not have connected)"
 
     # Active channels check
-    CHANS=$(ast "core show channels" | grep -c "active call\|Local" || echo 0)
+    CHANS=$(ast "core show channels" | grep -c -- "active call\|Local") || CHANS=0
     ok "Active channels: $CHANS (call test complete)"
 else
     warn "Skipping call test — AMI credentials not found"
@@ -221,7 +221,7 @@ sep "5. FREEPBX MODULES"
 
 fwconsole ma list 2>/dev/null | grep -q "Enabled" && ok "fwconsole works" || fail "fwconsole ma list failed"
 
-MOD_COUNT=$(fwconsole ma list 2>/dev/null | grep -c "Enabled" || echo 0)
+MOD_COUNT=$(fwconsole ma list 2>/dev/null | grep -c -- "Enabled") || MOD_COUNT=0
 [ "${MOD_COUNT:-0}" -ge 40 ] && ok "Modules enabled: $MOD_COUNT" || fail "Too few modules: $MOD_COUNT"
 
 for mod in core voicemail cdr backup ringgroups ivr dashboard framework sipsettings userman \
@@ -370,7 +370,7 @@ AF_DIR="${WEB_ROOT}/avantfax"
 [ -f "${AF_DIR}/includes/config.php" ]    && ok "AvantFax config.php present"  || fail "AvantFax config.php missing"
 [ -f "${AF_DIR}/includes/FaxModem.php" ]  && ok "AvantFax FaxModem.php present" || warn "AvantFax FaxModem.php missing"
 
-AF_DB=$(mysql -u root ${MYSQL_PASS:+-p"${MYSQL_PASS}"} -e "SHOW DATABASES LIKE 'avantfax';" 2>/dev/null | grep -c "avantfax" || echo 0)
+AF_DB=$(mysql -u root ${MYSQL_PASS:+-p"${MYSQL_PASS}"} -e "SHOW DATABASES LIKE 'avantfax';" 2>/dev/null | grep -c -- "avantfax") || AF_DB=0
 [ "${AF_DB:-0}" -ge 1 ] && ok "AvantFax database exists" || warn "AvantFax database missing"
 
 grep -qE "EMAIL_TO_FAX_ALIAS|FAX_EMAIL_ALIAS" "$ENV_FILE" 2>/dev/null \

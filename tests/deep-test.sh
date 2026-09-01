@@ -486,7 +486,7 @@ for room in "*469" "*470"; do
 done
 
 # Total dialplan entries — 'dialplan show' output uses "'ext' =>" format (not "exten =>")
-DIALPLAN_LINES=$(echo "$DIALPLAN_ALL" | grep -cF "' =>" 2>/dev/null || echo 0)
+DIALPLAN_LINES=$(echo "$DIALPLAN_ALL" | grep -cF -- "' =>" 2>/dev/null) || DIALPLAN_LINES=0
 info "Total dialplan extension entries: $DIALPLAN_LINES"
 [ "${DIALPLAN_LINES:-0}" -ge 10 ] && ok "Dialplan entries: $DIALPLAN_LINES" \
     || warn "Dialplan looks sparse: $DIALPLAN_LINES entries"
@@ -586,7 +586,7 @@ else
 fi
 
 PJSIP_EPS=$(ast "pjsip show endpoints")
-EP_COUNT=$(echo "$PJSIP_EPS" | grep -c "Avail\|Unavail\|Not in use\|In use" 2>/dev/null || echo 0)
+EP_COUNT=$(echo "$PJSIP_EPS" | grep -c -- "Avail\|Unavail\|Not in use\|In use" 2>/dev/null) || EP_COUNT=0
 info "PJSIP endpoints: $EP_COUNT"
 if [ "${EP_COUNT:-0}" -ge 1 ]; then
     ok "PJSIP endpoints: $EP_COUNT endpoint(s) configured"
@@ -600,7 +600,7 @@ fi
 
 # pjsip_wizard.conf or pjsip_registration.conf
 if [ -f /etc/asterisk/pjsip_wizard.conf ]; then
-    WIZARD_ENTRIES=$(grep -c '^\[' /etc/asterisk/pjsip_wizard.conf 2>/dev/null || echo 0)
+    WIZARD_ENTRIES=$(grep -c -- '^\[' /etc/asterisk/pjsip_wizard.conf 2>/dev/null) || WIZARD_ENTRIES=0
     ok "pjsip_wizard.conf: present ($WIZARD_ENTRIES stanzas)"
 elif [ -f /etc/asterisk/pjsip.endpoint.conf ]; then
     ok "pjsip.endpoint.conf: present"
@@ -610,7 +610,7 @@ fi
 
 # Check pjsip transport config — use live Asterisk data (already in PJSIP_TRANSPORTS)
 # FreePBX stores transports in pjsip.transports.conf with sections like [0.0.0.0-udp]
-TRANSPORT_COUNT=$(echo "$PJSIP_TRANSPORTS" | grep -c "^Transport:" 2>/dev/null || echo 0)
+TRANSPORT_COUNT=$(echo "$PJSIP_TRANSPORTS" | grep -c -- "^Transport:" 2>/dev/null) || TRANSPORT_COUNT=0
 if [ "${TRANSPORT_COUNT:-0}" -ge 1 ]; then
     ok "pjsip: $TRANSPORT_COUNT transport(s) active (from pjsip show transports)"
 elif grep -qiE "type\s*=\s*transport" /etc/asterisk/pjsip.transports.conf 2>/dev/null; then
@@ -702,7 +702,7 @@ grep -qiE "^\[default\]|^\[general\]" /etc/asterisk/voicemail.conf 2>/dev/null \
     && ok "Voicemail spool: /var/spool/asterisk/voicemail exists" \
     || warn "Voicemail spool: directory missing"
 
-VM_CONTEXTS=$(grep -c '^\[' /etc/asterisk/voicemail.conf 2>/dev/null || echo 0)
+VM_CONTEXTS=$(grep -c -- '^\[' /etc/asterisk/voicemail.conf 2>/dev/null) || VM_CONTEXTS=0
 ok "Voicemail contexts in conf: $VM_CONTEXTS"
 
 # Check for at least one mailbox (e.g. 100 or 101)
@@ -1516,8 +1516,10 @@ sep "22. FREEPBX MODULES"
 
 FWCONSOLE_LIST=$(fwconsole ma list 2>/dev/null)
 if [ -n "$FWCONSOLE_LIST" ]; then
-    MOD_INSTALLED=$(echo "$FWCONSOLE_LIST" | grep -c " Enabled " 2>/dev/null || \
-                    echo "$FWCONSOLE_LIST" | grep -c "| Enabled" 2>/dev/null || echo 0)
+    MOD_INSTALLED=$(echo "$FWCONSOLE_LIST" | grep -c -- " Enabled " 2>/dev/null) || MOD_INSTALLED=0
+    if [ "$MOD_INSTALLED" -eq 0 ]; then
+        MOD_INSTALLED=$(echo "$FWCONSOLE_LIST" | grep -c -- "| Enabled" 2>/dev/null) || MOD_INSTALLED=0
+    fi
     info "FreePBX enabled modules: $MOD_INSTALLED"
     [ "${MOD_INSTALLED:-0}" -ge 20 ] \
         && ok "FreePBX modules: $MOD_INSTALLED enabled (>= 20)" \

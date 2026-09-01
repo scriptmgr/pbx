@@ -215,7 +215,7 @@ for ctx in demo-menu pbx-echo pbx-clock pbx-lenny pbx-voicemail from-internal fr
 done
 
 # Total context count
-CTX_TOTAL=$(ast "dialplan show" 2>/dev/null | grep -c "^\[ Context" || echo 0)
+CTX_TOTAL=$(ast "dialplan show" 2>/dev/null | grep -c -- "^\[ Context") || CTX_TOTAL=0
 [ "${CTX_TOTAL:-0}" -ge 50 ] \
     && ok "Total dialplan contexts: ${CTX_TOTAL}" \
     || warn "Total contexts: only ${CTX_TOTAL} (expected >= 50)"
@@ -295,7 +295,7 @@ echo "$HFAXD_BANNER" | grep -qiE "^[0-9]{3}|HylaFAX" \
     && ok "hfaxd: port 4559 responding (banner: $(echo "$HFAXD_BANNER" | head -c60))" \
     || warn "hfaxd: port 4559 not responding"
 
-IAX_PROCS=$(pgrep -c iaxmodem 2>/dev/null || echo 0)
+IAX_PROCS=$(pgrep -c iaxmodem 2>/dev/null) || IAX_PROCS=0
 [ "${IAX_PROCS:-0}" -ge 4 ] && ok "iaxmodem: $IAX_PROCS processes (need 4)" || fail "iaxmodem: only $IAX_PROCS instances"
 
 for n in 1 2 3 4; do
@@ -491,7 +491,7 @@ done
 MOH_FILES=$(find /var/lib/asterisk/moh -type f 2>/dev/null | wc -l)
 [ "${MOH_FILES:-0}" -ge 1 ] && ok "Music on Hold files: $MOH_FILES" || warn "MOH: no files"
 
-MOH_CLASSES=$(ast "moh show classes" | grep -c "^Class:" || echo 0)
+MOH_CLASSES=$(ast "moh show classes" | grep -c -- "^Class:") || MOH_CLASSES=0
 [ "${MOH_CLASSES:-0}" -ge 1 ] && ok "MOH classes configured: $MOH_CLASSES" || warn "MOH: no classes"
 
 # AGI scripts

@@ -55,7 +55,7 @@ fi
 sep "FREEPBX FUNCTIONAL"
 fwconsole ma list 2>/dev/null | grep -q "Enabled" \
     && ok "fwconsole ma list works" || fail "fwconsole ma list failed"
-COUNT=$(fwconsole ma list 2>/dev/null | grep -c "Enabled" || echo 0)
+COUNT=$(fwconsole ma list 2>/dev/null | grep -c -- "Enabled") || COUNT=0
 [ "$COUNT" -ge 50 ] && ok "FreePBX modules enabled: $COUNT" || fail "Too few modules: $COUNT"
 # FreePBX 16 module names (verified from live install path)
 for mod in core voicemail cdr backup ringgroups ivr dashboard framework sipsettings userman; do
