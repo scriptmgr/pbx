@@ -1,16 +1,5 @@
 # TODO
 
-- `pbx-status-update` cron job (`/usr/local/bin/pbx-status-update`, invoked
-  by `/etc/cron.d/pbx-status`) silently fails all Asterisk-derived
-  health/status fields (`asterisk_version`, `asterisk_uptime`,
-  `active_calls`, `registered_endpoints`, `total_endpoints` in `/health/`
-  and `/status/` JSON) because cron's minimal default PATH
-  (`/usr/bin:/bin`) doesn't include `/usr/sbin`, where `asterisk` lives.
-  Confirmed via full beta test on both pbx-alma9 and pbx-deb12 — same
-  bug on both distros, not a regression from any recent change. Fix:
-  set `PATH=/usr/sbin:/usr/bin:/sbin:/bin` in `/etc/cron.d/pbx-status`,
-  or use the full path `/usr/sbin/asterisk` in `pbx-status-update`.
-
 - Fax status polling (`faxstat`) fails non-interactively on both alma9 and
   deb12 (`500 'PASS ': Syntax error, expecting password`), and modem
   status files show a persistent "Waiting for modem to come ready" state,

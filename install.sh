@@ -7548,7 +7548,10 @@ HEALTHEOF
     # pbx-status-update is deployed via sync_management_scripts (runs after build_status_page)
     if [ -x /usr/local/bin/pbx-status-update ]; then
         /usr/local/bin/pbx-status-update 2>/dev/null || true
-        echo "* * * * * root /usr/local/bin/pbx-status-update" > /etc/cron.d/pbx-status
+        {
+            echo "PATH=/usr/sbin:/usr/bin:/sbin:/bin"
+            echo "* * * * * root /usr/local/bin/pbx-status-update"
+        } > /etc/cron.d/pbx-status
         chmod 644 /etc/cron.d/pbx-status
     fi
 
@@ -7561,7 +7564,10 @@ ensure_status_runtime_hooks() {
     # here once /usr/local/bin has been populated.
     if [ -x /usr/local/bin/pbx-status-update ]; then
         /usr/local/bin/pbx-status-update >/dev/null 2>&1 || true
-        echo "* * * * * root /usr/local/bin/pbx-status-update" > /etc/cron.d/pbx-status
+        {
+            echo "PATH=/usr/sbin:/usr/bin:/sbin:/bin"
+            echo "* * * * * root /usr/local/bin/pbx-status-update"
+        } > /etc/cron.d/pbx-status
         chmod 644 /etc/cron.d/pbx-status
     fi
 
