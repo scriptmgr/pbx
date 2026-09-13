@@ -416,8 +416,10 @@ SSHD_CONF=""
 for f in /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf; do
     [ -f "$f" ] && SSHD_CONF="${SSHD_CONF} $(cat "$f")"
 done
-echo "$SSHD_CONF" | grep -qE "PermitRootLogin (no|prohibit-password)" \
-    && ok "SSH: PermitRootLogin restricted" || warn "SSH: PermitRootLogin may allow root"
+# PermitRootLogin is a deployment choice, not a defect — some deployments
+# require root SSH access. Report the setting, don't flag it as a warning.
+PERM_ROOT=$(echo "$SSHD_CONF" | grep -oE "PermitRootLogin [a-z-]+" | tail -1 | awk '{print $2}')
+echo "  INFO: SSH PermitRootLogin: ${PERM_ROOT:-not set (default prohibit-password)}"
 
 # =============================================================================
 sep "10. MANAGEMENT SCRIPTS — IN-DEPTH"
