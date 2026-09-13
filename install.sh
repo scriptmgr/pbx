@@ -4222,7 +4222,13 @@ NOSIGEARLYEOF
     fwconsole ma enablerepo standard    > /dev/null 2>&1 || true
     fwconsole ma enablerepo extended    > /dev/null 2>&1 || true
     fwconsole ma enablerepo unsupported > /dev/null 2>&1 || true
-    fwconsole ma installall > /dev/null 2>&1 || warn "Module installall had errors"
+    # Module downloads are flaky under a busy install (contending with the
+    # DB/repo work happening around them) — the same class of transient
+    # failure already retried for the Asterisk build. installall and each
+    # individual module get one retry before being logged as a real failure.
+    fwconsole ma installall > /dev/null 2>&1 \
+        || fwconsole ma installall > /dev/null 2>&1 \
+        || warn "Module installall had errors"
 
     # Several legacy/virtual modules are no longer published as separate downloads.
     # Keep the explicit loop limited to modules that remain online.
@@ -4232,7 +4238,9 @@ NOSIGEARLYEOF
                callforward findmefollow donotdisturb parking paging \
                callrecording recordings announcement conferences \
                cidlookup directory ucp userman hotelwakeup; do
-        fwconsole ma downloadinstall "${mod}" > /dev/null 2>&1 || true
+        fwconsole ma downloadinstall "${mod}" > /dev/null 2>&1 \
+            || fwconsole ma downloadinstall "${mod}" > /dev/null 2>&1 \
+            || warn "Module [${mod}] failed to install after retry"
     done
 
     local installed_modules
