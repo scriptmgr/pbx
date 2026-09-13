@@ -4650,11 +4650,18 @@ install_hylafax() {
     # and just ensure the required directories and base config exist.
     mkdir -p /var/spool/hylafax/{etc,log,tmp,bin,archive,recvq}
     mkdir -p /var/spool/hylafax/etc
-    # HylaFax queue daemon (faxq) runs as the 'uucp' user and needs to create
-    # the FIFO control file in the spool root. Set ownership accordingly.
+    # HylaFax queue daemon (faxq) and the answering daemon (hfaxd) both run as
+    # the 'uucp' user and need write access throughout the spool tree — hfaxd
+    # in particular creates per-client temp files under client/ on every
+    # connection. On Debian the packaged hylafax-server's postinst leaves the
+    # whole tree owned by uucp already; on AlmaLinux/RHEL HylaFAX+ is compiled
+    # from source and its own install step creates subdirectories (e.g.
+    # client/) as root, so a non-recursive chown of the spool root alone
+    # leaves those subdirectories unwritable by uucp and hfaxd fails with
+    # "Could not create client/<n>: Permission denied" on every faxstat.
     # On RHEL-family 'uucp' maps to uid 3 (adm group), on Debian it's a proper 'uucp' group.
-    chown uucp:uucp /var/spool/hylafax/ 2>/dev/null || \
-        chown "$(id -u uucp 2>/dev/null || echo 3)":"$(id -g uucp 2>/dev/null || echo 4)" \
+    chown -R uucp:uucp /var/spool/hylafax/ 2>/dev/null || \
+        chown -R "$(id -u uucp 2>/dev/null || echo 3)":"$(id -g uucp 2>/dev/null || echo 4)" \
               /var/spool/hylafax/ 2>/dev/null || true
     chmod 755 /var/spool/hylafax/
     # Write HylaFAX server config directly — we use IAXmodem (software modems),
@@ -4878,11 +4885,22 @@ IAXPEEREOF
 
         # Create HylaFAX per-modem config (required for hfaxd to manage each virtual modem)
         mkdir -p /var/spool/hylafax/etc
-        # Ensure hosts.hfaxd exists to allow localhost faxstat without password
-        if [ ! -f /var/spool/hylafax/etc/hosts.hfaxd ]; then
-            printf 'localhost\n127.0.0.1\n' > /var/spool/hylafax/etc/hosts.hfaxd
-            chown uucp:uucp /var/spool/hylafax/etc/hosts.hfaxd 2>/dev/null || true
-        fi
+        # Always (re)write hosts.hfaxd to allow localhost faxstat without password.
+        # Two distinct bugs, both required to actually fix non-interactive faxstat:
+        #  1. "localhost" resolves to ::1 before 127.0.0.1 on Debian/Ubuntu (getaddrinfo
+        #     returns the IPv6 loopback first), so faxstat connects to hfaxd over ::1 —
+        #     without an explicit ::1 entry that connection isn't trusted.
+        #  2. hosts.hfaxd(5) requires the file be readable ONLY by the fax user (mode
+        #     600); hfaxd silently falls back to full password auth for ALL clients,
+        #     even ones matching a trusted entry, if the file's permissions are looser
+        #     than that (the hylafax-server package ships it at 644, which is unusable).
+        # Either bug alone reproduces "500 'PASS ...': Syntax error, expecting password"
+        # on non-interactive faxstat, so this can't be guarded on file-not-exists — the
+        # package's own default hosts.hfaxd (present, but 644 and missing ::1) must
+        # always be overwritten and re-permissioned.
+        printf 'localhost\n127.0.0.1\n::1\n' > /var/spool/hylafax/etc/hosts.hfaxd
+        chown uucp:uucp /var/spool/hylafax/etc/hosts.hfaxd 2>/dev/null || true
+        chmod 600 /var/spool/hylafax/etc/hosts.hfaxd 2>/dev/null || true
         cat > "/var/spool/hylafax/etc/config.ttyIAX${i}" << HFMODEMCFG
 CountryCode:            ${FAX_COUNTRY_CODE}
 AreaCode:               ${FAX_AREA_CODE}
