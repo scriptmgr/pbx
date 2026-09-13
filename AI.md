@@ -73,7 +73,10 @@ These apply to every piece of code, script, UI, config, and documentation in thi
 
 - **Never** add `Co-authored-by` trailers.
 - **Always** write the commit message to `.git/COMMIT_MESS` before committing.
-- **Always** commit with `git commit -F .git/COMMIT_MESS`.
+- **Always** commit via the `gitcommit` wrapper: `gitcommit --dir {dir} all` —
+  raw `git commit`/`git push` are denied outright (mechanically enforced),
+  and `-m`/`--message` is never used since the message always comes from
+  `.git/COMMIT_MESS`.
 - **Format:**
 
 ```
