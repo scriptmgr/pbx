@@ -2161,14 +2161,30 @@ prepare_system() {
     chmod 750 "${PBX_ENV_DIR}"
     touch "${INSTALL_INVENTORY}"
 
-    # Generate passwords if not already loaded from env
+    # On a reinstall, reuse previously-generated credentials from the state file
+    # (PBX_STATE_FILE, e.g. /etc/pbx/state.json — the same idempotency store
+    # load_mysql_root_password() uses) instead of regenerating them. AUTO_PASSWORDS_FILE
+    # (creds.conf) is display-only and gets rewritten as human-readable text by
+    # finalize_installation()'s save_passwords_file(), so it can't be relied on as the
+    # source of truth for a completed install — without this, every reinstall of an
+    # already-finalized system silently generated brand-new random passwords that no
+    # longer matched the actual FreePBX admin account / MySQL app-DB users already
+    # configured on disk, while creds.conf kept showing the stale originals.
+    [ -z "${ADMIN_PASSWORD}" ]         && ADMIN_PASSWORD="$(state_get ADMIN_PASSWORD)"
+    [ -z "${FREEPBX_DB_PASSWORD}" ]    && FREEPBX_DB_PASSWORD="$(state_get FREEPBX_DB_PASSWORD)"
+    [ -z "${AVANTFAX_DB_PASSWORD}" ]   && AVANTFAX_DB_PASSWORD="$(state_get AVANTFAX_DB_PASSWORD)"
+
+    # Generate passwords if not already loaded from env or the state file
     # ADMIN_PASSWORD: unified admin UI password — alphanumeric only (no special chars, avoids shell/form issues)
     [ -z "${ADMIN_PASSWORD}" ]         && ADMIN_PASSWORD=$(tr -dc 'A-Za-z0-9' < /dev/urandom 2>/dev/null | head -c 16; echo)
     normalize_admin_vars
+    state_set ADMIN_PASSWORD "${ADMIN_PASSWORD}"
     [ -z "${MYSQL_ROOT_PASSWORD}" ]    && MYSQL_ROOT_PASSWORD=$(generate_password 32)
     save_mysql_root_password
     [ -z "${FREEPBX_DB_PASSWORD}" ]    && FREEPBX_DB_PASSWORD=$(generate_password 24)
+    state_set FREEPBX_DB_PASSWORD "${FREEPBX_DB_PASSWORD}"
     [ -z "${AVANTFAX_DB_PASSWORD}" ]   && AVANTFAX_DB_PASSWORD=$(generate_password 24)
+    state_set AVANTFAX_DB_PASSWORD "${AVANTFAX_DB_PASSWORD}"
     [ -z "${EMAIL_TO_FAX_ALIAS}" ]     && generate_fax_alias
     [ -z "${FAX_TO_EMAIL_ADDRESS}" ]   && FAX_TO_EMAIL_ADDRESS="${ADMIN_EMAIL:-admin@localhost}"
     # FAX_FROM_EMAIL/NAME default to FROM_EMAIL/NAME if not explicitly set

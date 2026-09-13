@@ -1,14 +1,5 @@
 # TODO
 
-- No `creds.conf` backup-on-reinstall mechanism exists: `install.sh`
-  appends/updates fields in place on `AUTO_PASSWORDS_FILE` re-runs rather
-  than renaming the prior file to a timestamped backup. Confirmed by
-  reading all `AUTO_PASSWORDS_FILE` usages in install.sh (lines
-  1546-2281, 6765-7883) and by the absence of any `.bak`/timestamped
-  variant in `/etc/pbx/` on either alma9 or deb12. Flagging in case this
-  was assumed to exist — no action taken, not confirmed to be a bug
-  (may be intentional).
-
 - `script-lint` pass on install.sh (pre-existing, not touched by this
   session's edits — 0 new issues introduced):
   - line 1039: function `state_set()` missing `__` prefix → rename to
