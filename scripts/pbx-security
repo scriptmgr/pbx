@@ -9,7 +9,7 @@
 # @@Copyright        :  Copyright: (c) 2026 Jason Hempstead, Casjays Developments
 # @@Created          :  Tuesday, May 19, 2026 11:56 EDT
 # @@File             :  pbx-security
-# @@Description      :  Run a PBX security audit covering fail2ban, auth failures, open ports, firewall rules, and TLS status.
+# @@Description      :  Run a PBX security audit covering auth failures, open ports, default passwords, and TLS status.
 # @@Changelog        :  Add compliant script header; fix convention violations
 # @@TODO             :
 # @@Other            :
@@ -54,12 +54,11 @@ hdr()  { printf "\n${BOLD}%s${NC}\n" "$*"; }
 
 usage() {
     printf "Usage: pbx-security [--help] [--version]\n\n"
-    printf "Run a PBX security audit covering fail2ban, auth failures, open ports,\n"
-    printf "Asterisk security logs, firewall rules, default passwords, and TLS status.\n\n"
+    printf "Run a PBX security audit covering auth failures, open ports,\n"
+    printf "Asterisk security logs, default passwords, and TLS status.\n\n"
     printf "Checks:\n"
-    printf "  - Fail2ban service and jail state\n"
     printf "  - Recent failed authentication attempts\n"
-    printf "  - Listening ports and firewall coverage\n"
+    printf "  - Listening ports\n"
     printf "  - Asterisk security log presence\n"
     printf "  - Default password and TLS certificate sanity\n\n"
     printf "Options:\n"
@@ -73,22 +72,6 @@ P=0; W=0; F=0
 chk_pass() { ok   "  PASS: $*"; P=$((P+1)); }
 chk_warn() { warn "  WARN: $*"; W=$((W+1)); }
 chk_fail() { err  "  FAIL: $*"; F=$((F+1)); }
-
-hdr "Fail2ban Status"
-if command -v fail2ban-client >/dev/null 2>&1; then
-    if systemctl is-active --quiet fail2ban 2>/dev/null; then
-        chk_pass "fail2ban is running"
-        JAILS=$(fail2ban-client status 2>/dev/null | grep -- "Jail list:" | sed 's/.*Jail list://;s/,//g')
-        for jail in $JAILS; do
-            BANNED=$(fail2ban-client status "$jail" 2>/dev/null | grep -- "Banned IP" | awk -F: '{print $2}' | tr -d ' ')
-            info "  Jail ${jail}: banned IPs: ${BANNED:-0}"
-        done
-    else
-        chk_fail "fail2ban is NOT running"
-    fi
-else
-    chk_warn "fail2ban not installed"
-fi
 
 hdr "Recent Failed Auth Attempts (last 10)"
 AUTH_LOG="/var/log/auth.log"; [ ! -f "$AUTH_LOG" ] && AUTH_LOG="/var/log/secure"
@@ -112,16 +95,6 @@ hdr "Asterisk Security Log"
 SECLOG="/var/log/asterisk/security"
 if [ -f "$SECLOG" ]; then tail -20 "$SECLOG"
 else warn "Security log not found: $SECLOG"; fi
-
-hdr "Firewall Rules Check"
-if command -v iptables >/dev/null 2>&1; then
-    RC=$(iptables -L INPUT -n 2>/dev/null | grep -cE -- "^ACCEPT|^DROP|^REJECT" || echo 0)
-    [ "$RC" -gt 2 ] \
-        && chk_pass "iptables has ${RC} INPUT rules" \
-        || chk_warn "iptables has only ${RC} INPUT rules - firewall may not be configured"
-else
-    chk_warn "iptables not found"
-fi
 
 hdr "Default Password Check"
 if command -v mysql >/dev/null 2>&1; then

@@ -91,8 +91,6 @@ NODEJS_MAJOR=""           # set by version_select()
 
 INSTALL_AVANTFAX="${INSTALL_AVANTFAX:-yes}"
 NUMBER_OF_MODEMS="${NUMBER_OF_MODEMS:-4}"
-FIREWALL_ENABLED="${FIREWALL_ENABLED:-yes}"
-FAIL2BAN_ENABLED="${FAIL2BAN_ENABLED:-yes}"
 BACKUP_ENABLED="${BACKUP_ENABLED:-yes}"
 SSL_ENABLED="${SSL_ENABLED:-yes}"
 USE_POSTFIX="${USE_POSTFIX:-yes}"
@@ -118,7 +116,7 @@ PACKAGE_MANAGER=""          # always mirrors PACKAGE_MGR_BIN
 
 # Packages with IDENTICAL names on every supported distro — no mapping needed.
 # These are appended per-section; the variable is a convenient prefix.
-PACKAGES_GLOBAL="tar curl wget git vim nano screen tmux htop unzip zip bzip2 net-tools tcpdump sox mpg123 ghostscript fail2ban dialog openssl file"
+PACKAGES_GLOBAL="tar curl wget git vim nano screen tmux htop unzip zip bzip2 net-tools tcpdump sox mpg123 ghostscript dialog openssl file"
 
 # Distro-specific package groups — all populated by setup_pkg_map().
 # Install functions use these instead of inline case/esac blocks.
@@ -133,8 +131,7 @@ PACKAGES_DISTRO_MAIL_CLIENT=""   # mailx-compatible client
 PACKAGES_DISTRO_MARIADB=""       # MariaDB server + client
 PACKAGES_DISTRO_PYTHON=""        # Python 3 dev + pip
 PACKAGES_DISTRO_NODE=""          # Node.js + npm
-PACKAGES_DISTRO_SYSTEM=""        # NTP, iptables-persist, pkg-config etc.
-PACKAGES_DISTRO_KNOCKD=""        # port-knocking daemon
+PACKAGES_DISTRO_SYSTEM=""        # NTP, iptables (QoS DSCP marking), pkg-config etc.
 PACKAGES_DISTRO_FAX=""           # HylaFax package(s)
 PACKAGES_DISTRO_SNGREP=""        # SIP sniffer
 PACKAGES_DISTRO_WIREGUARD=""     # WireGuard tools
@@ -155,7 +152,6 @@ PHP_INI_DIR=""
 MARIADB_SOCKET=""
 ODBC_DRIVER_PATH=""
 PKG_WEBMIN_REPO_TYPE=""   # deb | rpm  (used by install_webmin only)
-PKG_IPTABLES_PERSIST=""   # iptables-persistent | iptables-services (used by configure_iptables)
 PKG_NTP=""                # chrony (service: chronyd)
 
 SYSTEM_FQDN=""
@@ -204,7 +200,6 @@ FROM_NAME="${FROM_NAME:-}"            # Default: PBX System — set via env var
 # Feature flags
 BEHIND_PROXY="${BEHIND_PROXY:-yes}"
 INSTALL_WEBMIN="${INSTALL_WEBMIN:-yes}"
-INSTALL_KNOCKD="${INSTALL_KNOCKD:-no}"
 INSTALL_OPENVPN="${INSTALL_OPENVPN:-yes}"
 INSTALL_WIREGUARD="${INSTALL_WIREGUARD:-yes}"
 INSTALL_FOP2="${INSTALL_FOP2:-yes}"
@@ -216,7 +211,6 @@ LOW_RESOURCE=0   # auto-set in preflight if RAM < 2GB
 # SSH safety — populated in preflight
 SSH_PORT="${SSH_PORT:-22}"
 SSH_CLIENT_IP="${SSH_CLIENT_IP:-}"
-FIREWALL_ROLLBACK_JOB="${FIREWALL_ROLLBACK_JOB:-}"
 
 # GitHub API for management scripts download
 GITHUB_REPO="${GITHUB_REPO:-scriptmgr/pbx}"
@@ -263,26 +257,23 @@ log_raw() { printf "[%s] %-5s %s\n" "$(date '+%H:%M:%S')" "$1" "$2" >> "${LOG_FI
 STEP_CURRENT=0
 # STEP_TOTAL is a default for early display only — compute_step_total() recalculates it
 # accurately once all install flags and distro detection are resolved.
-STEP_TOTAL=59
+STEP_TOTAL=55
 
 # Compute the exact step count for this install based on resolved flags and distro.
 # Call after detect_system, version_select, and resolve_install_flags have all run.
-# Unconditional base: 42 steps that always run regardless of flags.
+# Unconditional base: 38 steps that always run regardless of flags.
 # Each block below adds the steps that fire under their respective conditions.
 compute_step_total() {
-    local _n=42
+    local _n=38
     # Fax subsystem (7 steps; avantfax_php adds 1 when PHP versions differ)
     if [ "${INSTALL_AVANTFAX:-yes}" = "yes" ]; then
         _n=$((_n + 7))
         [ "${PHP_VERSION}" != "${PHP_AVANTFAX_VERSION}" ] && _n=$((_n + 1))
     fi
     # Security
-    [ "${FAIL2BAN_ENABLED:-yes}" = "yes" ]                                    && _n=$((_n + 1))
-    [ "${IS_CONTAINER:-0}" = "0" ] && [ "${FIREWALL_ENABLED:-yes}" = "yes" ]  && _n=$((_n + 2))
     [ "${IS_CONTAINER:-0}" = "0" ] && [ "${DISABLE_IPV6:-no}" = "yes" ]       && _n=$((_n + 1))
     # Optional tools (default: no)
     [ "${INSTALL_WEBMIN:-yes}" = "yes" ]        && _n=$((_n + 1))
-    [ "${INSTALL_KNOCKD:-no}" = "yes" ]         && _n=$((_n + 1))
     [ "${INSTALL_SNGREP:-no}" = "yes" ]         && _n=$((_n + 1))
     [ "${INSTALL_OPENVPN:-no}" = "yes" ]        && _n=$((_n + 1))
     [ "${INSTALL_WIREGUARD:-no}" = "yes" ]      && _n=$((_n + 1))
@@ -701,15 +692,13 @@ setup_pkg_map() {
             # nodesource ships its own npm bundled in the `nodejs` package; the
             # distro `npm` package conflicts and pulls a broken dep tree on Debian 12.
             PACKAGES_DISTRO_NODE="nodejs"
-            PACKAGES_DISTRO_SYSTEM="chrony pkg-config iptables-persistent cron"
-            PACKAGES_DISTRO_KNOCKD="knockd"
+            PACKAGES_DISTRO_SYSTEM="chrony pkg-config iptables cron"
             PACKAGES_DISTRO_FAX="hylafax-server iaxmodem"
             PACKAGES_DISTRO_SNGREP="sngrep"
             PACKAGES_DISTRO_WIREGUARD="wireguard-tools"
             ODBC_DEV_PKG="unixodbc-dev"
             ODBC_DRIVER_PKG="odbc-mariadb"
             PKG_NTP="chrony"
-            PKG_IPTABLES_PERSIST="iptables-persistent"
             PKG_WEBMIN_REPO_TYPE="deb"
             PHP_FPM_SERVICE="php${PHP_VERSION}-fpm"
             PHP74_FPM_SERVICE="php${PHP_AVANTFAX_VERSION}-fpm"
@@ -738,15 +727,13 @@ setup_pkg_map() {
             PACKAGES_DISTRO_MARIADB="mariadb-server mariadb"
             PACKAGES_DISTRO_PYTHON="python3-devel python3-pip"
             PACKAGES_DISTRO_NODE="nodejs"
-            PACKAGES_DISTRO_SYSTEM="chrony iptables-services"
-            PACKAGES_DISTRO_KNOCKD="knock-server"
+            PACKAGES_DISTRO_SYSTEM="chrony iptables"
             PACKAGES_DISTRO_FAX="hylafax+"
             PACKAGES_DISTRO_SNGREP="sngrep"
             PACKAGES_DISTRO_WIREGUARD=""
             ODBC_DEV_PKG="unixODBC-devel"
             ODBC_DRIVER_PKG="mariadb-connector-odbc"
             PKG_NTP="chrony"
-            PKG_IPTABLES_PERSIST="iptables-services"
             PKG_WEBMIN_REPO_TYPE="rpm"
             PHP_FPM_SERVICE="php-fpm"
             PHP74_FPM_SERVICE="php74-php-fpm"
@@ -759,11 +746,9 @@ setup_pkg_map() {
             ODBC_DRIVER_PATH="/usr/lib64/libmaodbc.so"
             # CentOS 6 (gen=1) adjustments
             if [ "${DISTRO_GEN}" -eq 1 ]; then
-                PACKAGES_DISTRO_KNOCKD="knock"
                 PACKAGES_DISTRO_SYSTEM="ntp iptables"
                 PACKAGES_DISTRO_MAIL_CLIENT="mailx"
                 PKG_NTP="ntp"
-                PKG_IPTABLES_PERSIST="iptables"
             elif [ "${DISTRO_GEN}" -ge 3 ]; then
                 PACKAGES_DISTRO_WIREGUARD="wireguard-tools"
             fi
@@ -1032,7 +1017,7 @@ backup_config() {
 }
 
 is_installed() {
-    grep -q "^${1}$" "${INSTALL_INVENTORY}" 2>/dev/null
+    grep -q -- "^${1}$" "${INSTALL_INVENTORY}" 2>/dev/null
 }
 
 # Idempotency helpers — track what's installed in state file
@@ -1040,14 +1025,14 @@ state_set() {
     local key="$1" val="$2"
     mkdir -p "$(dirname "${PBX_STATE_FILE}")"
     [ -f "${PBX_STATE_FILE}" ] && \
-        grep -v "^${key}=" "${PBX_STATE_FILE}" > "${PBX_STATE_FILE}.tmp" 2>/dev/null && \
+        grep -v -- "^${key}=" "${PBX_STATE_FILE}" > "${PBX_STATE_FILE}.tmp" 2>/dev/null && \
         mv "${PBX_STATE_FILE}.tmp" "${PBX_STATE_FILE}" || true
     echo "${key}=${val}" >> "${PBX_STATE_FILE}"
 }
 
 state_get() {
     [ -f "${PBX_STATE_FILE}" ] && \
-        grep "^${1}=" "${PBX_STATE_FILE}" | cut -d= -f2- | tail -1 || echo ""
+        grep -- "^${1}=" "${PBX_STATE_FILE}" | cut -d= -f2- | tail -1 || echo ""
 }
 
 save_mysql_root_password() {
@@ -1464,8 +1449,6 @@ component_ok() {
             [ -f "${AVANTFAX_WEB_DIR:-/var/www/apache/pbx/avantfax}/index.php" ] ;;
         webmin)
             [ -f /etc/webmin/miniserv.conf ] ;;
-        fail2ban)
-            command -v fail2ban-client >/dev/null 2>&1 ;;
         wireguard)
             command -v wg >/dev/null 2>&1 && command -v wg-quick >/dev/null 2>&1 ;;
         *)
@@ -1748,7 +1731,7 @@ PY
        grep -q 'lxc' /proc/1/cgroup 2>/dev/null || \
        [ -f /.dockerenv ]; then
         IS_CONTAINER=1
-        info "Container environment detected — skipping iptables/sysctl/IPv6-disable"
+        info "Container environment detected — skipping sysctl/IPv6-disable"
     else
         IS_CONTAINER=0
     fi
@@ -1800,40 +1783,33 @@ detect_ssh_safety() {
     info "SSH port: ${SSH_PORT} | Client IP: ${SSH_CLIENT_IP:-unknown}"
 }
 
-schedule_firewall_rollback() {
-    # Dead-man switch: flush iptables in 5 minutes in case we get locked out.
-    # Cancelled by cancel_firewall_rollback() once rules are verified safe.
-    # Uses `at` when available, falls back to a background sleep process.
-    if command_exists at; then
-        FIREWALL_ROLLBACK_JOB=$(echo "iptables -F INPUT; iptables -P INPUT ACCEPT; firewall-cmd --panic-off 2>/dev/null; true" \
-            | at "now + 5 minutes" 2>&1 | awk '/^job/{print $2}')
-        info "Firewall rollback scheduled via at (job ${FIREWALL_ROLLBACK_JOB}) — cancels in 5m if not confirmed"
-    else
-        # `at` not available — use a background sleep process instead
-        ( sleep 300; iptables -F INPUT; iptables -P INPUT ACCEPT
-          firewall-cmd --panic-off 2>/dev/null; true ) &
-        FIREWALL_ROLLBACK_JOB="$!"
-        info "Firewall rollback scheduled via background process (PID ${FIREWALL_ROLLBACK_JOB}) — cancels in 5m if not confirmed"
-    fi
-}
-
-cancel_firewall_rollback() {
-    [ -n "${FIREWALL_ROLLBACK_JOB:-}" ] || return 0
-    # Cancel `at` job if numeric, otherwise kill the background sleep process
-    if [[ "${FIREWALL_ROLLBACK_JOB}" =~ ^[0-9]+$ ]]; then
-        atrm "${FIREWALL_ROLLBACK_JOB}" 2>/dev/null || \
-            kill "${FIREWALL_ROLLBACK_JOB}" 2>/dev/null || true
-    fi
-    success "Firewall rollback cancelled — rules verified safe"
-    FIREWALL_ROLLBACK_JOB=""
-}
-
 # =============================================================================
 # SECTION 7e: GITHUB API SCRIPT DOWNLOADER
 # =============================================================================
 
+# Management scripts retired when firewall ownership moved to the sysadmin.
+# Listed explicitly so stale copies from older installs are removed on update,
+# independent of whether a fresh GitHub manifest is available.
+RETIRED_SCRIPTS="pbx-firewall pbx-add-ip pbx-ip-checker"
+
+remove_retired_scripts() {
+    local retired_path
+    for retired_path in ${RETIRED_SCRIPTS}; do
+        if [ -e "/usr/local/bin/${retired_path}" ]; then
+            info "Removing retired script: ${retired_path}"
+            rm -f "/usr/local/bin/${retired_path}"
+        fi
+    done
+    if [ -e /usr/local/bin/iptables-custom ]; then
+        info "Removing retired helper: iptables-custom"
+        rm -f /usr/local/bin/iptables-custom
+    fi
+}
+
 sync_management_scripts() {
     step "Syncing management scripts from GitHub"
+
+    remove_retired_scripts
 
     local install_dir="/usr/local/bin"
     local manifest_fresh=0
@@ -1948,7 +1924,7 @@ sync_management_scripts() {
             [ -f "${existing}" ] || continue
             local bname
             bname=$(basename "${existing}")
-            grep -q "^${bname}	" "${SCRIPTS_MANIFEST_CACHE}" || {
+            grep -q -- "^${bname}	" "${SCRIPTS_MANIFEST_CACHE}" || {
                 info "Removing obsolete script: ${bname}"
                 rm -f "${existing}"
             }
@@ -2133,7 +2109,7 @@ configure_php_fpm_auth_shim() {
         /etc/php/*/fpm/pool.d/www.conf \
     ; do
         [ -f "${pool}" ] || continue
-        if grep -q "^${marker}" "${pool}" 2>/dev/null; then
+        if grep -q -- "^${marker}" "${pool}" 2>/dev/null; then
             # Already wired — refresh the path in case PBX_WEB_DIR changed.
             sed -i "/^${marker}/,/^php_admin_value\\[auto_prepend_file\\]/c\\${marker}\\n${directive}" "${pool}"
         else
@@ -2478,7 +2454,7 @@ install_core_dependencies() {
     step "📦 Installing core build dependencies..."
 
     pkg_install $PACKAGES_GLOBAL $PACKAGES_DISTRO_BUILD
-    pkg_install_one_by_one $PACKAGES_DISTRO_SYSTEM   # NTP, iptables-persist, cron, etc.
+    pkg_install_one_by_one $PACKAGES_DISTRO_SYSTEM
     disable_anacron_if_present
     pkg_install_one_by_one $PACKAGES_DISTRO_ASTERISK_DEPS
     pkg_install_one_by_one $PACKAGES_DISTRO_PYTHON
@@ -4245,10 +4221,12 @@ NOSIGEARLYEOF
 
     local installed_modules
     installed_modules=$(fwconsole ma list 2>/dev/null || true)
-    printf '%s\n' "${installed_modules}" | grep -qE '^firewall[[:space:]]' \
-        && fwconsole ma remove firewall > /dev/null 2>&1 || true
     printf '%s\n' "${installed_modules}" | grep -qE '^synologyabb[[:space:]]' \
         && fwconsole ma remove synologyabb > /dev/null 2>&1 || true
+    # The FreePBX "firewall" module writes its own iptables ruleset. PBX must not
+    # manage the host firewall, so the module is stripped, never configured.
+    printf '%s\n' "${installed_modules}" | grep -qE '^firewall[[:space:]]' \
+        && fwconsole ma remove firewall > /dev/null 2>&1 || true
 
     local ari_user ari_pass
     ari_user="ari_$(generate_password 4 2>/dev/null | tr '[:upper:]' '[:lower:]' || echo "pbxuser")"
@@ -4425,8 +4403,8 @@ NATEOF
     # 2. Remove known-problematic modules regardless of license label
     #    synologyabb: throws "Sysadmin RPM not up to date" on source installs
     #    sysadmin:    commercial Sangoma Pro — requires portal activation
-    #    firewall:    conflicts with system firewall management
-    for mod in firewall sysadmin synologyabb; do
+    #    firewall:    writes its own iptables ruleset — host firewall is sysadmin-owned
+    for mod in sysadmin synologyabb firewall; do
         printf '%s\n' "${installed_modules}" | grep -qE "^${mod}[[:space:]]" \
             && fwconsole ma remove "${mod}" > /dev/null 2>&1 || true
     done
@@ -6122,139 +6100,6 @@ LENNYEOF
 }
 
 # =============================================================================
-# SECTION 29: FIREWALL (firewalld / ufw)
-# =============================================================================
-
-configure_firewall() {
-    step "🔥 Configuring firewall..."
-    [ "${FIREWALL_ENABLED}" != "yes" ] && return 0
-
-    if command_exists firewall-cmd; then
-        svc_enable firewalld
-        svc_start  firewalld
-        for port in 22/tcp 80/tcp 443/tcp 5060/udp 5060/tcp 5061/tcp \
-                    4569/udp 8089/tcp 9001/tcp; do
-            firewall-cmd --permanent --add-port="${port}" 2>/dev/null || true
-        done
-        firewall-cmd --permanent --add-port=10000-20000/udp 2>/dev/null || true
-        [ "${INSTALL_FOP2:-no}" = "yes" ] && \
-            firewall-cmd --permanent --add-port=4445/tcp 2>/dev/null || true
-        # Mosh server uses UDP 60000-61000 for encrypted remote terminal sessions
-        firewall-cmd --permanent --add-port=60000-61000/udp 2>/dev/null || true
-        # Allow ICMP (ping) for monitoring
-        firewall-cmd --permanent --remove-icmp-block=echo-request 2>/dev/null || true
-        firewall-cmd --permanent --remove-icmp-block=echo-reply 2>/dev/null || true
-        firewall-cmd --reload 2>/dev/null || true
-        success "firewalld configured"
-    elif command_exists ufw; then
-        ufw --force enable 2>/dev/null || true
-        for port in 22 80 443 8089 9001; do
-            ufw allow "${port}"/tcp 2>/dev/null || true
-        done
-        ufw allow 5060 2>/dev/null || true
-        ufw allow 5061/tcp 2>/dev/null || true
-        ufw allow 4569/udp 2>/dev/null || true
-        ufw allow 10000:20000/udp 2>/dev/null || true
-        [ "${INSTALL_FOP2:-no}" = "yes" ] && ufw allow 4445/tcp 2>/dev/null || true
-        # Mosh server uses UDP 60000-61000 for encrypted remote terminal sessions
-        ufw allow 60000:61000/udp 2>/dev/null || true
-        # Allow ICMP (ping) for monitoring — UFW needs before.rules entries, not
-        # "ufw allow proto icmp".
-        if [ -f /etc/ufw/before.rules ] && ! grep -q "PBX ICMP allow" /etc/ufw/before.rules 2>/dev/null; then
-            backup_config /etc/ufw/before.rules
-            sed -i '/^COMMIT$/i # PBX ICMP allow\n-A ufw-before-input -p icmp --icmp-type echo-request -j ACCEPT\n-A ufw-before-input -p icmp --icmp-type echo-reply -j ACCEPT\n-A ufw-before-input -p icmp --icmp-type destination-unreachable -j ACCEPT\n-A ufw-before-input -p icmp --icmp-type time-exceeded -j ACCEPT\n' /etc/ufw/before.rules 2>/dev/null || true
-        fi
-        if [ -f /etc/ufw/before6.rules ] && ! grep -q "PBX ICMPv6 allow" /etc/ufw/before6.rules 2>/dev/null; then
-            backup_config /etc/ufw/before6.rules
-            sed -i '/^COMMIT$/i # PBX ICMPv6 allow\n-A ufw6-before-input -p ipv6-icmp -j ACCEPT\n' /etc/ufw/before6.rules 2>/dev/null || true
-        fi
-        ufw reload 2>/dev/null || true
-        success "ufw configured"
-    else
-        info "No high-level firewall found; configure_iptables will apply rules"
-    fi
-}
-
-# =============================================================================
-# SECTION 30: IPTABLES
-# =============================================================================
-
-configure_iptables() {
-    step "🔥 Configuring iptables rules..."
-    [ "${FIREWALL_ENABLED}" != "yes" ] && return 0
-
-    # Skip raw iptables when firewalld is active — firewalld manages its own
-    # nftables/iptables rules and flushing INPUT here will break its chains,
-    # leaving a DROP policy with nothing accepted (full lockout).
-    if command_exists firewall-cmd && svc_active firewalld 2>/dev/null; then
-        info "firewalld is active — skipping raw iptables (ports already opened by configure_firewall)"
-        return 0
-    fi
-
-    local server_ip user_ip public_ip
-    server_ip="${PRIMARY_IP:-}"
-    [ -z "${server_ip}" ] && server_ip=$(ip -4 route get 8.8.8.8 2>/dev/null \
-        | awk '/src/{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}') || true
-    user_ip=$(echo "${SSH_CONNECTION:-}" | cut -f1 -d" " 2>/dev/null || echo "")
-    public_ip="${PUBLIC_IP:-}"
-    [ -z "${public_ip}" ] && public_ip=$(curl -s4 --max-time 5 https://ifconfig.me 2>/dev/null \
-        || curl -s4 --max-time 5 https://api.ipify.org 2>/dev/null || echo "") || true
-
-    pkg_install_one_by_one $PKG_IPTABLES_PERSIST ipset
-    svc_enable iptables 2>/dev/null || true
-
-    iptables -F INPUT  2>/dev/null || true
-    iptables -P INPUT  DROP
-    iptables -P FORWARD DROP
-    iptables -P OUTPUT ACCEPT
-
-    iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
-    iptables -A INPUT -i lo -j ACCEPT
-    # Allow ICMP (ping) for monitoring — must be explicit when INPUT policy is DROP
-    iptables -A INPUT -p icmp --icmp-type echo-request -j ACCEPT
-    iptables -A INPUT -p icmp --icmp-type echo-reply   -j ACCEPT
-    iptables -A INPUT -p icmp --icmp-type destination-unreachable -j ACCEPT
-    iptables -A INPUT -p icmp --icmp-type time-exceeded -j ACCEPT
-    [ -n "${server_ip}" ] && iptables -A INPUT -s "${server_ip}" -j ACCEPT || true
-    [ -n "${user_ip}" ]   && iptables -A INPUT -s "${user_ip}"   -j ACCEPT || true
-    [ -n "${public_ip}" ] && iptables -A INPUT -s "${public_ip}" -j ACCEPT || true
-
-    iptables -A INPUT -p tcp --dport 22    -j ACCEPT
-    iptables -A INPUT -p tcp --dport 80    -j ACCEPT
-    iptables -A INPUT -p tcp --dport 443   -j ACCEPT
-    iptables -A INPUT -p tcp --dport 9001  -j ACCEPT
-    iptables -A INPUT -p udp --dport 5060  -j ACCEPT
-    iptables -A INPUT -p tcp --dport 5060  -j ACCEPT
-    iptables -A INPUT -p tcp --dport 5061  -j ACCEPT
-    iptables -A INPUT -p udp --dport 4569  -j ACCEPT
-    iptables -A INPUT -p tcp --dport 8089  -j ACCEPT
-    [ "${INSTALL_FOP2:-no}" = "yes" ] && iptables -A INPUT -p tcp --dport 4445 -j ACCEPT || true
-    iptables -A INPUT -p udp --dport 10000:20000 -j ACCEPT
-    # Mosh server uses UDP 60000-61000 for encrypted remote terminal sessions
-    iptables -A INPUT -p udp --dport 60000:61000 -j ACCEPT
-
-    case "${DISTRO_FAMILY}" in
-        debian)
-            netfilter-persistent save 2>/dev/null \
-                || { mkdir -p /etc/iptables; iptables-save > /etc/iptables/rules.v4; }
-            ;;
-        rhel|fedora)
-            service iptables save 2>/dev/null \
-                || iptables-save > /etc/sysconfig/iptables
-            ;;
-    esac
-
-    cat > /usr/local/bin/iptables-custom << 'IPTEOF'
-#!/bin/bash
-# Re-apply custom iptables rules after reload
-# Add your persistent custom rules here
-IPTEOF
-    chmod +x /usr/local/bin/iptables-custom
-
-    success "iptables rules applied"
-}
-
-# =============================================================================
 # SECTION 31: IPv6 HANDLING
 # =============================================================================
 
@@ -6299,186 +6144,6 @@ SYSCTLEOF
     else
         info "No IPv6 addresses detected — services configured for IPv4 only"
         command_exists postconf && postconf -e "inet_protocols = ipv4" 2>/dev/null || true
-    fi
-}
-
-# =============================================================================
-# SECTION 32: FAIL2BAN
-# =============================================================================
-
-install_fail2ban() {
-    step "Installing Fail2ban..."
-    [ "${FAIL2BAN_ENABLED:-yes}" != "yes" ] && return 0
-
-    pkg_install fail2ban
-
-    mkdir -p /etc/fail2ban/jail.d
-
-    # Deduplicate 'backend' in [DEFAULT] of jail.conf — re-runs or package upgrades
-    # can leave duplicate entries that prevent fail2ban from starting.
-    if [ -f /etc/fail2ban/jail.conf ] && \
-       [ "$(grep -c '^backend' /etc/fail2ban/jail.conf 2>/dev/null)" -gt 1 ]; then
-        awk '/^backend/{count++; if(count>1) next} {print}' \
-            /etc/fail2ban/jail.conf > /tmp/jail.conf.dedup && \
-            mv /tmp/jail.conf.dedup /etc/fail2ban/jail.conf || true
-        info "Deduplicated backend entries in jail.conf"
-    fi
-
-    # Ensure Asterisk log directory/file exist so fail2ban can start
-    mkdir -p /var/log/asterisk
-    touch /var/log/asterisk/security
-    chown asterisk:asterisk /var/log/asterisk/security 2>/dev/null || true
-
-    # Enable Asterisk security log. FreePBX manages logger.conf but leaves
-    # logger_logfiles_custom.conf empty — add the security level there so
-    # Asterisk actually writes security events for fail2ban to parse.
-    # Create the file if it doesn't exist yet (fail2ban may run before the
-    # first fwconsole reload that generates it).
-    local _logger_custom="/etc/asterisk/logger_logfiles_custom.conf"
-    mkdir -p /etc/asterisk
-    if ! grep -q "^security" "${_logger_custom}" 2>/dev/null; then
-        printf '\nsecurity => security\n' >> "${_logger_custom}"
-        chown asterisk:asterisk "${_logger_custom}" 2>/dev/null || true
-        asterisk -rx "logger reload" >/dev/null 2>&1 || true
-    fi
-
-    # Detect whether sshd is actually running (try all common service names)
-    local sshd_running=0
-    for svc_name in ssh sshd openssh-server; do
-        if systemctl is-active "${svc_name}" >/dev/null 2>&1; then
-            sshd_running=1; break
-        fi
-    done
-
-    # Determine the best backend and logfile for the sshd jail.
-    # On modern systemd-only systems (no syslog files), use journald backend.
-    local sshd_enabled="true"
-    local sshd_backend="auto"
-    local sshd_logpath_line=""
-
-    if [ "${sshd_running}" -eq 0 ]; then
-        sshd_enabled="false"
-        warn "sshd jail disabled: sshd is not running (container mode?)"
-    else
-        # Check for traditional log files first
-        local sshd_log=""
-        for f in /var/log/auth.log /var/log/secure /var/log/messages; do
-            [ -f "$f" ] && sshd_log="$f" && break
-        done
-
-        if [ -n "${sshd_log}" ]; then
-            # Traditional syslog: specify path and let fail2ban auto-detect backend
-            sshd_logpath_line="logpath  = ${sshd_log}"
-            sshd_backend="auto"
-        else
-            # Journald-only (systemd without rsyslog) — use systemd backend
-            # fail2ban reads directly from journald; no logpath needed
-            sshd_backend="systemd"
-            info "sshd jail: using systemd/journald backend (no syslog files found)"
-        fi
-    fi
-
-    # Global defaults — safe settings that won't lock anyone out
-    # Use email action only when ADMIN_EMAIL is configured — falls back to ban-only otherwise.
-    local _f2b_action='%(action_)s'
-    local _f2b_email_block=""
-    if [ -n "${ADMIN_EMAIL:-}" ]; then
-        _f2b_action='%(action_mwl)s'
-        _f2b_email_block="destemail = ${ADMIN_EMAIL}
-sender   = ${FROM_EMAIL:-fail2ban@localhost}"
-    fi
-
-    # jail.local is not shipped by the fail2ban package itself — its presence
-    # means a pre-existing global policy (e.g. a casjay-base bootstrap) already
-    # set [DEFAULT] action/banaction. jail.local loads AFTER jail.d/*.conf, so
-    # it would silently override whatever action we set here anyway — omit our
-    # own action line in that case and let the existing policy win, instead of
-    # writing a value that gets silently discarded.
-    local _f2b_action_line="action   = ${_f2b_action}"
-    if [ -f /etc/fail2ban/jail.local ]; then
-        _f2b_action_line=""
-        info "Existing /etc/fail2ban/jail.local found — deferring to its [DEFAULT] action/banaction policy"
-    fi
-
-    backup_config /etc/fail2ban/jail.d/pbx-defaults.conf
-    cat > /etc/fail2ban/jail.d/pbx-defaults.conf << F2BGEOF
-[DEFAULT]
-bantime  = 3600
-findtime = 600
-maxretry = 10
-ignoreip = 127.0.0.1/8 ::1 ${SSH_CLIENT_IP:-}
-${_f2b_email_block}
-${_f2b_action_line}
-F2BGEOF
-
-    # Write sshd jail override AFTER defaults-debian.conf alphabetically
-    # ("pbx-sshd.conf" > "defaults-debian.conf")
-    backup_config /etc/fail2ban/jail.d/pbx-sshd.conf
-    {
-        echo "[sshd]"
-        echo "enabled  = ${sshd_enabled}"
-        echo "port     = ${SSH_PORT:-22}"
-        echo "maxretry = 10"
-        echo "bantime  = 3600"
-        echo "findtime = 600"
-        echo "backend  = ${sshd_backend}"
-        [ -n "${sshd_logpath_line}" ] && echo "${sshd_logpath_line}"
-    } > /etc/fail2ban/jail.d/pbx-sshd.conf
-
-    # Asterisk jails
-    backup_config /etc/fail2ban/jail.d/asterisk.conf
-    cat > /etc/fail2ban/jail.d/asterisk.conf << 'F2BEOF'
-[asterisk]
-enabled  = true
-port     = 5060,5061
-protocol = udp
-filter   = asterisk
-logpath  = /var/log/asterisk/security
-maxretry = 5
-bantime  = 3600
-findtime = 600
-
-[asterisk-tcp]
-enabled  = true
-port     = 5060,5061
-protocol = tcp
-filter   = asterisk
-logpath  = /var/log/asterisk/security
-maxretry = 5
-bantime  = 3600
-findtime = 600
-
-[apache-auth]
-enabled  = true
-maxretry = 10
-bantime  = 3600
-findtime = 600
-F2BEOF
-
-    svc_enable fail2ban
-    svc_restart fail2ban 2>/dev/null || warn "fail2ban restart command failed — check logs"
-
-    # The restart command above can exit 0 even though the service then
-    # crashes on config load (e.g. a malformed pre-existing jail.local from an
-    # external bootstrap) — verify it is actually active, don't just trust the
-    # restart exit code.
-    sleep 1
-    if ! systemctl is-active --quiet fail2ban 2>/dev/null; then
-        warn "fail2ban is not running after restart — check 'journalctl -u fail2ban' (often a pre-existing /etc/fail2ban/jail.local syntax error)"
-    fi
-
-    # Whitelist current SSH client IP
-    if [ -n "${SSH_CLIENT_IP:-}" ] && [ "$sshd_enabled" = "true" ]; then
-        sleep 2
-        fail2ban-client set sshd addignoreip "${SSH_CLIENT_IP}" 2>/dev/null || true
-        info "Whitelisted SSH client IP: ${SSH_CLIENT_IP}"
-    fi
-
-    mark_done fail2ban
-    if systemctl is-active --quiet fail2ban 2>/dev/null; then
-        success "Fail2ban installed (maxretry=10, bantime=1h)"
-    else
-        warn "Fail2ban installed but not running — jails are NOT enforced until this is fixed"
     fi
 }
 
@@ -6588,41 +6253,6 @@ WEBMINREPOEOF
 
     mark_done webmin
     success "Webmin installed (port 9001)"
-}
-
-# =============================================================================
-# SECTION 35: KNOCKD (PORT KNOCKING)
-# =============================================================================
-
-install_knockd() {
-    step "🚪 Installing knockd (port-knocking daemon)..."
-
-    pkg_install_one_by_one $PACKAGES_DISTRO_KNOCKD
-
-    if command_exists knockd; then
-        cat > /etc/knockd.conf << 'KNOCKEOF'
-[options]
-    UseSyslog
-
-[openSSH]
-    sequence    = 7000,8000,9000
-    seq_timeout = 10
-    command     = /sbin/iptables -I INPUT -s %IP% -p tcp --dport 22 -j ACCEPT
-    tcpflags    = syn
-
-[closeSSH]
-    sequence    = 9000,8000,7000
-    seq_timeout = 10
-    command     = /sbin/iptables -D INPUT -s %IP% -p tcp --dport 22 -j ACCEPT
-    tcpflags    = syn
-KNOCKEOF
-        svc_enable knockd 2>/dev/null || true
-        svc_start  knockd 2>/dev/null || true
-        track_install "knockd"
-        success "knockd installed"
-    else
-        warn "knockd not installed"
-    fi
 }
 
 # =============================================================================
@@ -7055,30 +6685,6 @@ POLEOF
     sed -i "s|PBX_IP|${PRIMARY_IP:-${EXTERNAL_IP}}|g" "${tftp_root}/polycom/000000000000.cfg"
     if id "${tftp_user}" >/dev/null 2>&1; then
         chown -R "${tftp_user}:${tftp_group}" "${tftp_root}" 2>/dev/null || true
-    fi
-
-    # Open TFTP port in firewall if iptables is active
-    if iptables -L INPUT -n 2>/dev/null | grep -q "^Chain"; then
-        iptables -C INPUT -p udp --dport 69 -j ACCEPT 2>/dev/null \
-            || iptables -A INPUT -p udp --dport 69 -j ACCEPT 2>/dev/null || true
-        case "${DISTRO_FAMILY}" in
-            debian)
-                netfilter-persistent save 2>/dev/null \
-                    || { mkdir -p /etc/iptables; iptables-save > /etc/iptables/rules.v4 2>/dev/null || true; }
-                ;;
-            rhel|fedora)
-                service iptables save 2>/dev/null || true
-                ;;
-        esac
-    fi
-    # firewalld
-    if command_exists firewall-cmd && firewall-cmd --state 2>/dev/null | grep -q running; then
-        firewall-cmd --permanent --add-service=tftp 2>/dev/null || true
-        firewall-cmd --reload 2>/dev/null || true
-    fi
-    # ufw
-    if command_exists ufw && ufw status 2>/dev/null | grep -q "Status: active"; then
-        ufw allow 69/udp 2>/dev/null || true
     fi
 
     if ! svc_active "${tftp_svc}"; then
@@ -8060,32 +7666,6 @@ verify_installation() {
         fi
     fi
 
-    # Check Fail2ban (warn only — not fatal, but jails are unenforced if down)
-    if [ "${FAIL2BAN_ENABLED:-yes}" = "yes" ]; then
-        if command -v fail2ban-client >/dev/null 2>&1; then
-            if svc_active fail2ban 2>/dev/null; then
-                success "Fail2ban running"
-            else
-                warn "Fail2ban installed but not running — jails are NOT enforced (check journalctl -u fail2ban; a common cause is a syntax error in a pre-existing /etc/fail2ban/jail.local)"
-            fi
-        else
-            warn "fail2ban-client not found (was FAIL2BAN_ENABLED=yes)"
-        fi
-    fi
-
-    # Check knockd (if enabled)
-    if [ "${INSTALL_KNOCKD:-no}" = "yes" ]; then
-        if command -v knockd >/dev/null 2>&1; then
-            if svc_active knockd 2>/dev/null; then
-                success "knockd running"
-            else
-                warn "knockd installed but not running"
-            fi
-        else
-            warn "knockd not found (was INSTALL_KNOCKD=yes)"
-        fi
-    fi
-
     # Check OpenVPN client tools (if enabled)
     if [ "${INSTALL_OPENVPN:-yes}" = "yes" ]; then
         if command -v openvpn >/dev/null 2>&1; then
@@ -8148,7 +7728,7 @@ verify_installation() {
 show_completion_message() {
     local scheme="https"
     local admin_url avantfax_url
-    local optional_components="Fail2ban | Postfix"
+    local optional_components="Postfix"
     if [ "${BEHIND_PROXY:-no}" = "yes" ]; then
         # Reload proxy port from env file
         local _pp
@@ -8214,7 +7794,6 @@ show_completion_message() {
     echo "    pbx-vpn        — VPN client guidance"
     echo "    pbx-docs       — Quick reference"
     echo "    pbx-tftp       — TFTP phone provisioning"
-    echo "    pbx-add-ip <IP> — Whitelist an IP"
     echo ""
     echo "${CYAN}  Demo Extensions (call from any extension):${NC}"
     echo "    123  Speaking clock   947  Weather TTS    951  Today's date"
@@ -8222,7 +7801,6 @@ show_completion_message() {
     echo "    *41  Caller ID        *97  Voicemail      *469 Conference 1"
     echo ""
     echo "${YELLOW}  ⚠️  Credentials saved to /etc/pbx/creds.conf — review before exposing to the internet.${NC}"
-    echo "${YELLOW}  ⚠️  Review firewall rules for your network topology.${NC}"
     echo ""
     echo "${GREEN}  Installation log: ${LOG_FILE}${NC}"
     echo ""
@@ -8331,15 +7909,10 @@ run_installation() {
     generate_apache_vhost_config
 
     # Phase 7: Security
-    if [ "${IS_CONTAINER:-0}" = "0" ]; then
-        [ "${FIREWALL_ENABLED:-yes}" = "yes" ] && { configure_firewall; configure_iptables; }
-    fi
-    [ "${FAIL2BAN_ENABLED:-yes}" = "yes" ] && install_fail2ban || true
     configure_logrotate
 
     # Phase 8: Optional tools
     [ "${INSTALL_WEBMIN:-yes}" = "yes" ] && install_webmin || true
-    [ "${INSTALL_KNOCKD:-no}"  = "yes" ] && install_knockd  || true
     [ "${INSTALL_SNGREP:-no}"  = "yes" ] && install_sngrep  || true
     [ "${INSTALL_OPENVPN:-no}" = "yes" ] && install_openvpn || true
     [ "${INSTALL_WIREGUARD:-no}" = "yes" ] && install_wireguard || true
@@ -8403,7 +7976,7 @@ print(v) if v else sys.exit(1)
     done
     echo ""
     header "Service Health"
-    for svc in asterisk mariadb apache2 httpd postfix fail2ban webmin; do
+    for svc in asterisk mariadb apache2 httpd postfix webmin; do
         if command_exists systemctl 2>/dev/null; then
             systemctl is-active --quiet "${svc}" 2>/dev/null && \
                 printf "  %s %-16s running\n" "${SYM_OK}" "${svc}" || \
@@ -8418,7 +7991,7 @@ fix_installation() {
     setup_output
     header "PBX Repair Mode"
     info "Restarting failed services..."
-    for svc in mariadb asterisk apache2 httpd postfix fail2ban; do
+    for svc in mariadb asterisk apache2 httpd postfix; do
         if command_exists systemctl; then
             if systemctl is-enabled --quiet "${svc}" 2>/dev/null && \
                ! systemctl is-active --quiet "${svc}" 2>/dev/null; then
@@ -8467,11 +8040,8 @@ ENVIRONMENT VARIABLES:
   FROM_NAME              From display name for all system mail (default: PBX System)
   BEHIND_PROXY           yes/no — reverse proxy support (default: yes)
   INSTALL_AVANTFAX       yes/no — install fax system (default: yes)
-  FIREWALL_ENABLED       yes/no — configure firewall (default: yes)
-  FAIL2BAN_ENABLED       yes/no — install fail2ban (default: yes)
   BACKUP_ENABLED         yes/no — setup backup cron (default: yes)
   INSTALL_WEBMIN         yes/no — install Webmin (default: yes)
-  INSTALL_KNOCKD         yes/no — port knocking (default: no)
   INSTALL_OPENVPN        yes/no — install OpenVPN client tools only (default: yes)
   INSTALL_WIREGUARD      yes/no — install WireGuard client tools only (default: yes)
   INSTALL_FOP2           yes/no — FOP2 operator panel (default: yes)

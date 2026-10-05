@@ -330,11 +330,6 @@ FAX_ALIAS=$(grep "^EMAIL_TO_FAX_ALIAS=" "$ENV_FILE" 2>/dev/null | cut -d= -f2)
 sep "8. SECURITY AUDIT"
 # =============================================================================
 
-# Fail2ban jails
-F2B=$(fail2ban-client status 2>/dev/null || echo "")
-echo "$F2B" | grep -qi "asterisk" && ok "Fail2ban: asterisk jail protecting SIP" || fail "Fail2ban: no asterisk jail"
-echo "$F2B" | grep -qi "apache" && ok "Fail2ban: apache jail protecting web" || warn "Fail2ban: no apache-auth jail"
-
 # SSL/TLS
 if [ "$BEHIND_PROXY" = "yes" ] && [ -n "$PROXY_HTTP_PORT" ]; then
     warn "SSL: direct Apache certificate check skipped in reverse proxy mode"
@@ -385,9 +380,8 @@ run_script() {
 run_script "pbx-status"   ""       "asterisk|service|status|running"
 run_script "pbx-services" ""       "service|active|running|asterisk|mariadb"
 run_script "pbx-network"  ""       "ip|network|interface|addr|listen|port"
-run_script "pbx-firewall" ""       "firewall|iptables|INPUT|ufw"
 run_script "pbx-ssl"      ""       "ssl|cert|tls|expire|valid|key"
-run_script "pbx-security" ""       "security|ssh|fail2ban|firewall|audit"
+run_script "pbx-security" ""       "security|ssh|password|audit|tls"
 run_script "pbx-logs"     ""       "."
 run_script "pbx-passwords" ""      "password|mysql|admin|freepbx|asterisk"
 run_script "pbx-moh"      ""       "music|moh|class|hold"
@@ -403,11 +397,11 @@ run_script "pbx-update"   "--check" "."
 run_script "pbx-repair"   "--check" "." 2>/dev/null || run_script "pbx-repair" "" "repair|check|service"
 
 # Verify all expected scripts exist
-SCRIPT_LIST="pbx-status pbx-services pbx-ssl pbx-network pbx-logs pbx-firewall
+SCRIPT_LIST="pbx-status pbx-services pbx-ssl pbx-network pbx-logs
              pbx-security pbx-diag pbx-repair pbx-restart pbx-backup pbx-cleanup
              pbx-passwords pbx-docs pbx-moh pbx-config pbx-update pbx-cdr pbx-calls
              pbx-ssh pbx-webmin pbx-asterisk pbx-autoupdate pbx-recordings
-             pbx-trunks pbx-provision pbx-add-ip pbx-backup-remote pbx-backup-encrypt"
+             pbx-trunks pbx-provision pbx-backup-remote pbx-backup-encrypt"
 TOTAL_SCRIPTS=0
 MISSING_SCRIPTS=0
 for sc in $SCRIPT_LIST; do
@@ -582,7 +576,6 @@ done
 HTTPD=$(grep "^APACHE_SERVICE=" "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "httpd")
 systemctl is-enabled "$HTTPD" >/dev/null 2>&1 && ok "Boot: $HTTPD enabled" || warn "Boot: $HTTPD not enabled"
 systemctl is-enabled hylafax >/dev/null 2>&1 && ok "Boot: hylafax enabled" || warn "Boot: hylafax not enabled"
-systemctl is-enabled fail2ban >/dev/null 2>&1 && ok "Boot: fail2ban enabled" || warn "Boot: fail2ban not enabled"
 
 # .env completeness
 for var in MYSQL_ROOT_PASSWORD ADMIN_PASSWORD SYSTEM_FQDN DISTRO_FAMILY \

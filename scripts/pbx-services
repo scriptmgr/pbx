@@ -52,7 +52,7 @@ _web="${APACHE_SERVICE:-}"
 [ -z "$_web" ] && { command -v apache2 >/dev/null 2>&1 && _web="apache2" || _web="httpd"; }
 _fpm="${PHP_FPM_SERVICE:-}"
 [ -z "$_fpm" ] && _fpm="php-fpm"
-SERVICES="asterisk freepbx mariadb ${_web} ${_fpm} fail2ban postfix hylafax iaxmodem webmin"
+SERVICES="asterisk freepbx mariadb ${_web} ${_fpm} postfix hylafax iaxmodem webmin"
 
 usage() {
     printf "Usage: pbx-services [--restart NAME] [--enable NAME] [--logs NAME]\n\nMonitor PBX services.\n\nOptions:\n"

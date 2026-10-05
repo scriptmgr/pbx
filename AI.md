@@ -62,7 +62,7 @@ These apply to every piece of code, script, UI, config, and documentation in thi
 2. **No AI/ML features** — This PBX targets homelab to enterprise; AI/ML adds too much overhead/resource usage. Do not add any.
 3. **No silent failures** — All scripts must handle errors explicitly; never let `set -euo pipefail` kill scripts silently.
 4. **Pretty output only** — Console output must be clean and formatted. Log verbose output (e.g., yum/apt) to files, not stdout.
-5. **Never block SSH** — SSH port must always be whitelisted before any firewall change.
+5. **Never touch the host firewall** — Firewall policy (`firewalld`, `ufw`, `iptables`, `nftables`, `fail2ban`, `knockd`) is owned exclusively by the sysadmin. PBX must not install, configure, enable, flush, or persist firewall rules. Document the ports PBX needs and let the sysadmin open them. Stripping FreePBX's own `firewall` module is required here — it writes iptables rules itself. The sole exception is QoS DSCP marking (`iptables -t mangle`), which sets a packet mark and never filters, accepts, or drops.
 6. **No hardcoded paths that differ per distro** — Use the `PKG_*` variable map system.
 7. **Test before claiming done** — Never say something is production-ready without running the test suite.
 8. **Never reboot, power off, or shut down the host system** — those actions are allowed only inside test containers or VMs.
@@ -213,7 +213,6 @@ incus exec pbx-alma9 -- chmod +x /usr/local/bin/pbx-status
 | TTS | Flite (system) + gTTS | No AI/ML; Festival/espeak fallback |
 | Web server | Apache/HTTPD | FreePBX requires Apache |
 | Database | MariaDB | Dedicated `asterisk` DB user (not root) |
-| Firewall | iptables | Direct; Fail2ban for brute-force |
 | Remote mgmt | Webmin (port 9001) | Module-pruned install |
 | Phone provisioning | TFTP + HTTP | Yealink/Polycom/Grandstream/Cisco templates |
 | Backups | Local + rclone | GPG encryption optional |
@@ -278,7 +277,7 @@ incus exec pbx-alma9 -- chmod +x /usr/local/bin/pbx-status
 
 ---
 
-## 📋 Management Scripts (32 total)
+## 📋 Management Scripts (34 total)
 
 All in `/usr/local/bin/`, all support `--help`.
 
@@ -293,7 +292,6 @@ All in `/usr/local/bin/`, all support `--help`.
 | `pbx-backup-encrypt` | GPG key management for backup encryption |
 | `pbx-backup-remote` | rclone sync to S3/Backblaze/SFTP/GCS |
 | `pbx-cleanup` | Backup retention (delete older than 30 days) |
-| `pbx-firewall` | iptables rules management |
 | `pbx-ssh` | SSH configuration and hardening |
 | `pbx-security` | Full security audit |
 | `pbx-services` | Service status badges |
@@ -315,8 +313,6 @@ All in `/usr/local/bin/`, all support `--help`.
 | `pbx-webmin` | Webmin status and management |
 | `pbx-autoupdate` | FreePBX weekly module updates |
 | `pbx-update` | Self-update management scripts from GitHub |
-| `pbx-add-ip` | Dynamic firewall IP whitelist |
-| `pbx-ip-checker` | Public IP change detector (cron) |
 
 ---
 

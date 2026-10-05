@@ -114,7 +114,7 @@ find /mnt/backups/pbx -name "*.tar.gz" -o -name "*.sql.gz" 2>/dev/null | head -1
     && ok "backup archives exist in /mnt/backups/pbx/" || fail "no backup files found"
 
 sep "SCRIPTS FUNCTIONAL"
-for script in pbx-status pbx-services pbx-ssl pbx-network pbx-logs pbx-firewall \
+for script in pbx-status pbx-services pbx-ssl pbx-network pbx-logs \
               pbx-vpn pbx-security pbx-passwords pbx-cdr pbx-trunks pbx-asterisk pbx-calls \
               pbx-repair pbx-restart pbx-cleanup pbx-docs pbx-moh pbx-recordings \
               pbx-config pbx-diag pbx-update; do
@@ -132,7 +132,7 @@ pbx-services 2>/dev/null | grep -qiE "asterisk|mariadb|apache|httpd" \
     && ok "pbx-services lists services" || fail "pbx-services output invalid"
 
 sep "SERVICES SUMMARY"
-for svc in asterisk freepbx mariadb apache2 httpd php-fpm postfix fail2ban hylafax webmin; do
+for svc in asterisk freepbx mariadb apache2 httpd php-fpm postfix hylafax webmin; do
     if systemctl list-units --type=service 2>/dev/null | grep -q "^  *${svc}"; then
         status=$(systemctl is-active "$svc" 2>/dev/null)
         case "$status" in

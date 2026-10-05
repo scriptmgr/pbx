@@ -90,7 +90,6 @@ show_scripts() {
     printf "  pbx-repair      FreePBX repair sequence\n"
     printf "  pbx-backup      Manual backup\n"
     printf "  pbx-cleanup     Backup retention\n"
-    printf "  pbx-firewall    Firewall management\n"
     printf "  pbx-ssh         SSH security management\n"
     printf "  pbx-security    Security audit\n"
     printf "  pbx-services    Service monitoring\n"

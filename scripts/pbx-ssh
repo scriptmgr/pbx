@@ -75,10 +75,7 @@ case "${1:-}" in
     --help|-h) usage ;;
     --harden)
         hdr "Hardening SSH configuration"
-        [ -n "$SESSION_IP" ] && {
-            info "Session IP ${SESSION_IP} will remain accessible"
-            iptables -I INPUT 1 -s "$SESSION_IP" -p tcp --dport "$SSH_PORT" -j ACCEPT 2>/dev/null || true
-        }
+        warn "Ensure SSH port ${SSH_PORT} is open in the host firewall before continuing (PBX does not manage it)"
         sed -i 's/^#*PermitRootLogin.*/PermitRootLogin prohibit-password/' "$SSHD_CONFIG"
         sed -i 's/^#*PubkeyAuthentication.*/PubkeyAuthentication yes/'     "$SSHD_CONFIG"
         sed -i 's/^PasswordAuthentication yes/PasswordAuthentication no/'  "$SSHD_CONFIG"
@@ -86,21 +83,14 @@ case "${1:-}" in
         if [ -n "$NP" ] && [ "$NP" != "$SSH_PORT" ]; then
             sed -i "s/^#*Port .*/Port ${NP}/" "$SSHD_CONFIG"
             grep -q -- "^Port " "$SSHD_CONFIG" || echo "Port ${NP}" >> "$SSHD_CONFIG"
-            iptables -I INPUT 1 -p tcp --dport "$NP" -j ACCEPT 2>/dev/null || true
             ok "SSH port changed to ${NP}"
         fi
         restart_sshd && ok "SSH hardened" ;;
     --port)
         NP="${2:-}"; [ -z "$NP" ] && { err "--port requires a port number"; exit 1; }
-        [ -n "$SESSION_IP" ] && {
-            info "Whitelisting session IP ${SESSION_IP} for new port ${NP}"
-            iptables -I INPUT 1 -s "$SESSION_IP" -p tcp --dport "$NP" -j ACCEPT 2>/dev/null || true
-        }
+        warn "Ensure port ${NP} is open in the host firewall before continuing (PBX does not manage it)"
         sed -i "s/^#*Port .*/Port ${NP}/" "$SSHD_CONFIG"
         grep -q -- "^Port " "$SSHD_CONFIG" || echo "Port ${NP}" >> "$SSHD_CONFIG"
-        iptables -I INPUT 1 -p tcp --dport "$NP" -j ACCEPT 2>/dev/null || true
-        [ -f /etc/fail2ban/jail.local ] && \
-            sed -i "s/^port\s*=.*/port = ${NP}/" /etc/fail2ban/jail.local 2>/dev/null || true
         restart_sshd && ok "SSH port changed to ${NP}" ;;
     --add-key)
         KEY="${2:-}"; [ -z "$KEY" ] && { err "--add-key requires a public key string"; exit 1; }

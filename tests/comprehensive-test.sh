@@ -120,7 +120,6 @@ check_svc "MariaDB"     mariadb mysql
 check_svc "Web server"  httpd apache2
 check_svc "PHP-FPM"     php-fpm php7.4-fpm php74-php-fpm
 check_svc "Postfix"     postfix
-check_svc "Fail2ban"    fail2ban
 check_svc "HylaFAX"     hylafax "hylafax+"
 check_svc "Webmin"      webmin
 check_svc "Cron"        crond cron cronie
@@ -378,38 +377,11 @@ grep -qE "EMAIL_TO_FAX_ALIAS|FAX_EMAIL_ALIAS" "$ENV_FILE" 2>/dev/null \
     || warn "Email-to-fax alias not in .env"
 
 # =============================================================================
-sep "9. SECURITY & FIREWALL"
+sep "9. SECURITY"
 # =============================================================================
 
-systemctl is-active fail2ban >/dev/null 2>&1 && ok "fail2ban: active" || fail "fail2ban: not running"
-
-JAILS=$(fail2ban-client status 2>/dev/null | grep "Jail list" | sed 's/.*://' | tr ',' '\n' | grep -v "^[[:space:]]*$" | wc -l)
-[ "${JAILS:-0}" -ge 2 ] && ok "fail2ban jails: $JAILS active" || warn "fail2ban jails: $JAILS"
-
-for jail in asterisk apache-auth; do
-    fail2ban-client status "$jail" 2>/dev/null | grep -q "Currently banned" \
-        && ok "fail2ban jail [$jail]: active" || warn "fail2ban jail [$jail]: not found"
-done
-# SSH jail may be named differently across distros
-fail2ban-client status 2>/dev/null | grep -qiE "sshd|ssh" \
-    && ok "fail2ban: SSH jail active" || warn "fail2ban: no SSH jail (sshd/ssh)"
-
-# Firewall
-if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active firewalld >/dev/null 2>&1; then
-    ok "Firewall: firewalld active"
-    SVCS=$(firewall-cmd --list-services 2>/dev/null)
-    echo "$SVCS" | grep -qiE "http" && ok "firewalld: HTTP/HTTPS allowed" || warn "firewalld: HTTP not in allowed services"
-    PORTS=$(firewall-cmd --list-ports 2>/dev/null)
-    echo "$PORTS" | grep -q "5060" && ok "firewalld: SIP 5060 allowed" || warn "firewalld: SIP 5060 not in ports"
-elif command -v ufw >/dev/null 2>&1; then
-    UFW_ST=$(ufw status 2>/dev/null | head -1)
-    ok "Firewall: ufw ($UFW_ST)"
-elif iptables -L INPUT -n 2>/dev/null | grep -qE "ACCEPT|REJECT|DROP"; then
-    RULES=$(iptables -L INPUT -n 2>/dev/null | grep -cE "ACCEPT|DROP|REJECT")
-    ok "Firewall: iptables ($RULES INPUT rules)"
-else
-    warn "No active firewall detected"
-fi
+# Host firewall policy is owned by the sysadmin — report only, never assert.
+echo "  INFO: host firewall is not managed by PBX; required ports are documented in README.md"
 
 # SSH
 SSHD_CONF=""
@@ -425,11 +397,11 @@ echo "  INFO: SSH PermitRootLogin: ${PERM_ROOT:-not set (default prohibit-passwo
 sep "10. MANAGEMENT SCRIPTS — IN-DEPTH"
 # =============================================================================
 
-ALL_SCRIPTS="pbx-status pbx-services pbx-ssl pbx-network pbx-logs pbx-firewall
+ALL_SCRIPTS="pbx-status pbx-services pbx-ssl pbx-network pbx-logs
              pbx-security pbx-passwords pbx-cdr pbx-trunks pbx-asterisk pbx-calls
              pbx-repair pbx-restart pbx-cleanup pbx-docs pbx-moh pbx-recordings
              pbx-config pbx-diag pbx-update pbx-backup pbx-ssh pbx-webmin
-             pbx-add-ip pbx-provision pbxstatus"
+             pbx-provision pbxstatus"
 
 MISSING_SCRIPTS=0
 for s in $ALL_SCRIPTS; do
@@ -467,11 +439,6 @@ echo "$OUT" | grep -qiE "vpn|openvpn|wireguard|client" \
 OUT=$(NO_COLOR=1 pbx-ssl 2>/dev/null)
 echo "$OUT" | grep -qiE "cert|SSL|TLS|expire|self.signed|Let" \
     && ok "pbx-ssl: cert status shown" || warn "pbx-ssl: minimal output"
-
-# pbx-firewall
-OUT=$(NO_COLOR=1 pbx-firewall 2>/dev/null)
-echo "$OUT" | grep -qiE "firewall|rule|port|zone|allow|fail2ban" \
-    && ok "pbx-firewall: firewall rules shown" || warn "pbx-firewall: minimal output"
 
 # pbx-security
 OUT=$(NO_COLOR=1 pbx-security 2>/dev/null)

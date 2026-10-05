@@ -32,6 +32,10 @@ SCRIPT_SRC_DIR="${BASH_SOURCE%/*}"
 # DSCP-aware upstream device prioritizes voice over bulk traffic. Marks
 # are mangle-table OUTPUT rules that do NOT survive a flush, so a cron
 # @reboot entry re-applies them after every boot.
+#
+# This script only sets packet priority markers. It never filters,
+# accepts, drops, or otherwise controls which traffic is allowed, and
+# host firewall policy is owned entirely by the sysadmin.
 set -euo pipefail
 
 case "${1:-}" in
@@ -79,7 +83,7 @@ __apply_one() {
             -j DSCP --set-dscp-class "$class" 2>/dev/null; then
         ok "added:  $proto/$dport → $class"
     else
-        warn "skip:   $proto/$dport (iptables refused)"
+        warn "skip:   $proto/$dport (could not apply DSCP mark)"
     fi
 }
 
@@ -101,7 +105,8 @@ case "${1:-}" in
     *)          err "Unknown argument: $1"; usage ;;
 esac
 
-command -v iptables >/dev/null 2>&1 || { err "iptables not installed"; exit 1; }
+# iptables is required only as the DSCP marking backend, not for any filtering
+command -v iptables >/dev/null 2>&1 || { err "iptables not installed (needed to set DSCP marks)"; exit 1; }
 
 while IFS=' ' read -r proto dport class; do
     [ -z "$proto" ] && continue

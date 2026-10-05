@@ -52,7 +52,6 @@ usage() {
     printf "  wide      Force the wide dashboard layout for larger terminals\n"
     printf "  watch     Refresh continuously; press q to quit when running in a TTY\n\n"
     printf "Displays:\n"
-    printf "  - Core service health (Asterisk, FreePBX, database, web, fax, fail2ban)\n"
     printf "  - Versions, calls, endpoints, load, RAM, disk, uptime\n"
     printf "  - Preferred PBX access URLs using server FQDN when available\n\n"
     printf "Options:\n"
@@ -152,7 +151,6 @@ collect_data() {
     DB_S=$(service_state mariadb mysql)
     WEB_S=$(service_state httpd apache2)
     FAX_S=$(service_state hylafax hfaxd)
-    F2B_S=$(service_state fail2ban)
 
     MEM_TOTAL=$(awk '/MemTotal/{printf "%.1f", $2/1048576}' /proc/meminfo 2>/dev/null || echo "0.0")
     MEM_FREE=$(awk '/MemAvailable/{printf "%.1f", $2/1048576}' /proc/meminfo 2>/dev/null || echo "0.0")
@@ -177,7 +175,6 @@ render_title() {
 render_compact() {
     render_title "${TERM_COLS}"
     printf "Asterisk %s  FreePBX %s  DB %s  Web %s\n" "${AST_S}" "${FPBX_S}" "${DB_S}" "${WEB_S}"
-    printf "Fax %s  Fail2ban %s  Calls %s  Endpoints %s\n" "${FAX_S}" "${F2B_S}" "${CALLS}" "${PEERS}"
     printf "Asterisk %s  FreePBX %s  PHP %s\n" "${AST_VER}" "${FPBX_VER}" "${PHP_VER}"
     printf "Load %s  RAM %s/%sG  Disk %s\n" "${LOAD}" "${MEM_USED}" "${MEM_TOTAL}" "${DISK}"
     printf "Admin %s\n" "${ADMIN_URL}"
@@ -187,7 +184,6 @@ render_standard() {
     render_title "${TERM_COLS}"
     printf "%bServices%b\n" "${BOLD}" "${NC}"
     printf "  Asterisk  %s   FreePBX   %s   Database  %s\n" "${AST_S}" "${FPBX_S}" "${DB_S}"
-    printf "  Web       %s   Fax       %s   Fail2ban  %s\n" "${WEB_S}" "${FAX_S}" "${F2B_S}"
     printf "\n%bRuntime%b\n" "${BOLD}" "${NC}"
     printf "  Calls %-6s Endpoints %-6s Load %s\n" "${CALLS}" "${PEERS}" "${LOAD}"
     printf "  RAM   %-6s/%sG  Disk %s  Uptime %s\n" "${MEM_USED}" "${MEM_TOTAL}" "${DISK}" "${UPTIME_HR}"
@@ -208,7 +204,6 @@ render_wide() {
     printf "%-*s  %-*s\n" "${leftw}" "${BOLD}Services${NC}" "${rightw}" "${BOLD}Runtime${NC}"
     printf "%-*s  %-*s\n" "${leftw}" "Asterisk  ${AST_S}   FreePBX  ${FPBX_S}" "${rightw}" "Calls ${CALLS}   Endpoints ${PEERS}"
     printf "%-*s  %-*s\n" "${leftw}" "Database  ${DB_S}   Web      ${WEB_S}" "${rightw}" "Load ${LOAD}"
-    printf "%-*s  %-*s\n" "${leftw}" "Fax       ${FAX_S}   Fail2ban ${F2B_S}" "${rightw}" "RAM ${MEM_USED}/${MEM_TOTAL}G   Disk ${DISK}"
     printf "%-*s  %-*s\n" "${leftw}" "" "${rightw}" "Uptime ${UPTIME_HR}"
     printf "\n%-*s  %-*s\n" "${leftw}" "${BOLD}Versions${NC}" "${rightw}" "${BOLD}Access${NC}"
     printf "%-*s  %-*s\n" "${leftw}" "Asterisk ${AST_VER}" "${rightw}" "Home  ${HOME_URL}"

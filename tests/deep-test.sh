@@ -224,8 +224,6 @@ _run_help_version() {
     fi
 }
 
-# pbx-add-ip
-_run_mgmt "pbx-add-ip --help"          pbx-add-ip   "--help 2>&1 || true" "usage|help|ip|add"
 # pbx-asterisk
 _run_mgmt "pbx-asterisk status"        pbx-asterisk "status 2>&1 || true"  "asterisk|running|active|version"
 # pbx-autoupdate --check
@@ -260,10 +258,6 @@ fi
 _run_mgmt "pbx-diag"                   pbx-diag     "2>&1 || true"          "diag|system|check|asterisk"
 # pbx-docs
 _run_mgmt "pbx-docs"                   pbx-docs     "2>&1 || true"          "doc|generate|manual|html"
-# pbx-firewall
-_run_mgmt "pbx-firewall status"        pbx-firewall "status 2>&1 || true"   "firewall|iptables|nft|rule|zone"
-# pbx-ip-checker (cron daemon; use --show to get current status without network)
-_run_mgmt "pbx-ip-checker --show"      pbx-ip-checker "--show 2>&1 || true"  "ip|public|wan|check|stored|found"
 # pbx-logs --help
 _run_mgmt "pbx-logs --help"            pbx-logs     "--help 2>&1 || true"   "help|log|usage|tail|view"
 # pbx-moh
@@ -292,7 +286,7 @@ fi
 # pbx-restart --help only (never actually restart)
 _run_mgmt "pbx-restart --help"         pbx-restart  "--help 2>&1 || true"   "help|restart|usage|service"
 # pbx-security
-_run_mgmt "pbx-security"               pbx-security "2>&1 || true"          "security|fail2ban|ssh|permission"
+_run_mgmt "pbx-security"               pbx-security "2>&1 || true"          "security|ssh|password|tls|permission"
 # pbx-services
 _run_mgmt "pbx-services"               pbx-services "2>&1 || true"          "service|active|running|status"
 # pbx-ssh
@@ -908,26 +902,12 @@ fi
 sep "11. SECURITY"
 # =============================================================================
 
-# fail2ban
-if svc_active fail2ban; then
-    ok "fail2ban: service active"
-else
-    fail "fail2ban: NOT running"
-fi
-
-# fail2ban asterisk jail
-F2B_AST=$(fail2ban-client status asterisk 2>/dev/null || fail2ban-client status asterisk-iptables 2>/dev/null || true)
-if echo "$F2B_AST" | grep -qiE "Currently banned|Status for|Jail list"; then
-    ok "fail2ban: asterisk jail active"
-    BANNED=$(echo "$F2B_AST" | grep -i "Currently banned" | awk -F: '{print $2}' | tr -d ' ')
-    info "fail2ban asterisk: currently banned IPs: ${BANNED:-0}"
-else
-    warn "fail2ban: asterisk jail not found (check jail name with 'fail2ban-client status')"
-fi
+# Host firewall policy is owned by the sysadmin — PBX never configures it.
+info "host firewall: not managed by PBX; required ports are documented in README.md"
 
 # pbx-security check
 SEC_OUT=$(NO_COLOR=1 timeout 30 pbx-security 2>&1 || true)
-if echo "$SEC_OUT" | grep -qiE "pass|ok|secure|check|permission|fail2ban"; then
+if echo "$SEC_OUT" | grep -qiE "pass|ok|secure|check|permission"; then
     ok "pbx-security: ran and produced security output"
 else
     warn "pbx-security: minimal output — $(echo "$SEC_OUT" | head -2 | tr '\n' '|')"
@@ -1505,10 +1485,6 @@ IAXMODEM_VER=$(iaxmodem --version 2>/dev/null | head -1 \
     || dpkg -l iaxmodem 2>/dev/null | grep "^ii" | awk '{print $3}' \
     || echo "unknown")
 ok "iaxmodem version: $IAXMODEM_VER"
-
-# fail2ban
-F2B_VER=$(fail2ban-client --version 2>/dev/null | head -1 || echo "unknown")
-ok "fail2ban version: $F2B_VER"
 
 # =============================================================================
 sep "22. FREEPBX MODULES"

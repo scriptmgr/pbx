@@ -36,7 +36,7 @@ for name in [
     'asterisk', 'freepbx', 'mariadb',
     'httpd', 'nginx',
     'php-fpm', 'php7.4-fpm', 'php74-php-fpm', 'php8.2-fpm', 'php82-php-fpm',
-    'fail2ban', 'postfix', 'hylafax', 'webmin',
+    'postfix', 'hylafax', 'webmin',
 ]:
     state = service_state(name)
     if state != 'inactive':
@@ -77,7 +77,6 @@ status = {
     'features': {
         'fax': services.get('hylafax') == 'running',
         'webmin': services.get('webmin') == 'running',
-        'fail2ban': services.get('fail2ban') == 'running',
     },
     'system': {
         'load_1min': sh("cut -d' ' -f1 /proc/loadavg") or '0',

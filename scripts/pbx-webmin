@@ -65,8 +65,8 @@ get_wm_port() {
     grep -- "^port=" "$WEBMIN_CONF" 2>/dev/null | cut -d= -f2 || echo "10000"
 }
 
-ALWAYS_KEEP="useradmin cron at proc software init bootup filesystems mount fdisk quota smart-status syslog logrotate time hostname shell net firewall webmin webminlog filemin updown custom man bandwidth"
-CONDITIONAL="apache apache2 mysql mariadb postfix sshd fail2ban bind squid samba dovecot proftpd cups dhcpd spamassassin"
+ALWAYS_KEEP="useradmin cron at proc software init bootup filesystems mount fdisk quota smart-status syslog logrotate time hostname shell net webmin webminlog filemin updown custom man bandwidth"
+CONDITIONAL="apache apache2 mysql mariadb postfix sshd bind squid samba dovecot proftpd cups dhcpd spamassassin"
 
 case "${1:-}" in
     --help|-h) usage ;;

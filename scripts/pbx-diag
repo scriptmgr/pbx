@@ -82,7 +82,7 @@ info "Output: ${REPORT}"
     command -v mysql >/dev/null 2>&1 && { printf "MySQL: "; mysql --version 2>/dev/null; }
 
     printf "\n=== SERVICE STATUS ===\n"
-    for svc in asterisk freepbx mariadb mysql apache2 httpd fail2ban postfix hylafax; do
+    for svc in asterisk freepbx mariadb mysql apache2 httpd postfix hylafax; do
         state=$(systemctl is-active "$svc" 2>/dev/null || echo "unknown")
         printf "  %-20s %s\n" "$svc" "$state"
     done
@@ -106,9 +106,6 @@ info "Output: ${REPORT}"
 
     printf "\n=== OPEN PORTS ===\n"
     ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null || printf "ss/netstat not found\n"
-
-    printf "\n=== IPTABLES ===\n"
-    iptables -L -n 2>/dev/null || printf "iptables not available\n"
 
     printf "\n=== CRONTAB ===\n"
     crontab -l 2>/dev/null || printf "No root crontab\n"
