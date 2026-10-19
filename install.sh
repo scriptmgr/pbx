@@ -6395,7 +6395,6 @@ install_fail2ban() {
     mkdir -p /etc/fail2ban/action.d
 
     # Suppress jail lifecycle messages from the shared sendmail action.
-    backup_config /etc/fail2ban/action.d/sendmail-common.local
     cat > /etc/fail2ban/action.d/sendmail-common.local << 'F2BMAIL'
 [Definition]
 actionstart =
@@ -6407,7 +6406,6 @@ F2BMAIL
     # addresses without sending one message per banned IP.
     local _mail_action
     for _mail_action in sendmail sendmail-whois sendmail-whois-lines; do
-        backup_config "/etc/fail2ban/action.d/${_mail_action}.local"
         cat > "/etc/fail2ban/action.d/${_mail_action}.local" << 'F2BMAIL'
 [Definition]
 actionban =
