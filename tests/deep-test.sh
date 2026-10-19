@@ -29,10 +29,8 @@ AVANTFAX_USER="administrator"
 AVANTFAX_PASS=""
 FREEPBX_PASS="admin"
 MYSQL_PASS=""
-ADMIN_EMAIL=""
 WEBMIN_PORT="9001"
 WEB_ROOT="/var/www/apache/pbx"
-APACHE_SERVICE="httpd"
 BEHIND_PROXY="no"
 PROXY_HTTP_PORT=""
 
@@ -44,9 +42,7 @@ if [ -f "$ENV_FILE" ]; then
     v=$(_ev AVANTFAX_ADMIN_USERNAME);     [ -n "$v" ] && AVANTFAX_USER="$v"
     v=$(_ev AVANTFAX_ADMIN_PASSWORD);     [ -n "$v" ] && AVANTFAX_PASS="$v"
     v=$(_ev MYSQL_ROOT_PASSWORD_FILE);    [ -n "$v" ] && MYSQL_PASS_FILE="$v"
-    v=$(_ev ADMIN_EMAIL);                [ -n "$v" ] && ADMIN_EMAIL="$v"
     v=$(_ev WEB_ROOT);                   [ -n "$v" ] && WEB_ROOT="$v"
-    v=$(_ev APACHE_SERVICE);             [ -n "$v" ] && APACHE_SERVICE="$v"
     v=$(_ev BEHIND_PROXY);               [ -n "$v" ] && BEHIND_PROXY="$v"
     v=$(_ev PROXY_HTTP_PORT);            [ -n "$v" ] && PROXY_HTTP_PORT="$v"
 fi
@@ -1068,7 +1064,6 @@ if [ -n "$AF_URL" ]; then
     rm -f "$COOKIE_JAR" "$CURL_BODY_FILE"
     AF_GET=$(curl -skL --max-time 10 -c "$COOKIE_JAR" -b "$COOKIE_JAR" \
         -o "$CURL_BODY_FILE" -w "%{http_code}" "$AF_URL" 2>/dev/null || echo "000")
-    AF_BODY=$(cat "$CURL_BODY_FILE" 2>/dev/null)
     ok "AvantFax GET $AF_URL: HTTP $AF_GET"
 
     # POST login to AvantFax
@@ -1372,7 +1367,7 @@ ALL_CRON=$(
     crontab -u asterisk -l 2>/dev/null
     cat /etc/crontab 2>/dev/null
     find /etc/cron.d /etc/cron.daily /etc/cron.weekly /etc/cron.hourly \
-        -type f 2>/dev/null | xargs cat 2>/dev/null
+        -type f -exec cat {} + 2>/dev/null
 )
 
 echo "$ALL_CRON" | grep -qiE "pbx-backup|backup" \

@@ -102,6 +102,7 @@ PBX_INSTALL_ASTERNIC="${PBX_INSTALL_ASTERNIC:-${INSTALL_ASTERNIC:-yes}}"
 FAIL2BAN_ENABLED="${FAIL2BAN_ENABLED:-yes}"
 
 WEB_ROOT="${WEB_ROOT:-/var/www/apache/pbx}"
+# shellcheck disable=SC2034
 FREEPBX_WEB_DIR="${WEB_ROOT}/admin"
 AVANTFAX_WEB_DIR="${WEB_ROOT}/avantfax"
 BACKUP_BASE="${BACKUP_BASE:-/mnt/backups/pbx}"
@@ -203,7 +204,9 @@ FROM_EMAIL="${FROM_EMAIL:-}"           # Default: no-reply@<fqdn> — set via en
 FROM_NAME="${FROM_NAME:-}"            # Default: PBX System — set via env var
 
 # Feature flags
-BEHIND_PROXY="${BEHIND_PROXY:-yes}"
+BEHIND_PROXY_WAS_SET="${BEHIND_PROXY:+x}"
+BEHIND_PROXY="${BEHIND_PROXY:-no}"
+BEHIND_PROXY_AUTO_DETECTED=""
 PBX_INSTALL_WEBMIN="${PBX_INSTALL_WEBMIN:-${INSTALL_WEBMIN:-yes}}"
 PBX_INSTALL_OPENVPN="${PBX_INSTALL_OPENVPN:-${INSTALL_OPENVPN:-yes}}"
 PBX_INSTALL_WIREGUARD="${PBX_INSTALL_WIREGUARD:-${INSTALL_WIREGUARD:-yes}}"
@@ -239,6 +242,7 @@ setup_output() {
         RED=""; GREEN=""; YELLOW=""; BLUE=""; PURPLE=""; CYAN=""; BOLD=""; DIM=""; NC=""
         SYM_OK="+"; SYM_FAIL="-"
     else
+        # shellcheck disable=SC2034
         USE_COLOR=1; USE_EMOJI=1
         RED="$(printf '\033[0;31m')"
         GREEN="$(printf '\033[0;32m')"
@@ -247,6 +251,7 @@ setup_output() {
         PURPLE="$(printf '\033[0;35m')"
         CYAN="$(printf '\033[0;36m')"
         BOLD="$(printf '\033[1m')"
+        # shellcheck disable=SC2034
         DIM="$(printf '\033[2m')"
         NC="$(printf '\033[0m')"
         SYM_OK="✓"; SYM_FAIL="✗"
@@ -270,7 +275,8 @@ STEP_TOTAL=55
 
 # Compute the exact step count for this install based on resolved flags and distro.
 # Call after detect_system, version_select, and resolve_install_flags have all run.
-# Unconditional base: 38 steps that always run regardless of flags.
+# Unconditional base: 38 steps remaining after the three detection steps above
+# have already run. Add STEP_CURRENT so the displayed total covers the full run.
 # Each block below adds the steps that fire under their respective conditions.
 compute_step_total() {
     local _n=38
@@ -296,7 +302,7 @@ compute_step_total() {
     [ "${IS_CONTAINER:-0}" = "0" ] && _n=$((_n + 1))
     # Optional web app
     [ "${PBX_INSTALL_ASTERNIC:-yes}" = "yes" ] && _n=$((_n + 1))
-    STEP_TOTAL=$_n
+    STEP_TOTAL=$(( STEP_CURRENT + _n ))
 }
 
 # Strip all non-ASCII bytes (emoji, special symbols) when USE_EMOJI=0.
@@ -517,6 +523,7 @@ detect_system() {
         DISTRO_GEN=3
     fi
     # Backward-compat alias and install args
+    # shellcheck disable=SC2034
     PACKAGE_MANAGER="${PACKAGE_MGR_BIN}"
     PACKAGE_MGR_ARG="install -y"
 
@@ -1576,6 +1583,42 @@ load_pbx_env() {
     normalize_admin_vars
 }
 
+detect_reverse_proxy_listener() {
+    local listeners listener_pattern
+    listeners=$(ss -H -ltnp 2>/dev/null || true)
+    [ -n "${listeners}" ] || return 1
+    listener_pattern=':(80|443)[[:space:]].*users:\(\("(nginx|caddy|traefik|haproxy)"'
+    grep -Eq "${listener_pattern}" <<< "${listeners}" && return 0
+    if grep -REqs '^[[:space:]]*ProxyPass([[:space:]]|Reverse[[:space:]])' \
+        /etc/apache2/sites-enabled /etc/apache2/conf-enabled /etc/httpd/conf.d /etc/httpd/conf 2>/dev/null; then
+        grep -Eq ':(80|443)[[:space:]].*users:\(\("(apache2|httpd)"' <<< "${listeners}"
+        return $?
+    fi
+    return 1
+}
+
+resolve_behind_proxy() {
+    local requested="$1" saved_setting="$2"
+
+    if [ "${requested}" = "yes" ] || [ "${requested}" = "no" ]; then
+        BEHIND_PROXY="${requested}"
+        BEHIND_PROXY_AUTO_DETECTED="no"
+        info "Reverse proxy mode explicitly set to ${BEHIND_PROXY}"
+        return 0
+    fi
+
+    if detect_reverse_proxy_listener; then
+        BEHIND_PROXY="yes"
+        info "Detected a reverse proxy listening on port 80 or 443"
+    elif [ "${requested}" = "auto" ] || [ "${saved_setting}" = "no" ]; then
+        BEHIND_PROXY="no"
+        info "No supported reverse proxy detected; Apache will serve ports 80 and 443 directly"
+    else
+        return 0
+    fi
+    BEHIND_PROXY_AUTO_DETECTED="yes"
+}
+
 save_pbx_env() {
     mkdir -p "${PBX_ENV_DIR}"
     chmod 750 "${PBX_ENV_DIR}"
@@ -1635,7 +1678,8 @@ DISTRO_FAMILY="${DISTRO_FAMILY:-}"
 APACHE_SERVICE="${APACHE_SERVICE:-}"
 PHP_FPM_SERVICE="${PHP_FPM_SERVICE:-}"
 PHP_FPM_SOCK="${PHP_FPM_SOCK:-}"
-BEHIND_PROXY="${BEHIND_PROXY:-yes}"
+BEHIND_PROXY="${BEHIND_PROXY:-no}"
+BEHIND_PROXY_AUTO_DETECTED="${BEHIND_PROXY_AUTO_DETECTED:-no}"
 SSL_ENABLED="${SSL_ENABLED:-yes}"
 WEBMIN_PORT="${WEBMIN_PORT:-9001}"
 WEB_ROOT="${WEB_ROOT:-/var/www/html}"
@@ -4446,8 +4490,8 @@ ADMINEOF
 ensure_freepbx_service_active() {
     [ "${INIT_SYSTEM:-}" = "systemd" ] || return 0
     [ -f /etc/systemd/system/freepbx.service ] || return 0
-    local attempt
-    for attempt in 1 2 3; do
+    local _attempt
+    for _attempt in 1 2 3; do
         if systemctl is-active --quiet freepbx 2>/dev/null \
             && asterisk -rx "core waitfullybooted" >/dev/null 2>&1; then
             return 0
@@ -4999,7 +5043,7 @@ install_iaxmodem() {
     fi
 
     # On RHEL/Fedora, iaxmodem has no package — compile from source
-    if ! command_exists iaxmodem && [ "${DISTRO_FAMILY}" = "rhel" -o "${DISTRO_FAMILY}" = "fedora" ]; then
+    if ! command_exists iaxmodem && { [ "${DISTRO_FAMILY}" = "rhel" ] || [ "${DISTRO_FAMILY}" = "fedora" ]; }; then
         info "IAXmodem package not available — compiling from source..."
         _compile_iaxmodem_source || warn "IAXmodem source compile failed"
     fi
@@ -5128,12 +5172,11 @@ _compile_iaxmodem_source() {
     local iaxmodem_version="1.3.5"
     local url="https://sourceforge.net/projects/iaxmodem/files/iaxmodem/iaxmodem-${iaxmodem_version}.tar.gz/download"
     local src_tar="iaxmodem-${iaxmodem_version}.tar.gz"
-    local attempt
-
     pkg_install libtiff-devel gcc gcc-c++ make autoconf automake libtool 2>/dev/null || true
 
     cd "${WORK_DIR}"
-    for attempt in 1 2 3; do
+    local _attempt
+    for _attempt in 1 2 3; do
         if [ -f "${src_tar}" ] && tar -tzf "${src_tar}" >/dev/null 2>&1; then
             break
         fi
@@ -5472,7 +5515,6 @@ MOHEOF
             "fpm-sunshine.mp3"
         )
         # Fallback to archive.org public domain music clips (CC0)
-        local archive_base="https://archive.org/download/FreedomMusicCollection"
         for track in "${moh_tracks[@]}"; do
             local dest="${moh_dir}/default/${track%.mp3}.gsm"
             if [ ! -f "${dest}" ] && [ "${have_sox}" = "1" ]; then
@@ -6350,6 +6392,16 @@ install_fail2ban() {
     pkg_install fail2ban
 
     mkdir -p /etc/fail2ban/jail.d
+    mkdir -p /etc/fail2ban/action.d
+
+    # Keep ban email alerts, but suppress the sendmail action's jail lifecycle
+    # messages. This also applies when a pre-existing jail.local selects action_mw(l).
+    backup_config /etc/fail2ban/action.d/sendmail-common.local
+    cat > /etc/fail2ban/action.d/sendmail-common.local << 'F2BMAIL'
+[Definition]
+actionstart =
+actionstop =
+F2BMAIL
 
     # Deduplicate 'backend' in [DEFAULT] of jail.conf — re-runs or package upgrades
     # can leave duplicate entries that prevent fail2ban from starting.
@@ -6415,8 +6467,8 @@ install_fail2ban() {
         fi
     fi
 
-    # Global defaults — safe settings that won't lock anyone out
-    # Use email action only when ADMIN_EMAIL is configured — falls back to ban-only otherwise.
+    # Global defaults — safe settings that won't lock anyone out.
+    # Email actions have jail lifecycle notifications disabled above.
     local _f2b_action='%(action_)s'
     local _f2b_email_block=""
     if [ -n "${ADMIN_EMAIL:-}" ]; then
@@ -8341,7 +8393,12 @@ validate_inputs() {
     fi
     __check_int_range NUMBER_OF_MODEMS 1 16
 
-    for v in BEHIND_PROXY SSL_ENABLED USE_POSTFIX BACKUP_ENABLED BACKUP_ENCRYPT FAIL2BAN_ENABLED DISABLE_IPV6 \
+    case "${BEHIND_PROXY,,}" in
+        auto) BEHIND_PROXY="auto" ;;
+        *) __check_bool BEHIND_PROXY ;;
+    esac
+
+    for v in SSL_ENABLED USE_POSTFIX BACKUP_ENABLED BACKUP_ENCRYPT FAIL2BAN_ENABLED DISABLE_IPV6 \
              PBX_INSTALL_AVANTFAX PBX_INSTALL_MUSIC_ON_HOLD PBX_INSTALL_ASTERNIC PBX_INSTALL_WEBMIN PBX_INSTALL_OPENVPN \
              PBX_INSTALL_WIREGUARD PBX_INSTALL_FOP2 PBX_INSTALL_SNGREP PBX_INSTALL_PHONE_PROV PBX_INSTALL_REMOTE_BACKUP; do
         __check_bool "${v}"
@@ -8378,6 +8435,8 @@ run_installation() {
     local _pre_fpbx_user="${FREEPBX_ADMIN_USERNAME:-}"
     local _pre_avantfax_user="${AVANTFAX_ADMIN_USERNAME:-}"
     local _pre_avantfax_pw="${AVANTFAX_ADMIN_PASSWORD:-}"
+    local _pre_behind_proxy_was_set="${BEHIND_PROXY_WAS_SET:-}"
+    local _pre_behind_proxy="${BEHIND_PROXY:-}"
 
     load_pbx_env
 
@@ -8388,6 +8447,16 @@ run_installation() {
     [ -n "${_pre_fpbx_user}" ]     && FREEPBX_ADMIN_USERNAME="${_pre_fpbx_user}"
     [ -n "${_pre_avantfax_user}" ] && AVANTFAX_ADMIN_USERNAME="${_pre_avantfax_user}"
     [ -n "${_pre_avantfax_pw}" ]   && AVANTFAX_ADMIN_PASSWORD="${_pre_avantfax_pw}"
+    if [ "${_pre_behind_proxy_was_set}" = "x" ]; then
+        case "${_pre_behind_proxy,,}" in
+            auto) resolve_behind_proxy auto no ;;
+            *) resolve_behind_proxy "${_pre_behind_proxy}" no ;;
+        esac
+    elif [ -z "${BEHIND_PROXY_AUTO_DETECTED:-}" ] || [ "${BEHIND_PROXY_AUTO_DETECTED}" = "yes" ]; then
+        resolve_behind_proxy auto no
+    else
+        resolve_behind_proxy "${BEHIND_PROXY}" yes
+    fi
     normalize_admin_vars
     # Recalculate step total now that IS_CONTAINER, PHP versions, and all INSTALL_* flags are set
     compute_step_total
@@ -8574,7 +8643,7 @@ ENVIRONMENT VARIABLES:
   ADMIN_EMAIL            Admin email address (alerts sent here)
   FROM_EMAIL             From address for all system mail (default: no-reply@<fqdn>)
   FROM_NAME              From display name for all system mail (default: PBX System)
-  BEHIND_PROXY           yes/no — reverse proxy support (default: yes)
+  BEHIND_PROXY           auto/yes/no — detect a running proxy, or set explicitly (default: auto)
   PBX_INSTALL_AVANTFAX   yes/no — install fax system (default: yes)
   BACKUP_ENABLED         yes/no — setup backup cron (default: yes)
   PBX_INSTALL_WEBMIN     yes/no — install Webmin (default: yes)
@@ -8621,39 +8690,41 @@ HELPEOF
 # ENTRY POINT
 # =============================================================================
 
-[ "$(id -u)" -ne 0 ] && { echo "ERROR: Must run as root (sudo ./install.sh)"; exit 1; }
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    [ "$(id -u)" -ne 0 ] && { echo "ERROR: Must run as root (sudo ./install.sh)"; exit 1; }
 
-case "${1:-install}" in
-    install)
-        run_installation
-        ;;
-    validate|--validate)
-        validate_inputs || exit $?
-        echo "All settings are valid."
-        ;;
-    status|--status)
-        init_logs
-        show_install_status
-        ;;
-    fix|--fix|repair)
-        init_logs
-        fix_installation
-        ;;
-    update-scripts|--update-scripts)
-        init_logs
-        detect_system
-        setup_output
-        sync_management_scripts
-        ;;
-    --version|-V)
-        printf "install.sh v%s\n" "${SCRIPT_VERSION}"
-        ;;
-    help|--help|-h)
-        show_help
-        ;;
-    *)
-        echo "ERROR: Unknown command: ${1}"
-        show_help
-        exit 1
-        ;;
-esac
+    case "${1:-install}" in
+        install)
+            run_installation
+            ;;
+        validate|--validate)
+            validate_inputs || exit $?
+            echo "All settings are valid."
+            ;;
+        status|--status)
+            init_logs
+            show_install_status
+            ;;
+        fix|--fix|repair)
+            init_logs
+            fix_installation
+            ;;
+        update-scripts|--update-scripts)
+            init_logs
+            detect_system
+            setup_output
+            sync_management_scripts
+            ;;
+        --version|-V)
+            printf "install.sh v%s\n" "${SCRIPT_VERSION}"
+            ;;
+        help|--help|-h)
+            show_help
+            ;;
+        *)
+            echo "ERROR: Unknown command: ${1}"
+            show_help
+            exit 1
+            ;;
+    esac
+fi

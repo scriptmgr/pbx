@@ -26,6 +26,7 @@ P129=$(printf 'a%.0s' $(seq 1 129)); P128=$(printf 'a%.0s' $(seq 1 128))
 
 echo "=== valid settings are accepted ==="
 expect "defaults (nothing set)" 0
+expect "automatic proxy detection" 0 BEHIND_PROXY=auto
 expect "typical custom set" 0 ADMIN_EMAIL=ops@example.com TIMEZONE=Europe/London ADMIN_USERNAME=admin.user-1 \
     ADMIN_PASSWORD='Str0ng+Pass_word@1' MYSQL_ROOT_PASSWORD='Db:Pass,w0rd/x^y~z' PROXY_HTTP_PORT=8190
 expect "email with plus tag" 0 ADMIN_EMAIL=first.last+pbx@sub.example.co.uk

@@ -39,7 +39,7 @@ A production-ready, fully automated installer for a complete enterprise PBX syst
 - **VPN Client Tools** — Optional OpenVPN/WireGuard client tooling with `pbx-vpn` guidance for connecting to an existing VPN server
 - **Rate Limiting** — Protection against SIP attacks
 - **Security Audit** — Built-in vulnerability scanner (`pbx-security`)
-- **Brute-force Protection** — Optional fail2ban jails for SSH/SIP/HTTP (does not touch your firewall rules)
+- **Brute-force Protection** — Optional fail2ban jails for SSH/SIP/HTTP; configured email alerts report bans without sending jail start/stop messages
 - **Health Endpoint** — `/health/` JSON endpoint for external monitoring
 - **Service Health Monitor** — recognizes FreePBX-managed Asterisk when `freepbx.service` is active and the Asterisk CLI responds; restarts it through FreePBX when needed
 
@@ -188,7 +188,7 @@ continue using the older `INSTALL_*` aliases.
 | `FAX_FROM_EMAIL` | From address for fax emails | `FROM_EMAIL` |
 | `FAX_FROM_NAME` | From name for fax emails | `PBX Fax System` |
 | `TIMEZONE` | System timezone | Auto-detected |
-| `BEHIND_PROXY` | Running behind reverse proxy (`yes`/`no`) | `yes` |
+| `BEHIND_PROXY` | Reverse proxy mode (`auto`/`yes`/`no`) | `auto` |
 | `PBX_INSTALL_AVANTFAX` | Install fax system (`yes`/`no`) | `yes` |
 | `BACKUP_ENABLED` | Set up backup cron (`yes`/`no`) | `yes` |
 | `PBX_INSTALL_WEBMIN` | Install Webmin (`yes`/`no`) | `yes` |
@@ -241,6 +241,8 @@ TLS is enabled for PJSIP (port 5061) and Asterisk HTTPS Manager (ports 8088/8089
 Direct Apache installs automatically leave `/.well-known/acme-challenge/` and `/.freepbx-known/` on plain HTTP so FreePBX Certificate Management can complete HTTP-01 validation.
 
 ### Reverse Proxy
+
+The installer detects a supported reverse proxy (Nginx, Caddy, Traefik, HAProxy, or Apache configured with `ProxyPass`) listening on port 80 or 443. If none is detected, Apache serves the PBX directly on those ports. Set `BEHIND_PROXY=yes` or `BEHIND_PROXY=no` to override detection; use `BEHIND_PROXY=auto` to restore automatic detection.
 
 To run behind Nginx, Caddy, Traefik, or Apache:
 

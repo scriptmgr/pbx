@@ -28,21 +28,15 @@ sep()  { echo ""; echo "=== $* ==="; }
 
 # ── Read credentials from env file ──────────────────────────────────────────
 ENV_FILE="/etc/pbx/.env"
-FREEPBX_PASS="admin"
 MYSQL_PASS=""
-ADMIN_EMAIL=""
 WEBMIN_PORT="9001"
 WEB_ROOT="/var/www/apache/pbx"
 BEHIND_PROXY="no"
 PROXY_HTTP_PORT=""
 
 if [ -f "$ENV_FILE" ]; then
-    v=$(grep -- "^FREEPBX_ADMIN_PASSWORD=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
-    [ -n "$v" ] && FREEPBX_PASS="$v"
     v=$(grep -- "^MYSQL_ROOT_PASSWORD_FILE=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
     [ -n "$v" ] && MYSQL_PASS_FILE="$v"
-    v=$(grep -- "^ADMIN_EMAIL=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
-    [ -n "$v" ] && ADMIN_EMAIL="$v"
     v=$(grep -- "^WEB_ROOT=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
     [ -n "$v" ] && WEB_ROOT="$v"
     v=$(grep -- "^BEHIND_PROXY=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
@@ -340,6 +334,9 @@ check_url() {
 }
 
 check_url "Portal root"             "${WEB_BASE_URL}/"                      "200,301,302"
+if [ "$BEHIND_PROXY" != "yes" ]; then
+    check_url "Direct HTTP port 80" "http://127.0.0.1/" "200,301,302,403"
+fi
 check_url "FreePBX /admin/"         "${WEB_BASE_URL}/admin/"                "200,302"   "FreePBX|pbx|login|password"
 check_url "/health JSON"            "${WEB_BASE_URL}/health"                "200"       "status|ok|healthy|version"
 check_url "/status/ page"           "${WEB_BASE_URL}/status/"               "200"       "asterisk|pbx|service|version|status"
@@ -348,7 +345,7 @@ check_url "/callcenter/"            "${WEB_BASE_URL}/callcenter/"           "200
 want WEBMIN && check_url "Webmin HTTPS"            "https://127.0.0.1:${WEBMIN_PORT}/"    "200,302,401" "Webmin|webmin|login"
 
 # Health endpoint detailed
-HEALTH=$(_curl_code "${WEB_BASE_URL}/health")
+_curl_code "${WEB_BASE_URL}/health" >/dev/null
 HBODY=$(_curl_body)
 grep -qiE -- '"status"' <<< "$HBODY"   && ok "/health: has 'status' key"    || warn "/health: missing 'status' key"
 grep -qiE -- '"asterisk"' <<< "$HBODY" && ok "/health: has 'asterisk' key"  || warn "/health: missing 'asterisk' key"
@@ -374,7 +371,7 @@ else
     CERT=$(echo | openssl s_client -connect 127.0.0.1:443 -servername "$FQDN" 2>/dev/null | openssl x509 -noout -subject -dates 2>/dev/null)
     [ -n "$CERT" ] && ok "TLS: SSL cert valid — $(grep -- notAfter <<< "$CERT")" || warn "TLS: no cert returned"
     ss -tlnp 2>/dev/null | grep -q -- ":443" && ok "Apache: port 443 listening" || fail "Apache: port 443 NOT listening"
-    ss -tlnp 2>/dev/null | grep -q -- ":80" && ok "Apache: port 80 listening" || warn "Apache: port 80 not listening"
+    ss -tlnp 2>/dev/null | grep -q -- ":80" && ok "Apache: port 80 listening" || fail "Apache: port 80 NOT listening"
 fi
 
 # =============================================================================
@@ -385,7 +382,7 @@ if want AVANTFAX; then
     pgrep -x hfaxd >/dev/null 2>&1 && ok "hfaxd process running" || fail "hfaxd not running"
     ss -tlnp 2>/dev/null | grep -q -- ":4559" && ok "hfaxd port 4559 listening" || fail "hfaxd port 4559 not listening"
 
-    FAXSTAT_OUT=$(timeout 5 faxstat -h 127.0.0.1 2>&1)
+    timeout 5 faxstat -h 127.0.0.1 >/dev/null 2>&1
     FAXSTAT_EXIT=$?
     [ "$FAXSTAT_EXIT" -eq 0 ] \
         && ok "faxstat: connected to hfaxd" \
@@ -706,7 +703,7 @@ svc_active crond cron && ok "Cron service: active" || warn "Cron service: not ac
 ALL_CRON=$(
     crontab -l 2>/dev/null
     cat /etc/crontab 2>/dev/null
-    find /etc/cron.d /etc/cron.daily /etc/cron.weekly -type f 2>/dev/null | xargs cat 2>/dev/null
+    find /etc/cron.d /etc/cron.daily /etc/cron.weekly -type f -exec cat {} + 2>/dev/null
     crontab -u asterisk -l 2>/dev/null
     crontab -u root -l 2>/dev/null
 )

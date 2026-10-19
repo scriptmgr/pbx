@@ -21,10 +21,6 @@
 # shellcheck disable=SC1001,SC1003,SC2001,SC2003,SC2016,SC2031,SC2090,SC2115,SC2120,SC2155,SC2199,SC2229,SC2317,SC2329
 # - - - - - - - - - - - - - - - - - - - - - - - - -
 VERSION="202605191156-git"
-APPNAME="${0##*/}"
-RUN_USER="${USER}"
-SET_UID="${UID}"
-SCRIPT_SRC_DIR="${BASH_SOURCE%/*}"
 # - - - - - - - - - - - - - - - - - - - - - - - - -
 set -e
 

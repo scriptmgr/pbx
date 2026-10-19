@@ -248,7 +248,7 @@ incus exec pbx-alma9 -- chmod +x /usr/local/bin/pbx-status
 | `MYSQL_ROOT_PASSWORD` | Optional preset MariaDB root password for install | (random, then stored in `/etc/pbx/mysql_root_password`) |
 | `ADMIN_EMAIL` | Administrator email for alerts | (required) |
 | `TIMEZONE` | System timezone | `America/New_York` |
-| `BEHIND_PROXY` | Enable reverse proxy mode (`yes`/`no`) | `yes` |
+| `BEHIND_PROXY` | Reverse proxy mode (`auto`/`yes`/`no`) | `auto` |
 | `PBX_INSTALL_FOP2` | Install FOP2 operator panel (HTML5) (`yes`/`no`) | `yes` |
 | `PBX_INSTALL_WIREGUARD` | Install WireGuard client tools only (`yes`/`no`) | `yes` |
 | `BACKUP_ENCRYPT` | Enable GPG backup encryption | `no` |

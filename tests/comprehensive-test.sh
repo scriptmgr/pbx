@@ -15,21 +15,15 @@ sep()  { echo ""; echo "=== $* ==="; }
 
 # ── Read credentials from env file ──────────────────────────────────────────
 ENV_FILE="/etc/pbx/.env"
-FREEPBX_PASS="admin"
 MYSQL_PASS=""
-ADMIN_EMAIL=""
 WEBMIN_PORT="9001"
 WEB_ROOT="/var/www/apache/pbx"
 BEHIND_PROXY="no"
 PROXY_HTTP_PORT=""
 
 if [ -f "$ENV_FILE" ]; then
-    v=$(grep "^FREEPBX_ADMIN_PASSWORD=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
-    [ -n "$v" ] && FREEPBX_PASS="$v"
     v=$(grep "^MYSQL_ROOT_PASSWORD_FILE=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
     [ -n "$v" ] && MYSQL_PASS_FILE="$v"
-    v=$(grep "^ADMIN_EMAIL=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
-    [ -n "$v" ] && ADMIN_EMAIL="$v"
     v=$(grep "^WEB_ROOT=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
     [ -n "$v" ] && WEB_ROOT="$v"
     v=$(grep "^BEHIND_PROXY=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
@@ -308,7 +302,7 @@ check_url "/callcenter/"            "${WEB_BASE_URL}/callcenter/"           "200
 check_url "Webmin HTTPS"            "https://127.0.0.1:${WEBMIN_PORT}/"    "200,302,401" "Webmin|webmin|login"
 
 # Health endpoint detailed
-HEALTH=$(_curl_code "${WEB_BASE_URL}/health")
+_curl_code "${WEB_BASE_URL}/health" >/dev/null
 HBODY=$(_curl_body)
 echo "$HBODY" | grep -qiE '"status"'   && ok "/health: has 'status' key"    || warn "/health: missing 'status' key"
 echo "$HBODY" | grep -qiE '"asterisk"' && ok "/health: has 'asterisk' key"  || warn "/health: missing 'asterisk' key"
@@ -344,7 +338,7 @@ sep "8. FAX SYSTEM"
 pgrep -x hfaxd >/dev/null 2>&1 && ok "hfaxd process running" || fail "hfaxd not running"
 ss -tlnp 2>/dev/null | grep -q ":4559" && ok "hfaxd port 4559 listening" || fail "hfaxd port 4559 not listening"
 
-FAXSTAT_OUT=$(timeout 5 faxstat -h 127.0.0.1 2>&1)
+timeout 5 faxstat -h 127.0.0.1 >/dev/null 2>&1
 FAXSTAT_EXIT=$?
 [ "$FAXSTAT_EXIT" -eq 0 ] \
     && ok "faxstat: connected to hfaxd" \
@@ -634,7 +628,7 @@ sep "17. CRON & MAINTENANCE"
 
 svc_active crond cron && ok "Cron service: active" || warn "Cron service: not active"
 
-ALL_CRON=$(crontab -l 2>/dev/null; cat /etc/crontab 2>/dev/null; find /etc/cron.d /etc/cron.daily /etc/cron.weekly -type f 2>/dev/null | xargs cat 2>/dev/null; crontab -u asterisk -l 2>/dev/null; crontab -u root -l 2>/dev/null)
+ALL_CRON=$(crontab -l 2>/dev/null; cat /etc/crontab 2>/dev/null; find /etc/cron.d /etc/cron.daily /etc/cron.weekly -type f -exec cat {} + 2>/dev/null; crontab -u asterisk -l 2>/dev/null; crontab -u root -l 2>/dev/null)
 echo "$ALL_CRON" | grep -qiE "backup|pbx-backup"   && ok "Cron: backup job present"    || warn "Cron: no backup job"
 echo "$ALL_CRON" | grep -qiE "cleanup|pbx-cleanup" && ok "Cron: cleanup job present"   || warn "Cron: no cleanup job"
 echo "$ALL_CRON" | grep -qiE "fwconsole|freepbx"   && ok "Cron: FreePBX cron present" || warn "Cron: no FreePBX cron"

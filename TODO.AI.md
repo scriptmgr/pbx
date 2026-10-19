@@ -1,5 +1,14 @@
 # TODO
 
+- 2026-10-19 Debian 12 libvirt clean install with no reverse proxy and an
+  existing Let's Encrypt certificate: auto-detection selected direct Apache
+  mode, both ports 80/443 listened, and Apache served the copied certificate
+  for `pbx.casjay.dev`. Trusted HTTPS requests to `/` and `/health` passed;
+  HTTP redirected to HTTPS. The full suite passed (181 passed, 2 warnings,
+  0 failed, 0 skipped); warnings were no recent CDR and optional rclone absent.
+  An installer rerun exited 0 and retained automatic mode. The proxy resolver
+  regression test passed 4/4, including explicit `yes`/`no` override cases.
+
 - 2026-10-18 Debian 12 all-options run in an isolated Incus container:
   installer exited 0 with AvantFax, Webmin, OpenVPN, WireGuard, FOP2, sngrep,
   phone provisioning, remote backup/rclone, Asternic, Fail2ban, and backups
