@@ -126,6 +126,16 @@ check_svc "Asterisk"    asterisk freepbx
 check_svc "MariaDB"     mariadb mysql
 check_svc "Web server"  httpd apache2
 check_svc "PHP-FPM"     php-fpm php7.4-fpm php74-php-fpm
+FPM_UNIT=$(systemctl list-units --type=service --state=active --no-legend 2>/dev/null \
+    | awk '$1 ~ /^php.*fpm\.service$/ {print $1; exit}')
+if [ -n "${FPM_UNIT:-}" ]; then
+    FPM_WRITE_PATHS=$(systemctl show "${FPM_UNIT}" -p ReadWritePaths --value 2>/dev/null)
+    echo "${FPM_WRITE_PATHS}" | grep -qF "/etc/asterisk" \
+        && ok "PHP-FPM can write generated Asterisk configuration" \
+        || fail "PHP-FPM cannot write generated Asterisk configuration"
+else
+    warn "PHP-FPM systemd unit not found; config write access not checked"
+fi
 check_svc "Postfix"     postfix
 want AVANTFAX && check_svc "HylaFAX"     hylafax "hylafax+"
 want WEBMIN   && check_svc "Webmin"      webmin

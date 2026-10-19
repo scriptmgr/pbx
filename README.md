@@ -27,9 +27,10 @@ A production-ready, fully automated installer for a complete enterprise PBX syst
 - **Feature Codes** — `*72/*73` forward, `*76/*77` DND, `*78` record, `*68` wakeup
 
 ### Enterprise Fax System
-- **4 Virtual Fax Modems** — IAXmodem instances (ttyIAX0–3)
+- **4 Virtual Fax Modems** — IAXmodem instances (ttyIAX1–4)
 - **HylaFax+** — Compiled from source for maximum compatibility
 - **AvantFax** — Web-based fax management (v3.4.1)
+- **FreePBX Fax Destination** — Routes detected faxes to HylaFAX through the configured IAXmodem pool. For each inbound route that should accept faxes, enable fax detection and choose **Custom Destinations → Fax (HylaFax)** as its destination.
 - **Fax-to-Email** — Automatic delivery to designated address
 - **Email-to-Fax** — Send faxes by email
 

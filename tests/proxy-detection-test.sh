@@ -61,5 +61,37 @@ else
     fail "no proxy listener did not select direct mode"
 fi
 
+TEST_TEMP_ROOT="${TMPDIR:-/tmp}/github"
+mkdir -p "${TEST_TEMP_ROOT}"
+TEST_TEMP_DIR=$(mktemp -d "${TEST_TEMP_ROOT}/pbx-listeners-XXXXXX")
+cleanup_test_temp() {
+    if [[ -n "${TEST_TEMP_DIR:-}" && -d "${TEST_TEMP_DIR}" && ! -L "${TEST_TEMP_DIR}" \
+        && "${TEST_TEMP_DIR}" == "${TEST_TEMP_ROOT}/pbx-listeners-"* ]]; then
+        rm -rf -- "${TEST_TEMP_DIR}"
+    fi
+}
+trap cleanup_test_temp EXIT
+
+PORTS_FILE="${TEST_TEMP_DIR}/ports.conf"
+printf 'Listen 127.0.0.1:63504\nListen 127.0.0.1:60001\nListen 127.0.0.1:8080\n' > "${PORTS_FILE}"
+restore_apache_direct_listeners "${PORTS_FILE}" 1 63504
+RESTORED_PORTS=$(awk '$1 == "Listen" { port = $2; sub(/^.*:/, "", port); print port }' "${PORTS_FILE}")
+if [ "${RESTORED_PORTS}" = "60001
+8080
+80
+443" ]; then
+    ok "direct mode restores HTTP and HTTPS listeners and preserves other listeners"
+else
+    fail "direct mode did not restore HTTP and HTTPS listeners"
+fi
+
+RESTORED_CONFIG=$(cat "${PORTS_FILE}")
+restore_apache_direct_listeners "${PORTS_FILE}" 1 63504
+if [ "${RESTORED_CONFIG}" = "$(cat "${PORTS_FILE}")" ]; then
+    ok "direct listener restoration is idempotent"
+else
+    fail "direct listener restoration added duplicate listeners"
+fi
+
 printf '\nSummary: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

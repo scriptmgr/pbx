@@ -280,9 +280,9 @@ STEP_TOTAL=55
 # Each block below adds the steps that fire under their respective conditions.
 compute_step_total() {
     local _n=38
-    # Fax subsystem (7 steps; avantfax_php adds 1 when PHP versions differ)
+    # Fax subsystem (8 steps; avantfax_php adds 1 when PHP versions differ)
     if [ "${PBX_INSTALL_AVANTFAX:-yes}" = "yes" ]; then
-        _n=$((_n + 7))
+        _n=$((_n + 8))
         [ "${PHP_VERSION}" != "${PHP_AVANTFAX_VERSION}" ] && _n=$((_n + 1))
     fi
     # Security
@@ -696,7 +696,7 @@ setup_pkg_map() {
             APACHE_GROUP="www-data"
 
             PACKAGES_DISTRO_BUILD="build-essential autoconf automake libtool bison flex doxygen imagemagick patch"
-            PACKAGES_DISTRO_ASTERISK_DEPS="libssl-dev libxml2-dev libxslt1-dev libsqlite3-dev sqlite3 uuid-dev libncurses5-dev libncursesw5-dev libnewt-dev libjansson-dev libcurl4-openssl-dev default-libmysqlclient-dev libsrtp2-dev libspeex-dev libspeexdsp-dev libasound2-dev libogg-dev libvorbis-dev libtiff-dev libpng-dev libjpeg-dev libicu-dev libldap2-dev libreadline-dev libedit-dev libgd-dev"
+            PACKAGES_DISTRO_ASTERISK_DEPS="libssl-dev libxml2-dev libxslt1-dev libsqlite3-dev sqlite3 uuid-dev libncurses5-dev libncursesw5-dev libnewt-dev libjansson-dev libcurl4-openssl-dev default-libmysqlclient-dev libsrtp2-dev libspeex-dev libspeexdsp-dev libasound2-dev libogg-dev libvorbis-dev libtiff-dev libpng-dev libjpeg-dev libicu-dev libldap2-dev libreadline-dev libedit-dev libgd-dev libspandsp-dev"
             PACKAGES_DISTRO_WEBSERVER="apache2 apache2-utils"
             # Optional apache modules — installed one-by-one so a missing name never blocks apache2
             PACKAGES_DISTRO_WEBSERVER_OPT="libapache2-mod-fcgid"
@@ -739,7 +739,7 @@ setup_pkg_map() {
             APACHE_GROUP="apache"
 
             PACKAGES_DISTRO_BUILD="gcc gcc-c++ make cmake autoconf automake libtool bison flex doxygen ImageMagick patch"
-            PACKAGES_DISTRO_ASTERISK_DEPS="openssl-devel libxml2-devel libxslt-devel sqlite-devel sqlite libuuid-devel ncurses-devel newt-devel jansson-devel libcurl-devel libsrtp-devel speex-devel speexdsp-devel alsa-lib-devel libogg-devel libvorbis-devel libtiff-devel libpng-devel libjpeg-devel libicu-devel openldap-devel readline-devel libedit-devel gd-devel pkgconf-pkg-config pkgconf"
+            PACKAGES_DISTRO_ASTERISK_DEPS="openssl-devel libxml2-devel libxslt-devel sqlite-devel sqlite libuuid-devel ncurses-devel newt-devel jansson-devel libcurl-devel libsrtp-devel speex-devel speexdsp-devel alsa-lib-devel libogg-devel libvorbis-devel libtiff-devel libpng-devel libjpeg-devel libicu-devel openldap-devel readline-devel libedit-devel gd-devel spandsp-devel pkgconf-pkg-config pkgconf"
             PACKAGES_DISTRO_WEBSERVER="httpd httpd-tools"
             PACKAGES_DISTRO_WEBSERVER_OPT="mod_ssl mod_proxy_html"
             PACKAGES_DISTRO_PHP="php php-fpm php-cli php-common php-mysqlnd php-gd php-xml php-curl php-zip php-mbstring php-intl php-bcmath php-opcache php-soap php-ldap php-imap php-process php-pdo php-pear php-sodium"
@@ -2842,6 +2842,39 @@ DBEOF
 # SECTION 12: PHP
 # =============================================================================
 
+configure_primary_fpm_asterisk_access() {
+    [ "${INIT_SYSTEM}" = "systemd" ] || return 0
+    [ -n "${PHP_FPM_SERVICE:-}" ] || {
+        error "Primary PHP-FPM service is not configured"
+        return 1
+    }
+
+    local unit="${PHP_FPM_SERVICE%.service}"
+    local dropin_dir="/etc/systemd/system/${unit}.service.d"
+    local dropin_file="${dropin_dir}/asterisk-config.conf"
+
+    if ! mkdir -p "${dropin_dir}"; then
+        error "Could not create the PHP-FPM systemd drop-in directory"
+        return 1
+    fi
+    if ! cat > "${dropin_file}" <<'FPMEOF'
+[Service]
+ReadWritePaths=/etc/asterisk
+FPMEOF
+    then
+        error "Could not grant PHP-FPM write access to Asterisk configuration"
+        return 1
+    fi
+    if ! chmod 644 "${dropin_file}"; then
+        error "Could not set permissions on the PHP-FPM systemd drop-in"
+        return 1
+    fi
+    if ! systemctl daemon-reload; then
+        error "Could not reload systemd after configuring PHP-FPM access"
+        return 1
+    fi
+}
+
 install_php() {
     step "🐘 Installing PHP ${PHP_VERSION}..."
     local php_major_ver="${DETECTED_VERSION%%.*}"
@@ -2903,6 +2936,11 @@ install_php() {
                 backup_config "${php_cli_ini}"
                 sed -i "s|;date.timezone.*|date.timezone = ${TIMEZONE:-America/New_York}|" "${php_cli_ini}"
                 sed -i 's/memory_limit = .*/memory_limit = 512M/' "${php_cli_ini}"
+            fi
+            local php_fpm_ini="${PHP_INI_DIR}/fpm/php.ini"
+            if [ -f "${php_fpm_ini}" ]; then
+                backup_config "${php_fpm_ini}"
+                sed -i 's/memory_limit = .*/memory_limit = 512M/' "${php_fpm_ini}"
             fi
             # FreePBX files are owned by asterisk — FPM must run as asterisk
             local fpm_www="${PHP_INI_DIR}/fpm/pool.d/www.conf"
@@ -2972,6 +3010,7 @@ install_php() {
             ;;
     esac
 
+    configure_primary_fpm_asterisk_access || return 1
     svc_enable  "${PHP_FPM_SERVICE}"
     svc_restart "${PHP_FPM_SERVICE}"
     if [ -n "${PHP74_FPM_SERVICE:-}" ] && [ "${PHP74_FPM_SERVICE}" != "${PHP_FPM_SERVICE}" ]; then
@@ -3326,6 +3365,63 @@ find_free_proxy_port() {
     echo "${PROXY_HTTP_PORT}"
 }
 
+restore_apache_direct_listeners() {
+    local config_file="${1:-/etc/apache2/ports.conf}"
+    local ssl_enabled="${2:-0}"
+    local proxy_port="${3:-${PROXY_HTTP_PORT:-}}"
+    local temp_file
+
+    [ -f "${config_file}" ] || return 0
+    temp_file=$(mktemp "${config_file}.XXXXXX") || return 1
+    if ! awk -v proxy_port="${proxy_port}" -v ssl_enabled="${ssl_enabled}" '
+        function is_proxy_listener(endpoint) {
+            if (proxy_port != "" && endpoint == "127.0.0.1:" proxy_port) {
+                return 1
+            }
+            return endpoint ~ /^127\.0\.0\.1:(60[5-9][0-9][0-9]|6[1-4][0-9][0-9][0-9]|65[0-4][0-9][0-9])$/
+        }
+        {
+            stripped = $0
+            sub(/^[[:space:]]+/, "", stripped)
+            if (stripped ~ /^Listen[[:space:]]+/) {
+                endpoint = stripped
+                sub(/^Listen[[:space:]]+/, "", endpoint)
+                split(endpoint, listen_args, /[[:space:]]+/)
+                endpoint = listen_args[1]
+                if (is_proxy_listener(endpoint)) {
+                    next
+                }
+                port = endpoint
+                sub(/^.*:/, "", port)
+                if (port == "80") {
+                    has_http = 1
+                }
+                if (port == "443") {
+                    has_https = 1
+                }
+            }
+            print
+        }
+        END {
+            if (!has_http) {
+                print "Listen 80"
+            }
+            if (ssl_enabled && !has_https) {
+                print "Listen 443"
+            }
+        }
+    ' "${config_file}" > "${temp_file}"; then
+        rm -f "${temp_file}"
+        return 1
+    fi
+
+    chmod --reference="${config_file}" "${temp_file}" || {
+        rm -f "${temp_file}"
+        return 1
+    }
+    mv "${temp_file}" "${config_file}" || return 1
+}
+
 generate_apache_vhost_config() {
     step "🌐 Writing Apache configuration files..."
 
@@ -3369,6 +3465,17 @@ generate_apache_vhost_config() {
         cert_file="/etc/ssl/pbx/fullchain.pem"
         key_file="/etc/ssl/pbx/privkey.pem"
         [ -f /etc/ssl/pbx/fullchain.pem ] && have_ssl=1 || true
+    fi
+
+    # Restore public listeners when switching from reverse proxy to direct mode.
+    if [ "${DISTRO_FAMILY}" = "debian" ] && [ "${BEHIND_PROXY:-no}" != "yes" ] \
+        && [ -f /etc/apache2/ports.conf ]; then
+        restore_apache_direct_listeners /etc/apache2/ports.conf "${have_ssl}" "${PROXY_HTTP_PORT:-}" || return 1
+
+        if [ -f /etc/apache2/conf-available/pbx-listen.conf ]; then
+            a2disconf pbx-listen 2>/dev/null || true
+            rm -f /etc/apache2/conf-available/pbx-listen.conf
+        fi
     fi
 
     # PHP handler strings
@@ -4104,14 +4211,32 @@ FAXGETTYSVCEOF
 # SECTION 17: ASTERISK INSTALLATION
 # =============================================================================
 
+asterisk_fax_modules_available() {
+    local module_dir
+    for module_dir in /usr/lib/asterisk/modules /usr/lib64/asterisk/modules; do
+        if [ -f "${module_dir}/res_fax.so" ] && [ -f "${module_dir}/res_fax_spandsp.so" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 install_asterisk() {
     step "📞 Installing Asterisk ${ASTERISK_VERSION}..."
-    skip_if_done asterisk && return 0
+    if skip_if_done asterisk; then
+        if [ "${PBX_INSTALL_AVANTFAX:-yes}" != "yes" ] || asterisk_fax_modules_available; then
+            return 0
+        fi
+        info "Asterisk is healthy, but its fax modules are missing — rebuilding with SpanDSP support"
+    fi
 
     if command_exists asterisk \
         && asterisk -V 2>/dev/null | grep -q "Asterisk ${ASTERISK_VERSION}"; then
-        info "Asterisk ${ASTERISK_VERSION} already installed, skipping"
-        return 0
+        if [ "${PBX_INSTALL_AVANTFAX:-yes}" != "yes" ] || asterisk_fax_modules_available; then
+            info "Asterisk ${ASTERISK_VERSION} already installed, skipping"
+            return 0
+        fi
+        info "Asterisk ${ASTERISK_VERSION} is installed without fax modules — rebuilding with SpanDSP support"
     fi
 
     if ! id asterisk >/dev/null 2>&1; then
@@ -4205,6 +4330,8 @@ install_asterisk() {
         --enable codec_siren7 \
         --enable codec_siren14 \
         --enable codec_g729a \
+        --enable res_fax \
+        --enable res_fax_spandsp \
         --enable EXTRA-SOUNDS-EN-GSM \
         --enable EXTRA-SOUNDS-EN-ULAW \
         menuselect.makeopts >> "${LOG_FILE}" 2>&1 || true
@@ -4224,8 +4351,22 @@ install_asterisk() {
         run_logged "Asterisk: compile retry (serial)" \
             make -j1 || { error "Asterisk compile failed — see ${LOG_FILE}"; return 1; }
     fi
+    if [ "${PBX_INSTALL_AVANTFAX:-yes}" = "yes" ] && ! asterisk_fax_modules_available \
+        && pgrep -x asterisk >/dev/null 2>&1; then
+        info "Stopping FreePBX before replacing Asterisk fax modules"
+        if svc_active freepbx 2>/dev/null; then
+            timeout 60 fwconsole stop --quiet >> "${LOG_FILE}" 2>&1 \
+                || { error "Could not stop FreePBX before rebuilding Asterisk fax modules"; return 1; }
+        else
+            stop_asterisk_processes || return 1
+        fi
+    fi
     run_logged "Asterisk: install" \
         make install || { error "Asterisk install failed — see ${LOG_FILE}"; return 1; }
+    if [ "${PBX_INSTALL_AVANTFAX:-yes}" = "yes" ] && ! asterisk_fax_modules_available; then
+        error "Asterisk fax modules were not built; verify the SpanDSP development package and menuselect output"
+        return 1
+    fi
     make config            >> "${LOG_FILE}" 2>&1 || true
     make install-logrotate >> "${LOG_FILE}" 2>&1 || true
     ldconfig
@@ -4248,6 +4389,7 @@ install_asterisk() {
 ensure_freepbx_modules() {
     local mod installed_modules module_count missing_required=""
     local required_modules="core framework pm2 voicemail timeconditions callforward donotdisturb"
+    [ "${PBX_INSTALL_AVANTFAX:-yes}" = "yes" ] && required_modules="${required_modules} fax"
 
     info "Reconciling FreePBX modules..."
     command -v fwconsole >/dev/null 2>&1 || {
@@ -4270,7 +4412,7 @@ ensure_freepbx_modules() {
 
     for mod in pm2 superfecta queueprio miscdests miscapps outcnam \
                dynroute extensionsettings disa allowlist customappsreg \
-               ringgroups queues ivr timeconditions daynight \
+               ringgroups queues ivr timeconditions daynight fax \
                callforward findmefollow donotdisturb parking paging \
                callrecording recordings announcement conferences \
                cidlookup directory ucp userman hotelwakeup; do
@@ -4699,15 +4841,35 @@ MISCDEOF
     # Register the demo extensions as Misc Applications so they appear in the
     # FreePBX admin UI and can be used as inbound route destinations.
     mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk 2>/dev/null << 'MISCAEOF' || true
-INSERT IGNORE INTO miscapps (ext, description, dest) VALUES
-  ('123',  'Speaking Clock',    'pbx-clock,s,1'),
-  ('947',  'Weather TTS Demo',  'pbx-weather,s,1'),
-  ('951',  'Date Announcement', 'pbx-today,s,1'),
-  ('4747', 'Lenny Bot',         'pbx-lenny,s,1'),
-  ('*43',  'Echo Test',         'pbx-echo,s,1'),
-  ('*610', 'Music on Hold',     'pbx-moh,s,1'),
-  ('*41',  'Caller ID Test',    'pbx-cidtest,s,1'),
-  ('*97',  'Voicemail Main',    'pbx-voicemail,s,1');
+DELETE duplicate FROM miscapps AS duplicate
+JOIN miscapps AS original
+  ON duplicate.ext = original.ext
+  AND duplicate.description = original.description
+  AND duplicate.dest = original.dest
+  AND duplicate.miscapps_id > original.miscapps_id
+WHERE duplicate.description IN (
+  'Speaking Clock', 'Weather TTS Demo', 'Date Announcement', 'Lenny Bot',
+  'Echo Test', 'Music on Hold', 'Caller ID Test', 'Voicemail Main'
+);
+
+INSERT INTO miscapps (ext, description, dest)
+SELECT seed.ext, seed.description, seed.dest
+FROM (
+  SELECT '123' AS ext, 'Speaking Clock' AS description, 'pbx-clock,s,1' AS dest
+  UNION ALL SELECT '947', 'Weather TTS Demo', 'pbx-weather,s,1'
+  UNION ALL SELECT '951', 'Date Announcement', 'pbx-today,s,1'
+  UNION ALL SELECT '4747', 'Lenny Bot', 'pbx-lenny,s,1'
+  UNION ALL SELECT '*43', 'Echo Test', 'pbx-echo,s,1'
+  UNION ALL SELECT '*610', 'Music on Hold', 'pbx-moh,s,1'
+  UNION ALL SELECT '*41', 'Caller ID Test', 'pbx-cidtest,s,1'
+  UNION ALL SELECT '*97', 'Voicemail Main', 'pbx-voicemail,s,1'
+) AS seed
+WHERE NOT EXISTS (
+  SELECT 1 FROM miscapps AS existing
+  WHERE existing.ext = seed.ext
+    AND existing.description = seed.description
+    AND existing.dest = seed.dest
+);
 MISCAEOF
 
     # ── TTS Engines ────────────────────────────────────────────────────────────
@@ -5034,6 +5196,26 @@ TIFF2PSEOF
 # SECTION 22: IAXMODEM
 # =============================================================================
 
+__set_iax_peer_value() {
+    local file="$1" section="$2" key="$3" value="$4"
+
+    if awk -v section="[${section}]" -v key="${key}=" '
+        $0 == section { in_section = 1; next }
+        in_section && /^\[/ { exit }
+        in_section {
+            line = $0
+            sub(/^[[:space:]]*/, "", line)
+            if (index(line, key) == 1) found = 1
+        }
+        END { exit !found }
+    ' "${file}"; then
+        sed -i "/^\\[${section}\\]/,/^\\[/{s|^[[:space:]]*${key}[[:space:]]*=.*|${key}=${value}|;}" "${file}" \
+            || return 1
+    else
+        sed -i "/^\\[${section}\\]/a ${key}=${value}" "${file}" || return 1
+    fi
+}
+
 install_iaxmodem() {
     step "📠 Installing IAXmodem..."
 
@@ -5085,7 +5267,7 @@ install_iaxmodem() {
 device          /dev/ttyIAX${i}
 owner           uucp:uucp
 mode            660
-port            4569
+port            $((4569 + i))
 refresh         300
 server          127.0.0.1
 peername        iaxmodem${i}
@@ -5099,15 +5281,22 @@ MODEMEOF
         # Write Asterisk IAX2 peer so IAXmodem can authenticate.
         # iax_custom.conf is included by FreePBX's iax.conf and is user-owned.
         if grep -q "^\[iaxmodem${i}\]" "${iax_custom}" 2>/dev/null; then
-            # Update secret in place on re-run
-            sed -i "/^\[iaxmodem${i}\]/,/^\[/{s/^secret=.*/secret=${modem_secret}/}" "${iax_custom}" 2>/dev/null || true
+            __set_iax_peer_value "${iax_custom}" "iaxmodem${i}" type friend || return 1
+            __set_iax_peer_value "${iax_custom}" "iaxmodem${i}" auth md5 || return 1
+            __set_iax_peer_value "${iax_custom}" "iaxmodem${i}" secret "${modem_secret}" || return 1
+            __set_iax_peer_value "${iax_custom}" "iaxmodem${i}" host dynamic || return 1
+            __set_iax_peer_value "${iax_custom}" "iaxmodem${i}" requirecalltoken no || return 1
+            __set_iax_peer_value "${iax_custom}" "iaxmodem${i}" permit 127.0.0.1/255.255.255.255 || return 1
         else
             cat >> "${iax_custom}" << IAXPEEREOF
 
 [iaxmodem${i}]
 type=friend
+auth=md5
 secret=${modem_secret}
-host=127.0.0.1
+host=dynamic
+requirecalltoken=no
+permit=127.0.0.1/255.255.255.255
 trunk=no
 context=from-internal
 disallow=all
@@ -5348,6 +5537,60 @@ AFLCFGEOF
     mark_done avantfax
     cd /
     success "AvantFax installed"
+}
+
+configure_freepbx_fax_destination() {
+    [ "${PBX_INSTALL_AVANTFAX:-yes}" = "yes" ] || return 0
+    [ -f /etc/freepbx.conf ] || { warn "FreePBX config missing; Fax destination not registered"; return 0; }
+    command_exists iaxmodem || { error "IAXmodem is missing; cannot register the fax destination"; return 1; }
+    command_exists faxq || { error "HylaFAX faxq is missing; cannot register the fax destination"; return 1; }
+    asterisk_fax_modules_available \
+        || { error "Asterisk Fax/SpanDSP modules are missing; cannot register the fax destination"; return 1; }
+
+    local modem=1
+    while [ "${modem}" -le "${NUMBER_OF_MODEMS:-4}" ]; do
+        [ -f "/etc/iaxmodem/ttyIAX${modem}" ] \
+            || { error "IAXmodem ${modem} is not configured; cannot register the fax destination"; return 1; }
+        modem=$((modem + 1))
+    done
+
+    step "📠 Registering the FreePBX Fax (HylaFax) destination..."
+    php /dev/stdin <<'PHP' || { error "Could not register the FreePBX Fax (HylaFax) destination"; return 1; }
+<?php
+$bootstrap_settings = ['skip_astman' => true];
+require '/etc/freepbx.conf';
+
+$freepbx = FreePBX::create();
+$customappsreg = $freepbx->Customappsreg;
+$target = 'custom-fax-iaxmodem,s,1';
+$destinations = $customappsreg->getAllCustomDests();
+
+foreach ($destinations as $destination) {
+    if (($destination['target'] ?? '') === $target) {
+        echo "Fax (HylaFax) destination already registered\n";
+        exit(0);
+    }
+}
+
+$currentid = (int)($customappsreg->getConfig('currentid') ?: 1);
+foreach ($destinations as $destination) {
+    $currentid = max($currentid, (int)($destination['destid'] ?? 0) + 1);
+}
+$customappsreg->setConfig($currentid, [
+    'destid' => $currentid,
+    'target' => $target,
+    'description' => 'Fax (HylaFax)',
+    'notes' => 'Routes detected faxes to the configured IAXmodem and HylaFAX stack.',
+    'destret' => 0,
+    'dest' => '',
+], 'dests');
+$customappsreg->setConfig('currentid', $currentid + 1);
+echo "Registered FreePBX Fax (HylaFax) destination\n";
+PHP
+
+    fwconsole reload >> "${LOG_FILE}" 2>&1 \
+        || { error "FreePBX reload failed after registering the fax destination"; return 1; }
+    success "Fax destination is available in FreePBX routes; enable detection on selected inbound routes"
 }
 
 configure_email_to_fax() {
@@ -6306,6 +6549,31 @@ exten => s,1,Answer()
 [from-trunk]
 include => from-internal-custom
 DIALPLANEOF
+    if [ "${PBX_INSTALL_AVANTFAX:-yes}" = "yes" ]; then
+        {
+            cat <<'FAXDIALPLANEOF'
+
+; --- FreePBX Fax module destination (inbound route detection is user-configured) ---
+[custom-fax-iaxmodem]
+exten => s,1,Answer()
+ same => n,Wait(1)
+ same => n,Verbose(3,Routing detected fax to HylaFAX)
+FAXDIALPLANEOF
+            local modem=1 modem_targets=""
+            while [ "${modem}" -le "${NUMBER_OF_MODEMS:-4}" ]; do
+                if [ -n "${modem_targets}" ]; then
+                    modem_targets="${modem_targets}&"
+                fi
+                modem_targets="${modem_targets}IAX2/iaxmodem${modem}/s"
+                modem=$((modem + 1))
+            done
+            printf ' same => n,Dial(%s,60)\n' "${modem_targets}"
+            cat <<'FAXDIALPLANEOF'
+ same => n,Busy(5)
+ same => n,Hangup()
+FAXDIALPLANEOF
+        } >> "${custom_conf}"
+    fi
     # Patch timezone in dialplan — heredoc is single-quoted so we sed it after writing.
     sed -i "s|SayUnixTime(,America/New_York,|SayUnixTime(,${TIMEZONE:-America/New_York},|g" "${custom_conf}" 2>/dev/null || true
 
@@ -8504,6 +8772,7 @@ run_installation() {
         install_hylafax
         install_iaxmodem
         install_avantfax
+        configure_freepbx_fax_destination
         configure_email_to_fax
         configure_fax_to_email
     fi
@@ -8646,6 +8915,7 @@ ENVIRONMENT VARIABLES:
   FROM_EMAIL             From address for all system mail (default: no-reply@<fqdn>)
   FROM_NAME              From display name for all system mail (default: PBX System)
   BEHIND_PROXY           auto/yes/no — detect a running proxy, or set explicitly (default: auto)
+                         Direct mode binds Apache to ports 80/443 and removes stale proxy listeners
   PBX_INSTALL_AVANTFAX   yes/no — install fax system (default: yes)
   BACKUP_ENABLED         yes/no — setup backup cron (default: yes)
   PBX_INSTALL_WEBMIN     yes/no — install Webmin (default: yes)

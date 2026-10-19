@@ -314,8 +314,55 @@ echo "$AVF" | grep -qiE "AvantFax|HylaFax|fax|login" && ok "AvantFax web: access
 
 # IAXmodem config files
 for n in 1 2 3 4; do
-    [ -f /etc/iaxmodem/ttyIAX${n} ] && ok "IAXmodem config /etc/iaxmodem/ttyIAX${n}: present" || warn "IAXmodem config ttyIAX${n}: missing"
+    iaxmodem_conf="/etc/iaxmodem/ttyIAX${n}"
+    [ -f "${iaxmodem_conf}" ] \
+        && ok "IAXmodem config /etc/iaxmodem/ttyIAX${n}: present" \
+        || warn "IAXmodem config ttyIAX${n}: missing"
+    if [ -f "${iaxmodem_conf}" ]; then
+        expected_port=$((4569 + n))
+        grep -Eq "^port[[:space:]]+${expected_port}$" "${iaxmodem_conf}" \
+            && ok "IAXmodem ${n}: unique local port configured" \
+            || fail "IAXmodem ${n}: incorrect local port"
+    fi
+    if awk -v section="[iaxmodem${n}]" '
+        $0 == section { in_section = 1; next }
+        in_section && /^\[/ { exit }
+        in_section && /^host=dynamic$/ { host = 1 }
+        in_section && /^auth=md5$/ { auth = 1 }
+        in_section && /^requirecalltoken=no$/ { token = 1 }
+        in_section && /^permit=127\.0\.0\.1\/255\.255\.255\.255$/ { permit = 1 }
+        END { exit !(host && auth && token && permit) }
+    ' /etc/asterisk/iax_custom.conf 2>/dev/null; then
+        ok "IAXmodem ${n}: dynamic, loopback-only peer configured"
+    else
+        fail "IAXmodem ${n}: peer registration settings are incomplete"
+    fi
 done
+
+if fwconsole ma list 2>/dev/null | grep -qE '^\| fax[[:space:]].*Enabled'; then
+    ok "FreePBX Fax module: enabled"
+else
+    fail "FreePBX Fax module: not enabled"
+fi
+
+FAX_DEST=$(php -r '$bootstrap_settings = ["skip_astman" => true]; require "/etc/freepbx.conf"; $fp = FreePBX::create(); foreach ($fp->Customappsreg->getAllCustomDests() as $dest) { if (($dest["target"] ?? "") === "custom-fax-iaxmodem,s,1") { echo "registered"; exit(0); } } exit(1);' 2>/dev/null)
+if [ "$FAX_DEST" = "registered" ]; then
+    ok "FreePBX Fax (HylaFax) route destination: registered"
+else
+    fail "FreePBX Fax (HylaFax) route destination: missing"
+fi
+
+if ast "dialplan show s@custom-fax-iaxmodem" 2>/dev/null | grep -q "IAX2/iaxmodem"; then
+    ok "Fax destination dialplan: routes to IAXmodem"
+else
+    fail "Fax destination dialplan: missing IAXmodem route"
+fi
+
+if ast "module show like res_fax_spandsp" 2>/dev/null | grep -q "res_fax_spandsp.so"; then
+    ok "Asterisk fax engine: res_fax_spandsp loaded"
+else
+    fail "Asterisk fax engine: res_fax_spandsp not loaded"
+fi
 
 # Email-to-fax alias
 FAX_ALIAS=$(grep "^EMAIL_TO_FAX_ALIAS=" "$ENV_FILE" 2>/dev/null | cut -d= -f2)
