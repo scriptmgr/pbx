@@ -4826,15 +4826,29 @@ NATEOF
     # Create Misc Destinations for the demo dialplan contexts so they appear
     # as selectable targets in inbound routes, IVRs, and ring groups.
     mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk 2>/dev/null << 'MISCDEOF' || true
-INSERT IGNORE INTO miscdests (description, destdial) VALUES
-  ('Echo Test',        'pbx-echo,s,1'),
-  ('Speaking Clock',   'pbx-clock,s,1'),
-  ('Weather TTS',      'pbx-weather,s,1'),
-  ('Date Announcement','pbx-today,s,1'),
-  ('Lenny Bot',        'pbx-lenny,s,1'),
-  ('Music on Hold',    'pbx-moh,s,1'),
-  ('Caller ID Test',   'pbx-cidtest,s,1'),
-  ('Voicemail Main',   'pbx-voicemail,s,1');
+DELETE duplicate FROM miscdests AS duplicate
+JOIN miscdests AS original
+  ON duplicate.description = original.description
+  AND duplicate.destdial = original.destdial
+  AND duplicate.id > original.id;
+
+INSERT INTO miscdests (description, destdial)
+SELECT seed.description, seed.destdial
+FROM (
+  SELECT 'Echo Test' AS description, 'pbx-echo,s,1' AS destdial
+  UNION ALL SELECT 'Speaking Clock', 'pbx-clock,s,1'
+  UNION ALL SELECT 'Weather TTS', 'pbx-weather,s,1'
+  UNION ALL SELECT 'Date Announcement', 'pbx-today,s,1'
+  UNION ALL SELECT 'Lenny Bot', 'pbx-lenny,s,1'
+  UNION ALL SELECT 'Music on Hold', 'pbx-moh,s,1'
+  UNION ALL SELECT 'Caller ID Test', 'pbx-cidtest,s,1'
+  UNION ALL SELECT 'Voicemail Main', 'pbx-voicemail,s,1'
+) AS seed
+WHERE NOT EXISTS (
+  SELECT 1 FROM miscdests AS existing
+  WHERE existing.description = seed.description
+    AND existing.destdial = seed.destdial
+);
 MISCDEOF
 
     # ── Misc Applications ──────────────────────────────────────────────────────
@@ -4843,14 +4857,10 @@ MISCDEOF
     mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk 2>/dev/null << 'MISCAEOF' || true
 DELETE duplicate FROM miscapps AS duplicate
 JOIN miscapps AS original
-  ON duplicate.ext = original.ext
-  AND duplicate.description = original.description
-  AND duplicate.dest = original.dest
-  AND duplicate.miscapps_id > original.miscapps_id
-WHERE duplicate.description IN (
-  'Speaking Clock', 'Weather TTS Demo', 'Date Announcement', 'Lenny Bot',
-  'Echo Test', 'Music on Hold', 'Caller ID Test', 'Voicemail Main'
-);
+  ON duplicate.ext <=> original.ext
+  AND duplicate.description <=> original.description
+  AND duplicate.dest <=> original.dest
+  AND duplicate.miscapps_id > original.miscapps_id;
 
 INSERT INTO miscapps (ext, description, dest)
 SELECT seed.ext, seed.description, seed.dest

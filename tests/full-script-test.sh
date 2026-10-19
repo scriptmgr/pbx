@@ -314,6 +314,20 @@ USERS=$(db_q "SELECT COUNT(*) FROM ampusers;")
 SIP_PORT=$(db_q "SELECT data FROM sipsettings WHERE keyword='bindport' LIMIT 1;")
 [ -n "${SIP_PORT}" ] && ok "SIP settings in DB: bindport=$SIP_PORT" || warn "SIP port in DB: '$SIP_PORT'"
 
+MISCDEST_DUPLICATES=$(db_q "SELECT COUNT(*) FROM (SELECT description,destdial FROM miscdests GROUP BY description,destdial HAVING COUNT(*)>1) AS duplicates;")
+if [[ "${MISCDEST_DUPLICATES:-}" =~ ^[0-9]+$ ]] && [ "$MISCDEST_DUPLICATES" -eq 0 ]; then
+    ok "Misc Destinations: no exact duplicate rows"
+else
+    fail "Misc Destinations: ${MISCDEST_DUPLICATES:-query failed} exact duplicate groups"
+fi
+
+MISCAPP_DUPLICATES=$(db_q "SELECT COUNT(*) FROM (SELECT ext,description,dest FROM miscapps GROUP BY ext,description,dest HAVING COUNT(*)>1) AS duplicates;")
+if [[ "${MISCAPP_DUPLICATES:-}" =~ ^[0-9]+$ ]] && [ "$MISCAPP_DUPLICATES" -eq 0 ]; then
+    ok "Misc Applications: no exact duplicate rows"
+else
+    fail "Misc Applications: ${MISCAPP_DUPLICATES:-query failed} exact duplicate groups"
+fi
+
 # ODBC
 odbcinst -q -d 2>/dev/null | grep -qiE -- "MariaDB|MySQL" \
     && ok "ODBC MariaDB driver registered" || warn "ODBC driver not in odbcinst"
