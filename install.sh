@@ -89,12 +89,17 @@ PHP_VERSION=""            # set by version_select()
 PHP_AVANTFAX_VERSION=""   # set by version_select()
 NODEJS_MAJOR=""           # set by version_select()
 
-INSTALL_AVANTFAX="${INSTALL_AVANTFAX:-yes}"
+# Component switches are PBX_INSTALL_*; the older INSTALL_* names are still honored as aliases
+PBX_INSTALL_AVANTFAX="${PBX_INSTALL_AVANTFAX:-${INSTALL_AVANTFAX:-yes}}"
 NUMBER_OF_MODEMS="${NUMBER_OF_MODEMS:-4}"
 BACKUP_ENABLED="${BACKUP_ENABLED:-yes}"
 SSL_ENABLED="${SSL_ENABLED:-yes}"
 USE_POSTFIX="${USE_POSTFIX:-yes}"
-INSTALL_MUSIC_ON_HOLD="${INSTALL_MUSIC_ON_HOLD:-yes}"
+PBX_INSTALL_MUSIC_ON_HOLD="${PBX_INSTALL_MUSIC_ON_HOLD:-${INSTALL_MUSIC_ON_HOLD:-yes}}"
+PBX_INSTALL_ASTERNIC="${PBX_INSTALL_ASTERNIC:-${INSTALL_ASTERNIC:-yes}}"
+# Fail2ban bans brute-force sources from log analysis; it does not manage the
+# host firewall. Ban policy is a PBX concern, packet filtering is not.
+FAIL2BAN_ENABLED="${FAIL2BAN_ENABLED:-yes}"
 
 WEB_ROOT="${WEB_ROOT:-/var/www/apache/pbx}"
 FREEPBX_WEB_DIR="${WEB_ROOT}/admin"
@@ -199,13 +204,13 @@ FROM_NAME="${FROM_NAME:-}"            # Default: PBX System — set via env var
 
 # Feature flags
 BEHIND_PROXY="${BEHIND_PROXY:-yes}"
-INSTALL_WEBMIN="${INSTALL_WEBMIN:-yes}"
-INSTALL_OPENVPN="${INSTALL_OPENVPN:-yes}"
-INSTALL_WIREGUARD="${INSTALL_WIREGUARD:-yes}"
-INSTALL_FOP2="${INSTALL_FOP2:-yes}"
-INSTALL_SNGREP="${INSTALL_SNGREP:-yes}"
-INSTALL_PHONE_PROV="${INSTALL_PHONE_PROV:-no}"
-INSTALL_REMOTE_BACKUP="${INSTALL_REMOTE_BACKUP:-no}"
+PBX_INSTALL_WEBMIN="${PBX_INSTALL_WEBMIN:-${INSTALL_WEBMIN:-yes}}"
+PBX_INSTALL_OPENVPN="${PBX_INSTALL_OPENVPN:-${INSTALL_OPENVPN:-yes}}"
+PBX_INSTALL_WIREGUARD="${PBX_INSTALL_WIREGUARD:-${INSTALL_WIREGUARD:-yes}}"
+PBX_INSTALL_FOP2="${PBX_INSTALL_FOP2:-${INSTALL_FOP2:-yes}}"
+PBX_INSTALL_SNGREP="${PBX_INSTALL_SNGREP:-${INSTALL_SNGREP:-yes}}"
+PBX_INSTALL_PHONE_PROV="${PBX_INSTALL_PHONE_PROV:-${INSTALL_PHONE_PROV:-no}}"
+PBX_INSTALL_REMOTE_BACKUP="${PBX_INSTALL_REMOTE_BACKUP:-${INSTALL_REMOTE_BACKUP:-no}}"
 LOW_RESOURCE=0   # auto-set in preflight if RAM < 2GB
 
 # SSH safety — populated in preflight
@@ -250,8 +255,12 @@ setup_output() {
 setup_output
 
 # Logs are always raw text — never ANSI codes or emojis
-mkdir -p "$(dirname "${LOG_FILE}")" 2>/dev/null || true
-touch "${LOG_FILE}" "${ERROR_LOG}" 2>/dev/null || true
+# Log files are created on demand (init_logs) so help, version and a rejected
+# install leave nothing behind on the system.
+init_logs() {
+    mkdir -p "$(dirname "${LOG_FILE}")" 2>/dev/null || true
+    touch "${LOG_FILE}" "${ERROR_LOG}" 2>/dev/null || true
+}
 log_raw() { printf "[%s] %-5s %s\n" "$(date '+%H:%M:%S')" "$1" "$2" >> "${LOG_FILE}"; }
 
 STEP_CURRENT=0
@@ -266,26 +275,27 @@ STEP_TOTAL=55
 compute_step_total() {
     local _n=38
     # Fax subsystem (7 steps; avantfax_php adds 1 when PHP versions differ)
-    if [ "${INSTALL_AVANTFAX:-yes}" = "yes" ]; then
+    if [ "${PBX_INSTALL_AVANTFAX:-yes}" = "yes" ]; then
         _n=$((_n + 7))
         [ "${PHP_VERSION}" != "${PHP_AVANTFAX_VERSION}" ] && _n=$((_n + 1))
     fi
     # Security
+    [ "${FAIL2BAN_ENABLED:-yes}" = "yes" ]                                    && _n=$((_n + 1))
     [ "${IS_CONTAINER:-0}" = "0" ] && [ "${DISABLE_IPV6:-no}" = "yes" ]       && _n=$((_n + 1))
     # Optional tools (default: no)
-    [ "${INSTALL_WEBMIN:-yes}" = "yes" ]        && _n=$((_n + 1))
-    [ "${INSTALL_SNGREP:-no}" = "yes" ]         && _n=$((_n + 1))
-    [ "${INSTALL_OPENVPN:-no}" = "yes" ]        && _n=$((_n + 1))
-    [ "${INSTALL_WIREGUARD:-no}" = "yes" ]      && _n=$((_n + 1))
-    [ "${INSTALL_FOP2:-no}" = "yes" ]           && _n=$((_n + 1))
-    [ "${INSTALL_PHONE_PROV:-no}" = "yes" ]     && _n=$((_n + 1))
-    [ "${INSTALL_REMOTE_BACKUP:-no}" = "yes" ]  && _n=$((_n + 1))
+    [ "${PBX_INSTALL_WEBMIN:-yes}" = "yes" ]        && _n=$((_n + 1))
+    [ "${PBX_INSTALL_SNGREP:-no}" = "yes" ]         && _n=$((_n + 1))
+    [ "${PBX_INSTALL_OPENVPN:-no}" = "yes" ]        && _n=$((_n + 1))
+    [ "${PBX_INSTALL_WIREGUARD:-no}" = "yes" ]      && _n=$((_n + 1))
+    [ "${PBX_INSTALL_FOP2:-no}" = "yes" ]           && _n=$((_n + 1))
+    [ "${PBX_INSTALL_PHONE_PROV:-no}" = "yes" ]     && _n=$((_n + 1))
+    [ "${PBX_INSTALL_REMOTE_BACKUP:-no}" = "yes" ]  && _n=$((_n + 1))
     # Backup (3 steps: system + autoupdate + encryption)
     [ "${BACKUP_ENABLED:-yes}" = "yes" ] && _n=$((_n + 3))
     # QoS tuning (bare-metal only)
     [ "${IS_CONTAINER:-0}" = "0" ] && _n=$((_n + 1))
     # Optional web app
-    [ "${INSTALL_ASTERNIC:-yes}" = "yes" ] && _n=$((_n + 1))
+    [ "${PBX_INSTALL_ASTERNIC:-yes}" = "yes" ] && _n=$((_n + 1))
     STEP_TOTAL=$_n
 }
 
@@ -692,6 +702,11 @@ setup_pkg_map() {
             # nodesource ships its own npm bundled in the `nodejs` package; the
             # distro `npm` package conflicts and pulls a broken dep tree on Debian 12.
             PACKAGES_DISTRO_NODE="nodejs"
+            if [ "${DETECTED_VERSION%%.*}" -ge 13 ] 2>/dev/null; then
+                # Debian 13's native nodejs package does not include npm, which
+                # FreePBX's pm2 module requires during module installation.
+                PACKAGES_DISTRO_NODE="nodejs npm"
+            fi
             PACKAGES_DISTRO_SYSTEM="chrony pkg-config iptables cron"
             PACKAGES_DISTRO_FAX="hylafax-server iaxmodem"
             PACKAGES_DISTRO_SNGREP="sngrep"
@@ -963,17 +978,40 @@ detect_public_ipv6() {
 
 # download_file URL DEST [timeout_seconds]
 # Tries curl first, falls back to wget; returns 0 on success
+# Downloads to DEST.part and renames only on success, so an interrupted download
+# (crash, power cut) never leaves a truncated file under the final name.
 download_file() {
-    local url="$1" dest="$2" timeout="${3:-300}"
+    local url="$1" dest="$2" timeout="${3:-300}" part rc=0
+    part="${dest}.part"
+    rm -f "${part}"
     if command_exists curl; then
         curl -fsSL --max-time "${timeout}" --retry 3 --retry-delay 5 \
-            -o "${dest}" "${url}" 2>/dev/null
+            -o "${part}" "${url}" 2>/dev/null || rc=$?
     elif command_exists wget; then
-        wget -q --timeout="${timeout}" -O "${dest}" "${url}" 2>/dev/null
+        wget -q --timeout="${timeout}" -O "${part}" "${url}" 2>/dev/null || rc=$?
     else
         error "Neither curl nor wget found — cannot download ${url}"
         return 1
     fi
+    if [ "${rc}" -ne 0 ]; then
+        rm -f "${part}"
+        return "${rc}"
+    fi
+    mv -f -- "${part}" "${dest}"
+}
+
+# archive_ok FILE — true when FILE exists and is an intact archive. A file left by an
+# interrupted run (or an older installer) may be truncated, so cached archives are tested.
+archive_ok() {
+    local f="$1"
+    [ -s "${f}" ] || return 1
+    case "${f}" in
+        *.tar.gz|*.tgz|*.gz)   gzip -t -- "${f}" 2>/dev/null ;;
+        *.tar.bz2|*.bz2)       bzip2 -t -- "${f}" 2>/dev/null ;;
+        *.tar.xz|*.xz)         xz -t -- "${f}" 2>/dev/null ;;
+        *.zip)                 unzip -tq -- "${f}" >/dev/null 2>&1 ;;
+        *)                     return 0 ;;
+    esac
 }
 
 # verify_download FILE EXPECTED_SHA256
@@ -1021,7 +1059,7 @@ is_installed() {
 }
 
 # Idempotency helpers — track what's installed in state file
-state_set() {
+__state_set() {
     local key="$1" val="$2"
     mkdir -p "$(dirname "${PBX_STATE_FILE}")"
     [ -f "${PBX_STATE_FILE}" ] && \
@@ -1030,7 +1068,7 @@ state_set() {
     echo "${key}=${val}" >> "${PBX_STATE_FILE}"
 }
 
-state_get() {
+__state_get() {
     [ -f "${PBX_STATE_FILE}" ] && \
         grep -- "^${1}=" "${PBX_STATE_FILE}" | cut -d= -f2- | tail -1 || echo ""
 }
@@ -1046,7 +1084,7 @@ load_mysql_root_password() {
     local pw=""
     [ -f "${MYSQL_ROOT_PASSWORD_FILE}" ] && pw=$(tr -d '\r\n' < "${MYSQL_ROOT_PASSWORD_FILE}" 2>/dev/null || true)
     if [ -z "${pw}" ]; then
-        pw="$(state_get MYSQL_ROOT_PASSWORD)"
+        pw="$(__state_get MYSQL_ROOT_PASSWORD)"
         if [ -n "${pw}" ]; then
             MYSQL_ROOT_PASSWORD="${pw}"
             save_mysql_root_password
@@ -1391,7 +1429,7 @@ remove_stale_freepbx_admin_user() {
     local previous_username="${2:-${LAST_APPLIED_FREEPBX_ADMIN_USERNAME:-}}"
     local previous_sql
     [ -n "${current_username}" ] || return 0
-    [ -n "${previous_username}" ] || previous_username=$(state_get LAST_APPLIED_FREEPBX_ADMIN_USERNAME)
+    [ -n "${previous_username}" ] || previous_username=$(__state_get LAST_APPLIED_FREEPBX_ADMIN_USERNAME)
     [ -n "${previous_username}" ] || return 0
     [ "${previous_username}" = "${current_username}" ] && return 0
     [ -n "${MYSQL_ROOT_PASSWORD:-}" ] || load_mysql_root_password
@@ -1414,7 +1452,7 @@ EOF
 record_freepbx_admin_username_sync() {
     LAST_APPLIED_FREEPBX_ADMIN_USERNAME="${FREEPBX_ADMIN_USERNAME:-}"
     [ -n "${LAST_APPLIED_FREEPBX_ADMIN_USERNAME}" ] || return 0
-    state_set LAST_APPLIED_FREEPBX_ADMIN_USERNAME "${LAST_APPLIED_FREEPBX_ADMIN_USERNAME}"
+    __state_set LAST_APPLIED_FREEPBX_ADMIN_USERNAME "${LAST_APPLIED_FREEPBX_ADMIN_USERNAME}"
 }
 
 # FreePBX permission passes sometimes drop the executable bit from fwconsole.
@@ -1443,6 +1481,8 @@ component_ok() {
             svc_active apache2 2>/dev/null || svc_active httpd 2>/dev/null ;;
         postfix)
             command -v postfix >/dev/null 2>&1 ;;
+        fail2ban)
+            command -v fail2ban-client >/dev/null 2>&1 ;;
         hylafax)
             command -v faxstat >/dev/null 2>&1 ;;
         avantfax)
@@ -1460,29 +1500,29 @@ fail_component() {
     local component="$1" reason="${2:-installation failed}"
     error "${component}: ${reason}"
     INSTALL_FAILURES="${INSTALL_FAILURES}  ${SYM_FAIL} ${component}: ${reason}\n"
-    state_set "installed_${component}" "failed"
-    state_set "installed_${component}_reason" "${reason}"
+    __state_set "installed_${component}" "failed"
+    __state_set "installed_${component}_reason" "${reason}"
 }
 
 # skip_if_done: returns 0 (skip) only if marked done AND health check passes
 skip_if_done() {
     local component="$1"
     [ "${PBX_FORCE:-0}" = "1" ] && return 1   # force reinstall
-    [ "$(state_get "installed_${component}")" = "yes" ] || return 1  # not marked done
+    [ "$(__state_get "installed_${component}")" = "yes" ] || return 1  # not marked done
     if component_ok "${component}"; then
         info "${SYM_OK} ${component} already installed and healthy — skipping"
         return 0  # healthy, skip
     fi
     info "${component} marked done but health check failed — reinstalling"
-    state_set "installed_${component}" "no"
+    __state_set "installed_${component}" "no"
     return 1  # reinstall
 }
 
 mark_done() {
     local component="$1"
     if component_ok "${component}"; then
-        state_set "installed_${component}" "yes"
-        state_set "installed_${component}_ts" "$(date '+%Y-%m-%d %H:%M:%S')"
+        __state_set "installed_${component}" "yes"
+        __state_set "installed_${component}_ts" "$(date '+%Y-%m-%d %H:%M:%S')"
         track_install "${component}"
     else
         fail_component "${component}" "health check failed after install"
@@ -1603,6 +1643,10 @@ ENVEOF
 
     # Re-append any preserved extra keys
     [ -n "${extra_keys}" ] && printf '%s\n' "${extra_keys}" >> "${PBX_ENV_FILE}"
+    # An explicit PROXY_HTTP_PORT from this run overrides the preserved one
+    if [[ "${PROXY_HTTP_PORT:-}" =~ ^[0-9]{1,5}$ ]]; then
+        persist_proxy_port "${PROXY_HTTP_PORT}"
+    fi
 
     chmod 600 "${PBX_ENV_FILE}"
     success "Saved PBX env to ${PBX_ENV_FILE}"
@@ -1653,19 +1697,60 @@ safe_restart_asterisk() {
         sleep 3
         return 0
     fi
-    # Kill safe_asterisk + asterisk directly started (not under systemd)
-    local spid apid
-    spid=$(pgrep -x safe_asterisk 2>/dev/null || true)
-    apid=$(pgrep -x asterisk 2>/dev/null || true)
-    [ -n "$spid" ] && kill "$spid" 2>/dev/null || true
-    [ -n "$apid" ] && kill "$apid" 2>/dev/null || true
-    sleep 2
-    # Remove stale socket/pid
-    rm -f /var/run/asterisk/asterisk.ctl /var/run/asterisk/asterisk.pid \
-          /run/asterisk/asterisk.ctl     /run/asterisk/asterisk.pid
+    stop_asterisk_processes || return 1
     # Start via systemd
     svc_start asterisk 2>/dev/null || true
     sleep 5
+}
+
+stop_asterisk_processes() {
+    local pid wait_count=0
+    local supervisor_pids
+    supervisor_pids=$(pgrep -x safe_asterisk 2>/dev/null || true)
+    if [ -n "${supervisor_pids}" ]; then
+        while IFS= read -r pid; do
+            kill -TERM "${pid}" 2>/dev/null || true
+        done <<< "${supervisor_pids}"
+    fi
+
+    if command_exists fwconsole; then
+        timeout 30 fwconsole stop >/dev/null 2>&1 || true
+    elif command_exists asterisk; then
+        timeout 30 asterisk -rx "core stop gracefully" >/dev/null 2>&1 || true
+    fi
+
+    while pgrep -x asterisk >/dev/null 2>&1 && [ "${wait_count}" -lt 30 ]; do
+        sleep 1
+        wait_count=$((wait_count + 1))
+    done
+
+    if pgrep -x asterisk >/dev/null 2>&1; then
+        warn "Asterisk did not stop gracefully; requesting termination"
+        while IFS= read -r pid; do
+            kill -TERM "${pid}" 2>/dev/null || true
+        done < <(pgrep -x asterisk 2>/dev/null || true)
+        wait_count=0
+        while pgrep -x asterisk >/dev/null 2>&1 && [ "${wait_count}" -lt 10 ]; do
+            sleep 1
+            wait_count=$((wait_count + 1))
+        done
+    fi
+
+    if pgrep -x asterisk >/dev/null 2>&1; then
+        warn "Asterisk ignored termination; forcing it to stop"
+        while IFS= read -r pid; do
+            kill -KILL "${pid}" 2>/dev/null || true
+        done < <(pgrep -x asterisk 2>/dev/null || true)
+        sleep 1
+    fi
+
+    if pgrep -x asterisk >/dev/null 2>&1; then
+        error "Asterisk is still running; refusing to remove its control files"
+        return 1
+    fi
+
+    rm -f /var/run/asterisk/asterisk.ctl /run/asterisk/asterisk.ctl \
+          /var/run/asterisk/asterisk.pid /run/asterisk/asterisk.pid
 }
 
 # =============================================================================
@@ -1746,9 +1831,9 @@ PY
 resolve_install_flags() {
     # LOW_RESOURCE always overrides optional heavy steps
     if [ "${LOW_RESOURCE:-0}" = "1" ]; then
-        INSTALL_SNGREP=no
-        INSTALL_PHONE_PROV=no
-        INSTALL_REMOTE_BACKUP=no
+        PBX_INSTALL_SNGREP=no
+        PBX_INSTALL_PHONE_PROV=no
+        PBX_INSTALL_REMOTE_BACKUP=no
         info "LOW_RESOURCE: sngrep, phone-provisioning, remote-backup disabled"
     fi
 }
@@ -2146,21 +2231,21 @@ prepare_system() {
     # already-finalized system silently generated brand-new random passwords that no
     # longer matched the actual FreePBX admin account / MySQL app-DB users already
     # configured on disk, while creds.conf kept showing the stale originals.
-    [ -z "${ADMIN_PASSWORD}" ]         && ADMIN_PASSWORD="$(state_get ADMIN_PASSWORD)"
-    [ -z "${FREEPBX_DB_PASSWORD}" ]    && FREEPBX_DB_PASSWORD="$(state_get FREEPBX_DB_PASSWORD)"
-    [ -z "${AVANTFAX_DB_PASSWORD}" ]   && AVANTFAX_DB_PASSWORD="$(state_get AVANTFAX_DB_PASSWORD)"
+    [ -z "${ADMIN_PASSWORD}" ]         && ADMIN_PASSWORD="$(__state_get ADMIN_PASSWORD)"
+    [ -z "${FREEPBX_DB_PASSWORD}" ]    && FREEPBX_DB_PASSWORD="$(__state_get FREEPBX_DB_PASSWORD)"
+    [ -z "${AVANTFAX_DB_PASSWORD}" ]   && AVANTFAX_DB_PASSWORD="$(__state_get AVANTFAX_DB_PASSWORD)"
 
     # Generate passwords if not already loaded from env or the state file
     # ADMIN_PASSWORD: unified admin UI password — alphanumeric only (no special chars, avoids shell/form issues)
     [ -z "${ADMIN_PASSWORD}" ]         && ADMIN_PASSWORD=$(tr -dc 'A-Za-z0-9' < /dev/urandom 2>/dev/null | head -c 16; echo)
     normalize_admin_vars
-    state_set ADMIN_PASSWORD "${ADMIN_PASSWORD}"
+    __state_set ADMIN_PASSWORD "${ADMIN_PASSWORD}"
     [ -z "${MYSQL_ROOT_PASSWORD}" ]    && MYSQL_ROOT_PASSWORD=$(generate_password 32)
     save_mysql_root_password
     [ -z "${FREEPBX_DB_PASSWORD}" ]    && FREEPBX_DB_PASSWORD=$(generate_password 24)
-    state_set FREEPBX_DB_PASSWORD "${FREEPBX_DB_PASSWORD}"
+    __state_set FREEPBX_DB_PASSWORD "${FREEPBX_DB_PASSWORD}"
     [ -z "${AVANTFAX_DB_PASSWORD}" ]   && AVANTFAX_DB_PASSWORD=$(generate_password 24)
-    state_set AVANTFAX_DB_PASSWORD "${AVANTFAX_DB_PASSWORD}"
+    __state_set AVANTFAX_DB_PASSWORD "${AVANTFAX_DB_PASSWORD}"
     [ -z "${EMAIL_TO_FAX_ALIAS}" ]     && generate_fax_alias
     [ -z "${FAX_TO_EMAIL_ADDRESS}" ]   && FAX_TO_EMAIL_ADDRESS="${ADMIN_EMAIL:-admin@localhost}"
     # FAX_FROM_EMAIL/NAME default to FROM_EMAIL/NAME if not explicitly set
@@ -2963,6 +3048,10 @@ configure_apache_phpfpm() {
 configure_freepbx_apache() {
     step "🔧 Creating web root directories for FreePBX..."
 
+    # Apache must be able to traverse the parent even when install.sh ran with
+    # a restrictive umask (the default web-root parent is /var/www/apache).
+    install -d -m 0755 "$(dirname "${WEB_ROOT}")"
+
     # Create the web root — FreePBX installer creates admin/ itself.
     # Do NOT pre-create admin/ here: if FreePBX was previously partially installed,
     # re-running with an existing admin/ dir causes it to create a nested admin/admin/.
@@ -3128,11 +3217,26 @@ configure_apache_ssl() {
 #   - No SSL — the proxy terminates TLS externally.
 # =============================================================================
 
+# Writes the proxy port (already validated as a number) to PBX_ENV_FILE, replacing any stored value
+persist_proxy_port() {
+    if [ ! -f "${PBX_ENV_FILE}" ]; then
+        mkdir -p "$(dirname "${PBX_ENV_FILE}")"
+        : > "${PBX_ENV_FILE}"
+        chmod 600 "${PBX_ENV_FILE}"
+    fi
+    if grep -q -- "^PROXY_HTTP_PORT=" "${PBX_ENV_FILE}" 2>/dev/null; then
+        sed -i "s|^PROXY_HTTP_PORT=.*|PROXY_HTTP_PORT=\"${1}\"|" "${PBX_ENV_FILE}"
+    else
+        echo "PROXY_HTTP_PORT=\"${1}\"" >> "${PBX_ENV_FILE}"
+    fi
+}
+
 # Returns a free port in the 6x5xx range (60500-65499).
 # Persists chosen port to PBX_ENV_FILE so re-runs reuse the same value.
 find_free_proxy_port() {
-    # Return cached value if already chosen this run
+    # A port given by the user (or already chosen this run) wins, and is remembered for re-runs
     if [ -n "${PROXY_HTTP_PORT:-}" ]; then
+        persist_proxy_port "${PROXY_HTTP_PORT}"
         echo "${PROXY_HTTP_PORT}"
         return
     fi
@@ -3140,7 +3244,7 @@ find_free_proxy_port() {
     # Load previously persisted port from env file
     if [ -f "${PBX_ENV_FILE}" ]; then
         local saved
-        saved=$(grep "^PROXY_HTTP_PORT=" "${PBX_ENV_FILE}" 2>/dev/null | cut -d= -f2 | tr -d '"')
+        saved=$(grep -- "^PROXY_HTTP_PORT=" "${PBX_ENV_FILE}" 2>/dev/null | cut -d= -f2 | tr -d '"')
         if [ -n "${saved:-}" ]; then
             # Verify it's still free (or already in use by us)
             if ! ss -tlnp 2>/dev/null | grep -q ":${saved} " || \
@@ -3165,11 +3269,7 @@ find_free_proxy_port() {
            ! ss -ulnp 2>/dev/null | grep -q ":${port} "; then
             PROXY_HTTP_PORT="${port}"
             # Persist so re-runs reuse the same port
-            if [ -f "${PBX_ENV_FILE}" ]; then
-                grep -q "^PROXY_HTTP_PORT=" "${PBX_ENV_FILE}" 2>/dev/null \
-                    && sed -i "s|^PROXY_HTTP_PORT=.*|PROXY_HTTP_PORT=\"${port}\"|" "${PBX_ENV_FILE}" \
-                    || echo "PROXY_HTTP_PORT=\"${port}\"" >> "${PBX_ENV_FILE}"
-            fi
+            persist_proxy_port "${port}"
             echo "${port}"
             return
         fi
@@ -3178,11 +3278,7 @@ find_free_proxy_port() {
 
     # Fallback: 65400 is unlikely to conflict
     PROXY_HTTP_PORT=65400
-    if [ -f "${PBX_ENV_FILE}" ]; then
-        grep -q "^PROXY_HTTP_PORT=" "${PBX_ENV_FILE}" 2>/dev/null \
-            && sed -i "s|^PROXY_HTTP_PORT=.*|PROXY_HTTP_PORT=\"65400\"|" "${PBX_ENV_FILE}" \
-            || echo "PROXY_HTTP_PORT=\"65400\"" >> "${PBX_ENV_FILE}"
-    fi
+    persist_proxy_port 65400
     echo "${PROXY_HTTP_PORT}"
 }
 
@@ -3250,7 +3346,7 @@ generate_apache_vhost_config() {
 
     # AvantFax alias block (reused in both vhosts)
     local avantfax_block=""
-    if [ "${INSTALL_AVANTFAX:-yes}" = "yes" ] && [ -n "${avantfax_handler:-}" ]; then
+    if [ "${PBX_INSTALL_AVANTFAX:-yes}" = "yes" ] && [ -n "${avantfax_handler:-}" ]; then
         avantfax_block="
     Alias /avantfax ${AVANTFAX_WEB_DIR}
     <Directory ${AVANTFAX_WEB_DIR}>
@@ -3794,6 +3890,60 @@ ASTSVCEOF
     success "Asterisk service created and enabled"
 }
 
+create_freepbx_service() {
+    [ "${INIT_SYSTEM}" != "systemd" ] && return 0
+
+    cat > /etc/systemd/system/freepbx.service << 'FPBXSVCEOF'
+[Unit]
+Description=FreePBX VoIP Server
+After=network.target mariadb.service mysqld.service mysql.service
+Wants=mariadb.service
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=/bin/bash -c 'for i in $(seq 1 30); do mysqladmin ping --silent 2>/dev/null && break || sleep 2; done'
+ExecStart=/bin/bash -c '/usr/sbin/fwconsole start --quiet; for i in $(seq 1 45); do asterisk -rx "core waitfullybooted" >/dev/null 2>&1 && exit 0; sleep 2; done; exit 1'
+ExecStop=/usr/sbin/fwconsole stop --quiet
+TimeoutStopSec=45
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+FPBXSVCEOF
+    mkdir -p /etc/systemd/system/asterisk.service.d
+    cat > /etc/systemd/system/asterisk.service.d/freepbx-owned.conf << 'OWNEREOF'
+[Service]
+Restart=no
+TimeoutStopSec=45
+OWNEREOF
+    svc_daemon_reload
+    svc_enable freepbx
+    # FreePBX owns Asterisk through fwconsole, so disable the standalone unit.
+    svc_disable asterisk 2>/dev/null || true
+    if svc_active freepbx 2>/dev/null; then
+        if timeout 5 asterisk -rx "core show version" >/dev/null 2>&1; then
+            return 0
+        fi
+        systemctl reset-failed freepbx >/dev/null 2>&1 || true
+        timeout 180 systemctl restart freepbx >/dev/null 2>&1 \
+            || { error "FreePBX service failed to recover Asterisk"; return 1; }
+        return 0
+    fi
+
+    if pgrep -x asterisk >/dev/null 2>&1; then
+        stop_asterisk_processes || return 1
+    else
+        svc_stop asterisk 2>/dev/null || true
+    fi
+    systemctl reset-failed freepbx >/dev/null 2>&1 || true
+    timeout 180 systemctl start freepbx >/dev/null 2>&1 \
+        || { error "FreePBX service failed to start Asterisk"; return 1; }
+}
+
 create_iaxmodem_services() {
     local modem_num="$1"
     [ "${INIT_SYSTEM}" != "systemd" ] && return 0
@@ -3944,7 +4094,7 @@ install_asterisk() {
         "https://downloads.asterisk.org/pub/telephony/asterisk/releases/asterisk-${ASTERISK_VERSION}-current.tar.gz"
     )
 
-    if [ ! -f "${asterisk_tar}" ]; then
+    if ! archive_ok "${asterisk_tar}"; then
         info "Downloading Asterisk ${ASTERISK_VERSION}..."
         local dl_ok=0
         for mirror_url in "${asterisk_mirrors[@]}"; do
@@ -4051,12 +4201,76 @@ install_asterisk() {
 # SECTION 18: FREEPBX INSTALLATION
 # =============================================================================
 
+ensure_freepbx_modules() {
+    local mod installed_modules module_count missing_required=""
+    local required_modules="core framework pm2 voicemail timeconditions callforward donotdisturb"
+
+    info "Reconciling FreePBX modules..."
+    command -v fwconsole >/dev/null 2>&1 || {
+        error "Cannot reconcile FreePBX modules: fwconsole is missing"
+        return 1
+    }
+
+    seed_freepbx_module_defaults || warn "Failed to seed FreePBX module defaults"
+    fwconsole ma enablerepo standard    > /dev/null 2>&1 || true
+    fwconsole ma enablerepo extended    > /dev/null 2>&1 || true
+    fwconsole ma enablerepo unsupported > /dev/null 2>&1 || true
+
+    installed_modules=$(fwconsole ma list 2>/dev/null || true)
+    module_count=$(printf '%s\n' "${installed_modules}" | grep -c -- "Enabled") || module_count=0
+    if [ "${module_count}" -lt 40 ]; then
+        fwconsole ma installall > /dev/null 2>&1 \
+            || fwconsole ma installall > /dev/null 2>&1 \
+            || warn "Module installall had errors"
+    fi
+
+    for mod in pm2 superfecta queueprio miscdests miscapps outcnam \
+               dynroute extensionsettings disa allowlist customappsreg \
+               ringgroups queues ivr timeconditions daynight \
+               callforward findmefollow donotdisturb parking paging \
+               callrecording recordings announcement conferences \
+               cidlookup directory ucp userman hotelwakeup; do
+        installed_modules=$(fwconsole ma list 2>/dev/null || true)
+        printf '%s\n' "${installed_modules}" | grep -qE "^\\| ${mod}[[:space:]]" \
+            && continue
+        fwconsole ma downloadinstall "${mod}" > /dev/null 2>&1 \
+            || fwconsole ma downloadinstall "${mod}" > /dev/null 2>&1 \
+            || warn "Module [${mod}] failed to install after retry"
+    done
+
+    installed_modules=$(fwconsole ma list 2>/dev/null || true)
+    printf '%s\n' "${installed_modules}" | grep -qE '^\\| synologyabb[[:space:]]' \
+        && fwconsole ma remove synologyabb > /dev/null 2>&1 || true
+    printf '%s\n' "${installed_modules}" | grep -qE '^\\| firewall[[:space:]]' \
+        && fwconsole ma remove firewall > /dev/null 2>&1 || true
+
+    installed_modules=$(fwconsole ma list 2>/dev/null || true)
+    for mod in ${required_modules}; do
+        if ! printf '%s\n' "${installed_modules}" | grep -qE "^\\| ${mod}[[:space:]]"; then
+            missing_required="${missing_required} ${mod}"
+        fi
+    done
+    module_count=$(printf '%s\n' "${installed_modules}" | grep -c -- "Enabled") || module_count=0
+    if [ -n "${missing_required}" ] || [ "${module_count}" -lt 40 ]; then
+        error "FreePBX module setup is incomplete (enabled=${module_count}; missing:${missing_required:- none})"
+        return 1
+    fi
+    return 0
+}
+
 install_freepbx() {
     step "📞 Installing FreePBX ${FREEPBX_VERSION}..."
-    skip_if_done freepbx && return 0
+    if skip_if_done freepbx; then
+        ensure_freepbx_modules || return 1
+        create_freepbx_service || return 1
+        return 0
+    fi
 
     if [ -f "${WEB_ROOT}/admin/index.php" ] && [ -f /etc/freepbx.conf ]; then
         info "FreePBX already installed, skipping"
+        ensure_freepbx_modules || return 1
+        create_freepbx_service || return 1
+        mark_done freepbx
         return 0
     fi
 
@@ -4093,13 +4307,17 @@ install_freepbx() {
     local fpbx_url="http://mirror.freepbx.org/modules/packages/freepbx/freepbx-${FREEPBX_VERSION}-latest.tgz"
     local fpbx_tar="freepbx-${FREEPBX_VERSION}-latest.tgz"
 
-    if [ ! -f "${fpbx_tar}" ]; then
+    if ! archive_ok "${fpbx_tar}"; then
         info "Downloading FreePBX..."
         download_file "${fpbx_url}" "${fpbx_tar}" 300 \
             || { error "Failed to download FreePBX from ${fpbx_url}"; return 1; }
     fi
 
-    tar -xzf "${fpbx_tar}"
+    tar -xzf "${fpbx_tar}" || {
+        error "FreePBX archive could not be extracted — removed it so the next run downloads a fresh copy"
+        rm -f "${fpbx_tar}"
+        return 1
+    }
     local fpbx_dir="${WORK_DIR}/freepbx"
     [ -d "${fpbx_dir}" ] || error "FreePBX source not found after extraction"
     cd "${fpbx_dir}"
@@ -4135,14 +4353,8 @@ XMPPEOF
     prepare_freepbx_cron_environment
     # Ensure cron daemon is running — FreePBX installer validates crontab entries
     svc_start crond 2>/dev/null || svc_start cron 2>/dev/null || true
-    # Kill any stuck safe_asterisk/asterisk before trying to start
-    local _spid _apid
-    _spid=$(pgrep -x safe_asterisk 2>/dev/null || true)
-    _apid=$(pgrep -x asterisk 2>/dev/null || true)
-    [ -n "$_spid" ] && kill -9 "$_spid" 2>/dev/null || true
-    [ -n "$_apid" ] && kill -9 "$_apid" 2>/dev/null || true
-    sleep 2
-    rm -f /var/run/asterisk/asterisk.ctl /var/run/asterisk/asterisk.pid 2>/dev/null || true
+    # Stop any stale supervisor and Asterisk process before starting FreePBX.
+    stop_asterisk_processes
     if [ -f ./start_asterisk ]; then
         ./start_asterisk start 2>/dev/null || true
     else
@@ -4193,40 +4405,9 @@ ON DUPLICATE KEY UPDATE value='0';
 NOSIGEARLYEOF
 
     info "Installing FreePBX modules..."
-    seed_freepbx_module_defaults || warn "Failed to seed FreePBX module defaults"
-    # Enable repos BEFORE installall — installall downloads from repos
-    fwconsole ma enablerepo standard    > /dev/null 2>&1 || true
-    fwconsole ma enablerepo extended    > /dev/null 2>&1 || true
-    fwconsole ma enablerepo unsupported > /dev/null 2>&1 || true
-    # Module downloads are flaky under a busy install (contending with the
-    # DB/repo work happening around them) — the same class of transient
-    # failure already retried for the Asterisk build. installall and each
-    # individual module get one retry before being logged as a real failure.
-    fwconsole ma installall > /dev/null 2>&1 \
-        || fwconsole ma installall > /dev/null 2>&1 \
-        || warn "Module installall had errors"
-
-    # Several legacy/virtual modules are no longer published as separate downloads.
-    # Keep the explicit loop limited to modules that remain online.
-    for mod in superfecta queueprio miscdests miscapps outcnam \
-               dynroute extensionsettings disa allowlist customappsreg \
-               ringgroups queues ivr timeconditions daynight \
-               callforward findmefollow donotdisturb parking paging \
-               callrecording recordings announcement conferences \
-               cidlookup directory ucp userman hotelwakeup; do
-        fwconsole ma downloadinstall "${mod}" > /dev/null 2>&1 \
-            || fwconsole ma downloadinstall "${mod}" > /dev/null 2>&1 \
-            || warn "Module [${mod}] failed to install after retry"
-    done
-
-    local installed_modules
-    installed_modules=$(fwconsole ma list 2>/dev/null || true)
-    printf '%s\n' "${installed_modules}" | grep -qE '^synologyabb[[:space:]]' \
-        && fwconsole ma remove synologyabb > /dev/null 2>&1 || true
-    # The FreePBX "firewall" module writes its own iptables ruleset. PBX must not
-    # manage the host firewall, so the module is stripped, never configured.
-    printf '%s\n' "${installed_modules}" | grep -qE '^firewall[[:space:]]' \
-        && fwconsole ma remove firewall > /dev/null 2>&1 || true
+    # The FreePBX "firewall" module writes iptables rules, so it is removed by
+    # ensure_freepbx_modules() to keep packet-filter policy outside the installer.
+    ensure_freepbx_modules || return 1
 
     local ari_user ari_pass
     ari_user="ari_$(generate_password 4 2>/dev/null | tr '[:upper:]' '[:lower:]' || echo "pbxuser")"
@@ -4251,39 +4432,42 @@ ON DUPLICATE KEY UPDATE password_sha1='${pass_hash}', sections='*', email='${ADM
 ADMINEOF
     info "FreePBX admin user '${FREEPBX_ADMIN_USERNAME}' created"
 
-    if [ "${INIT_SYSTEM}" = "systemd" ]; then
-        cat > /etc/systemd/system/freepbx.service << 'FPBXSVCEOF'
-[Unit]
-Description=FreePBX VoIP Server
-After=network.target mariadb.service mysqld.service mysql.service
-Wants=mariadb.service
-StartLimitIntervalSec=60
-StartLimitBurst=3
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-# Wait for MariaDB to be fully ready before starting
-ExecStartPre=/bin/bash -c 'for i in $(seq 1 30); do mysqladmin ping --silent 2>/dev/null && break || sleep 2; done'
-ExecStart=/usr/sbin/fwconsole start --quiet
-ExecStop=/usr/sbin/fwconsole stop --quiet
-Restart=on-failure
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-FPBXSVCEOF
-        svc_daemon_reload
-        svc_enable freepbx
-        # Disable AND stop bare asterisk.service — freepbx.service owns Asterisk via fwconsole
-        svc_disable asterisk 2>/dev/null || true
-        svc_stop   asterisk 2>/dev/null || true
-        sleep 2
-    fi
+    create_freepbx_service || return 1
 
     mark_done freepbx
     cd /
     success "FreePBX ${FREEPBX_VERSION} installed"
+}
+
+# Make freepbx.service and Asterisk agree: unit active AND Asterisk answering.
+# A oneshot with RemainAfterExit stays "active" after Asterisk is killed, and
+# lands in "failed" if fwconsole start races another Asterisk start; both
+# states make /health report degraded, so recover with reset-failed + restart.
+ensure_freepbx_service_active() {
+    [ "${INIT_SYSTEM:-}" = "systemd" ] || return 0
+    [ -f /etc/systemd/system/freepbx.service ] || return 0
+    local attempt
+    for attempt in 1 2 3; do
+        if systemctl is-active --quiet freepbx 2>/dev/null \
+            && asterisk -rx "core waitfullybooted" >/dev/null 2>&1; then
+            return 0
+        fi
+        systemctl reset-failed freepbx >/dev/null 2>&1 || true
+        # Start from a clean slate: a half-stopped Asterisk makes the next start race its shutdown
+        timeout 60 fwconsole stop >/dev/null 2>&1 || true
+        for _w in $(seq 1 15); do
+            pgrep -x asterisk >/dev/null 2>&1 || break
+            sleep 2
+        done
+        timeout 180 systemctl restart freepbx >/dev/null 2>&1 || true
+        sleep 5
+    done
+    if systemctl is-active --quiet freepbx 2>/dev/null \
+        && asterisk -rx "core waitfullybooted" >/dev/null 2>&1; then
+        return 0
+    fi
+    warn "freepbx.service is not healthy after 3 restart attempts — see: journalctl -u freepbx"
+    return 1
 }
 
 # =============================================================================
@@ -4522,12 +4706,15 @@ SIGEOF
         || warn "Failed SQL fallback sync for FreePBX GUI admin"
     # Also ensure ampusers row has correct hash and full admin sections.
     # sections='*' grants full PBX admin access to the GUI.
-    local pass_hash_new
+    local pass_hash_new admin_user_sql admin_email_sql
     pass_hash_new=$(echo -n "${FREEPBX_ADMIN_PASSWORD}" | sha1sum | cut -d' ' -f1)
-    mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk 2>/dev/null << ADMINEOF2 || true
+    admin_user_sql=$(sql_escape "${FREEPBX_ADMIN_USERNAME}")
+    admin_email_sql=$(sql_escape "${ADMIN_EMAIL}")
+    mysql -u root -p"${MYSQL_ROOT_PASSWORD}" asterisk 2>/dev/null << ADMINEOF2 \
+        || warn "Could not update the FreePBX admin password in the database"
 INSERT INTO ampusers (username, email, password_sha1, extension_low, extension_high, deptname, sections)
-    VALUES ('${FREEPBX_ADMIN_USERNAME}', '${ADMIN_EMAIL}', '${pass_hash}', '', '', '', '*')
-    ON DUPLICATE KEY UPDATE password_sha1='${pass_hash_new}', sections='*', email='${ADMIN_EMAIL}';
+    VALUES ('${admin_user_sql}', '${admin_email_sql}', '${pass_hash_new}', '', '', '', '*')
+    ON DUPLICATE KEY UPDATE password_sha1='${pass_hash_new}', sections='*', email='${admin_email_sql}';
 ADMINEOF2
     fwconsole notifications --delete api key-regenerated >/dev/null 2>&1 || true
     fwconsole notifications --delete framework BROWSER_STATS >/dev/null 2>&1 || true
@@ -4744,7 +4931,7 @@ _compile_hylafax_source() {
     fi
 
     cd "${WORK_DIR}"
-    if [ ! -f "${src_tar}" ]; then
+    if ! archive_ok "${src_tar}"; then
         download_file "${url}" "${src_tar}" 180 || return 1
     fi
 
@@ -4997,7 +5184,7 @@ _compile_iaxmodem_source() {
 
 install_avantfax() {
     step "📠 Installing AvantFax..."
-    [ "${INSTALL_AVANTFAX}" != "yes" ] && return 0
+    [ "${PBX_INSTALL_AVANTFAX}" != "yes" ] && return 0
 
     local avantfax_dir="" avantfax_web_src="${AVANTFAX_WEB_DIR}"
     install_avantfax_php
@@ -5007,7 +5194,7 @@ install_avantfax() {
         local avantfax_url="https://sourceforge.net/projects/avantfax/files/avantfax-3.4.1.tgz/download"
         local avantfax_tar="avantfax-3.4.1.tgz"
 
-        if [ ! -f "${avantfax_tar}" ]; then
+        if ! archive_ok "${avantfax_tar}"; then
             info "Downloading AvantFax 3.4.1 from SourceForge..."
             download_file "${avantfax_url}" "${avantfax_tar}" 120 \
                 || { warn "Could not download AvantFax, skipping"; return 0; }
@@ -6148,6 +6335,191 @@ SYSCTLEOF
 }
 
 # =============================================================================
+# SECTION 32: FAIL2BAN (BRUTE-FORCE PROTECTION)
+#
+# Fail2ban parses Asterisk/sshd/apache logs and hands ban decisions to
+# nftables/ipset/sshd itself. It does not manage the host firewall — PBX
+# never touches firewalld/ufw/iptables filter rules. Ban policy (what is
+# banned, for how long) is a PBX security concern; packet filtering is not.
+# =============================================================================
+
+install_fail2ban() {
+    step "Installing Fail2ban..."
+    [ "${FAIL2BAN_ENABLED:-yes}" != "yes" ] && return 0
+
+    pkg_install fail2ban
+
+    mkdir -p /etc/fail2ban/jail.d
+
+    # Deduplicate 'backend' in [DEFAULT] of jail.conf — re-runs or package upgrades
+    # can leave duplicate entries that prevent fail2ban from starting.
+    if [ -f /etc/fail2ban/jail.conf ] && \
+       [ "$(grep -c '^backend' /etc/fail2ban/jail.conf 2>/dev/null)" -gt 1 ]; then
+        awk '/^backend/{count++; if(count>1) next} {print}' \
+            /etc/fail2ban/jail.conf > /tmp/jail.conf.dedup && \
+            mv /tmp/jail.conf.dedup /etc/fail2ban/jail.conf || true
+        info "Deduplicated backend entries in jail.conf"
+    fi
+
+    # Ensure Asterisk log directory/file exist so fail2ban can start
+    mkdir -p /var/log/asterisk
+    touch /var/log/asterisk/security
+    chown asterisk:asterisk /var/log/asterisk/security 2>/dev/null || true
+
+    # Enable Asterisk security log. FreePBX manages logger.conf but leaves
+    # logger_logfiles_custom.conf empty — add the security level there so
+    # Asterisk actually writes security events for fail2ban to parse.
+    # Create the file if it doesn't exist yet (fail2ban may run before the
+    # first fwconsole reload that generates it).
+    local _logger_custom="/etc/asterisk/logger_logfiles_custom.conf"
+    mkdir -p /etc/asterisk
+    if ! grep -q "^security" "${_logger_custom}" 2>/dev/null; then
+        printf '\nsecurity => security\n' >> "${_logger_custom}"
+        chown asterisk:asterisk "${_logger_custom}" 2>/dev/null || true
+        asterisk -rx "logger reload" >/dev/null 2>&1 || true
+    fi
+
+    # Detect whether sshd is actually running (try all common service names)
+    local sshd_running=0
+    for svc_name in ssh sshd openssh-server; do
+        if systemctl is-active "${svc_name}" >/dev/null 2>&1; then
+            sshd_running=1; break
+        fi
+    done
+
+    # Determine the best backend and logfile for the sshd jail.
+    # On modern systemd-only systems (no syslog files), use journald backend.
+    local sshd_enabled="true"
+    local sshd_backend="auto"
+    local sshd_logpath_line=""
+
+    if [ "${sshd_running}" -eq 0 ]; then
+        sshd_enabled="false"
+        warn "sshd jail disabled: sshd is not running (container mode?)"
+    else
+        # Check for traditional log files first
+        local sshd_log=""
+        for f in /var/log/auth.log /var/log/secure /var/log/messages; do
+            [ -f "$f" ] && sshd_log="$f" && break
+        done
+
+        if [ -n "${sshd_log}" ]; then
+            # Traditional syslog: specify path and let fail2ban auto-detect backend
+            sshd_logpath_line="logpath  = ${sshd_log}"
+            sshd_backend="auto"
+        else
+            # Journald-only (systemd without rsyslog) — use systemd backend
+            # fail2ban reads directly from journald; no logpath needed
+            sshd_backend="systemd"
+            info "sshd jail: using systemd/journald backend (no syslog files found)"
+        fi
+    fi
+
+    # Global defaults — safe settings that won't lock anyone out
+    # Use email action only when ADMIN_EMAIL is configured — falls back to ban-only otherwise.
+    local _f2b_action='%(action_)s'
+    local _f2b_email_block=""
+    if [ -n "${ADMIN_EMAIL:-}" ]; then
+        _f2b_action='%(action_mwl)s'
+        _f2b_email_block="destemail = ${ADMIN_EMAIL}
+sender   = ${FROM_EMAIL:-fail2ban@localhost}"
+    fi
+
+    # jail.local is not shipped by the fail2ban package itself — its presence
+    # means a pre-existing global policy (e.g. a casjay-base bootstrap) already
+    # set [DEFAULT] action/banaction. jail.local loads AFTER jail.d/*.conf, so
+    # it would silently override whatever action we set here anyway — omit our
+    # own action line in that case and let the existing policy win, instead of
+    # writing a value that gets silently discarded.
+    local _f2b_action_line="action   = ${_f2b_action}"
+    if [ -f /etc/fail2ban/jail.local ]; then
+        _f2b_action_line=""
+        info "Existing /etc/fail2ban/jail.local found — deferring to its [DEFAULT] action/banaction policy"
+    fi
+
+    backup_config /etc/fail2ban/jail.d/pbx-defaults.conf
+    cat > /etc/fail2ban/jail.d/pbx-defaults.conf << F2BGEOF
+[DEFAULT]
+bantime  = 3600
+findtime = 600
+maxretry = 10
+ignoreip = 127.0.0.1/8 ::1 ${SSH_CLIENT_IP:-}
+${_f2b_email_block}
+${_f2b_action_line}
+F2BGEOF
+
+    # Write sshd jail override AFTER defaults-debian.conf alphabetically
+    # ("pbx-sshd.conf" > "defaults-debian.conf")
+    backup_config /etc/fail2ban/jail.d/pbx-sshd.conf
+    {
+        echo "[sshd]"
+        echo "enabled  = ${sshd_enabled}"
+        echo "port     = ${SSH_PORT:-22}"
+        echo "maxretry = 10"
+        echo "bantime  = 3600"
+        echo "findtime = 600"
+        echo "backend  = ${sshd_backend}"
+        [ -n "${sshd_logpath_line}" ] && echo "${sshd_logpath_line}"
+    } > /etc/fail2ban/jail.d/pbx-sshd.conf
+
+    # Asterisk jails
+    backup_config /etc/fail2ban/jail.d/asterisk.conf
+    cat > /etc/fail2ban/jail.d/asterisk.conf << 'F2BEOF'
+[asterisk]
+enabled  = true
+port     = 5060,5061
+protocol = udp
+filter   = asterisk
+logpath  = /var/log/asterisk/security
+maxretry = 5
+bantime  = 3600
+findtime = 600
+
+[asterisk-tcp]
+enabled  = true
+port     = 5060,5061
+protocol = tcp
+filter   = asterisk
+logpath  = /var/log/asterisk/security
+maxretry = 5
+bantime  = 3600
+findtime = 600
+
+[apache-auth]
+enabled  = true
+maxretry = 10
+bantime  = 3600
+findtime = 600
+F2BEOF
+
+    svc_enable fail2ban
+    svc_restart fail2ban 2>/dev/null || warn "fail2ban restart command failed — check logs"
+
+    # The restart command above can exit 0 even though the service then
+    # crashes on config load (e.g. a malformed pre-existing jail.local from an
+    # external bootstrap) — verify it is actually active, don't just trust the
+    # restart exit code.
+    sleep 1
+    if ! systemctl is-active --quiet fail2ban 2>/dev/null; then
+        warn "fail2ban is not running after restart — check 'journalctl -u fail2ban' (often a pre-existing /etc/fail2ban/jail.local syntax error)"
+    fi
+
+    # Whitelist current SSH client IP
+    if [ -n "${SSH_CLIENT_IP:-}" ] && [ "$sshd_enabled" = "true" ]; then
+        sleep 2
+        fail2ban-client set sshd addignoreip "${SSH_CLIENT_IP}" 2>/dev/null || true
+        info "Whitelisted SSH client IP: ${SSH_CLIENT_IP}"
+    fi
+
+    mark_done fail2ban
+    if systemctl is-active --quiet fail2ban 2>/dev/null; then
+        success "Fail2ban installed (maxretry=10, bantime=1h)"
+    else
+        warn "Fail2ban installed but not running — jails are NOT enforced until this is fixed"
+    fi
+}
+
+# =============================================================================
 # SECTION 33: LOGROTATE
 # =============================================================================
 
@@ -6547,7 +6919,7 @@ FOP2CONFEOF
 
 install_phone_provisioning() {
     step "📱 Setting up phone auto-provisioning (HTTP)..."
-    [ "${INSTALL_PHONE_PROV:-no}" = "no" ] && return 0
+    [ "${PBX_INSTALL_PHONE_PROV:-no}" = "no" ] && return 0
     skip_if_done phone-provisioning && return 0
 
     # HTTP provisioning root
@@ -6702,7 +7074,7 @@ POLEOF
 
 install_rclone() {
     step "☁️  Installing rclone for remote backups..."
-    [ "${INSTALL_REMOTE_BACKUP:-no}" = "no" ] && return 0
+    [ "${PBX_INSTALL_REMOTE_BACKUP:-no}" = "no" ] && return 0
     skip_if_done remote-backup && return 0
 
     local rclone_url="https://downloads.rclone.org/rclone-current-linux-amd64.zip"
@@ -7032,8 +7404,22 @@ STUNEOF
 # SECTION 42f: VOICEMAIL-TO-EMAIL
 # =============================================================================
 
+# A crash or power cut while FreePBX rewrites voicemail.conf can leave it empty. FreePBX cannot
+# repair that itself (every "fwconsole reload" then throws "Null value was sent to saveVoicemail()"),
+# so restore the default from the template FreePBX keeps next to it.
+repair_voicemail_conf() {
+    local vm_conf="/etc/asterisk/voicemail.conf"
+    [ -f "${vm_conf}" ] && [ ! -s "${vm_conf}" ] && [ -s "${vm_conf}.template" ] || return 0
+    warn "voicemail.conf is empty (interrupted write) — restoring it from the template"
+    cp -f -- "${vm_conf}.template" "${vm_conf}" \
+        && chown asterisk:asterisk "${vm_conf}" 2>/dev/null \
+        && chmod 660 "${vm_conf}" 2>/dev/null
+    return 0
+}
+
 configure_voicemail_email() {
     local vm_conf="/etc/asterisk/voicemail.conf"
+    repair_voicemail_conf
     [ -f "${vm_conf}" ] || return 0
     step "Configuring voicemail-to-email..."
     backup_config "${vm_conf}"
@@ -7096,6 +7482,11 @@ build_status_page() {
     local status_dir="${WEB_ROOT}/status"
     local health_dir="${WEB_ROOT}/health"
     mkdir -p "${status_dir}" "${health_dir}"
+
+    # The status JSON is written by root cron and read by the Asterisk-owned
+    # PHP-FPM pool. Keep the directory private while allowing that group to
+    # traverse it and read the status file.
+    install -d -o root -g asterisk -m 0710 /var/lib/pbx
 
     # Status data is written by a root cron job every minute into a JSON file.
     # PHP just reads and serves the file — no shell_exec needed, no permission issues.
@@ -7483,25 +7874,25 @@ ExecStartPost=/bin/bash -c "sleep 3 && asterisk -rx 'module load pbx_config.so' 
 SVCEOF
     systemctl daemon-reload 2>/dev/null || true
 
+    repair_voicemail_conf
+
     # Start/restart all core services via their canonical service units
     # freepbx.service (oneshot, RemainAfterExit=yes) manages Asterisk via fwconsole
     # Starting it via systemd ensures systemd tracks the state correctly.
     # Use timeout to prevent the oneshot from blocking the installer indefinitely.
     if [ -f /etc/systemd/system/freepbx.service ]; then
-        # Kill any directly-started Asterisk so the oneshot can take ownership
+        # Stop any directly-started Asterisk before the oneshot takes ownership
         local _apid
         _apid=$(pgrep -x asterisk 2>/dev/null || true)
         if [ -n "$_apid" ]; then
             info "Stopping existing Asterisk process..."
-            timeout 30 fwconsole stop >/dev/null 2>&1 || kill "$_apid" 2>/dev/null || true
-            sleep 3
-            rm -f /var/run/asterisk/asterisk.ctl /run/asterisk/asterisk.ctl \
-                  /var/run/asterisk/asterisk.pid  /run/asterisk/asterisk.pid
+            stop_asterisk_processes
         fi
         info "Starting FreePBX via systemd (may take up to 2 minutes)..."
         timeout 180 systemctl start freepbx >/dev/null 2>&1 \
             || timeout 60 fwconsole start >/dev/null 2>&1 || true
         sleep 5
+        ensure_freepbx_service_active || true
     else
         safe_restart_asterisk
     fi
@@ -7563,6 +7954,9 @@ SVCEOF
 verify_installation() {
     step "✅ Verifying installation..."
     local errors=0
+
+    ensure_freepbx_service_active || true
+    /usr/local/bin/pbx-status-update >/dev/null 2>&1 || true
 
     # Check Asterisk — should be running by end of install
     if ! command -v asterisk >/dev/null 2>&1; then
@@ -7628,19 +8022,34 @@ verify_installation() {
         success "PHP ${phpver} working"
     fi
 
-    # Check Postfix (warn only — not fatal)
-    if command -v postfix >/dev/null 2>&1; then
-        if svc_active postfix 2>/dev/null; then
-            success "Postfix running"
+    # Check Postfix (warn only — not fatal; skipped when the admin chose USE_POSTFIX=no)
+    if [ "${USE_POSTFIX:-yes}" = "yes" ]; then
+        if command -v postfix >/dev/null 2>&1; then
+            if svc_active postfix 2>/dev/null; then
+                success "Postfix running"
+            else
+                warn "Postfix installed but not running"
+            fi
         else
-            warn "Postfix installed but not running"
+            warn "Postfix not found — voicemail email delivery will not work"
         fi
-    else
-        warn "Postfix not found — voicemail email delivery will not work"
+    fi
+
+    # Check Fail2ban (warn only — not fatal, but jails are unenforced if down)
+    if [ "${FAIL2BAN_ENABLED:-yes}" = "yes" ]; then
+        if command -v fail2ban-client >/dev/null 2>&1; then
+            if svc_active fail2ban 2>/dev/null; then
+                success "Fail2ban running"
+            else
+                warn "Fail2ban installed but not running — jails are NOT enforced (check journalctl -u fail2ban; a common cause is a syntax error in a pre-existing /etc/fail2ban/jail.local)"
+            fi
+        else
+            warn "fail2ban-client not found (was FAIL2BAN_ENABLED=yes)"
+        fi
     fi
 
     # Check HylaFAX + AvantFax (when fax enabled)
-    if [ "${INSTALL_AVANTFAX:-yes}" = "yes" ]; then
+    if [ "${PBX_INSTALL_AVANTFAX:-yes}" = "yes" ]; then
         if command -v faxstat >/dev/null 2>&1; then
             success "HylaFAX installed"
         else
@@ -7656,7 +8065,7 @@ verify_installation() {
     # Check Webmin (warn only)
     if [ -f /etc/webmin/miniserv.conf ]; then
         local wm_port
-        wm_port=$(grep "^port=" /etc/webmin/miniserv.conf 2>/dev/null | cut -d= -f2 | tr -d '[:space:]')
+        wm_port=$(grep -- "^port=" /etc/webmin/miniserv.conf 2>/dev/null | cut -d= -f2 | tr -d '[:space:]')
         wm_port="${wm_port:-9001}"
         if ss -tlnp 2>/dev/null | grep -q ":${wm_port}\b" || \
            netstat -tlnp 2>/dev/null | grep -q ":${wm_port} "; then
@@ -7667,21 +8076,21 @@ verify_installation() {
     fi
 
     # Check OpenVPN client tools (if enabled)
-    if [ "${INSTALL_OPENVPN:-yes}" = "yes" ]; then
+    if [ "${PBX_INSTALL_OPENVPN:-yes}" = "yes" ]; then
         if command -v openvpn >/dev/null 2>&1; then
             success "OpenVPN client tools installed"
         else
-            warn "OpenVPN client tools not found (was INSTALL_OPENVPN=yes)"
+            warn "OpenVPN client tools not found (was PBX_INSTALL_OPENVPN=yes)"
         fi
     fi
 
     # Check WireGuard (if enabled)
-    if [ "${INSTALL_WIREGUARD:-yes}" = "yes" ] && \
+    if [ "${PBX_INSTALL_WIREGUARD:-yes}" = "yes" ] && \
        { [ -n "${PACKAGES_DISTRO_WIREGUARD:-}" ] || command -v wg >/dev/null 2>&1 || command -v wg-quick >/dev/null 2>&1; }; then
         if command -v wg >/dev/null 2>&1 && command -v wg-quick >/dev/null 2>&1; then
             success "WireGuard client tools installed"
         else
-            warn "WireGuard tools not found (was INSTALL_WIREGUARD=yes)"
+            warn "WireGuard tools not found (was PBX_INSTALL_WIREGUARD=yes)"
         fi
     fi
 
@@ -7696,7 +8105,7 @@ verify_installation() {
     else
         if [ "${BEHIND_PROXY:-no}" = "yes" ]; then
             local proxy_listen
-            proxy_listen=$(grep "VirtualHost" "${vhost_path}" | grep -o '127\.0\.0\.1:[0-9]*' | head -1)
+            proxy_listen=$(grep -- "VirtualHost" "${vhost_path}" | grep -o '127\.0\.0\.1:[0-9]*' | head -1)
             if [ -n "${proxy_listen}" ]; then
                 success "Apache proxy vhost: ${proxy_listen}"
             else
@@ -7732,7 +8141,7 @@ show_completion_message() {
     if [ "${BEHIND_PROXY:-no}" = "yes" ]; then
         # Reload proxy port from env file
         local _pp
-        _pp=$(grep "^PROXY_HTTP_PORT=" "${PBX_ENV_FILE}" 2>/dev/null | cut -d= -f2 | tr -d '"')
+        _pp=$(grep -- "^PROXY_HTTP_PORT=" "${PBX_ENV_FILE}" 2>/dev/null | cut -d= -f2 | tr -d '"') || _pp=""
         admin_url="http://${SYSTEM_FQDN:-YOUR-PROXY-DOMAIN}/admin  (proxy → http://127.0.0.1:${_pp:-?}/admin)"
         avantfax_url="http://${SYSTEM_FQDN:-YOUR-PROXY-DOMAIN}/avantfax  (proxy → http://127.0.0.1:${_pp:-?}/avantfax)"
     else
@@ -7755,7 +8164,7 @@ show_completion_message() {
     echo ""
     if [ "${BEHIND_PROXY:-no}" = "yes" ]; then
         local _pp2
-        _pp2=$(grep "^PROXY_HTTP_PORT=" "${PBX_ENV_FILE}" 2>/dev/null | cut -d= -f2 | tr -d '"')
+        _pp2=$(grep -- "^PROXY_HTTP_PORT=" "${PBX_ENV_FILE}" 2>/dev/null | cut -d= -f2 | tr -d '"') || _pp2=""
         echo "${YELLOW}  ⚠️  Reverse Proxy Mode: Apache is bound to localhost only.${NC}"
         echo "${YELLOW}     Point your reverse proxy to port ${_pp2:-?} on this host.${NC}"
         echo ""
@@ -7775,11 +8184,11 @@ show_completion_message() {
     echo "${CYAN}  Installed Components:${NC}"
     echo "    Asterisk ${ASTERISK_VERSION} | FreePBX ${FREEPBX_VERSION} | PHP ${PHP_VERSION} | MariaDB"
     echo "    AvantFax 3.4.1 | HylaFAX+ | IAXmodem (${NUMBER_OF_MODEMS} modems)"
-    [ "${INSTALL_WEBMIN:-yes}" = "yes" ] && optional_components="${optional_components} | Webmin"
-    [ "${INSTALL_SNGREP:-yes}" = "yes" ] && command_exists sngrep && optional_components="${optional_components} | sngrep"
-    [ "${INSTALL_OPENVPN:-yes}" = "yes" ] && optional_components="${optional_components} | OpenVPN client"
-    [ "${INSTALL_WIREGUARD:-yes}" = "yes" ] && optional_components="${optional_components} | WireGuard client"
-    [ "${INSTALL_FOP2:-yes}" = "yes" ] && optional_components="${optional_components} | FOP2"
+    [ "${PBX_INSTALL_WEBMIN:-yes}" = "yes" ] && optional_components="${optional_components} | Webmin"
+    [ "${PBX_INSTALL_SNGREP:-yes}" = "yes" ] && command_exists sngrep && optional_components="${optional_components} | sngrep"
+    [ "${PBX_INSTALL_OPENVPN:-yes}" = "yes" ] && optional_components="${optional_components} | OpenVPN client"
+    [ "${PBX_INSTALL_WIREGUARD:-yes}" = "yes" ] && optional_components="${optional_components} | WireGuard client"
+    [ "${PBX_INSTALL_FOP2:-yes}" = "yes" ] && optional_components="${optional_components} | FOP2"
     echo "    ${optional_components}"
     echo ""
     echo "${CYAN}  Management Commands:${NC}"
@@ -7826,7 +8235,129 @@ show_completion_message() {
 # SECTION 46: MAIN INSTALLATION ORCHESTRATOR
 # =============================================================================
 
+# =============================================================================
+# SECTION: INPUT VALIDATION
+#
+# Every user-supplied setting is checked before the system is touched. Values end
+# up in SQL, sed expressions, config files, and shell, so each one is limited to
+# the characters it legitimately needs. Secrets are never echoed back.
+# =============================================================================
+
+VALIDATION_ERRORS=0
+
+__invalid() {
+    printf 'ERROR: invalid %s: %s\n' "$1" "$2" >&2
+    VALIDATION_ERRORS=$((VALIDATION_ERRORS + 1))
+}
+
+# __check_regex NAME REGEX HINT — empty values are fine (defaults apply)
+__check_regex() {
+    local name="$1" regex="$2" hint="$3" value
+    value="${!name:-}"
+    [ -z "${value}" ] && return 0
+    [[ "${value}" =~ ${regex} ]] || __invalid "${name}" "${hint}"
+    return 0
+}
+
+# __check_bool NAME — accepts yes/no/true/false/on/off/1/0/y/n in any case, normalises to yes|no
+__check_bool() {
+    local name="$1" value
+    value="${!name:-}"
+    [ -z "${value}" ] && return 0
+    case "${value,,}" in
+        yes|y|true|on|1)  printf -v "${name}" '%s' "yes" ;;
+        no|n|false|off|0) printf -v "${name}" '%s' "no" ;;
+        *) __invalid "${name}" "must be yes or no" ;;
+    esac
+    return 0
+}
+
+# __check_int_range NAME MIN MAX
+__check_int_range() {
+    local name="$1" min="$2" max="$3" value
+    value="${!name:-}"
+    [ -z "${value}" ] && return 0
+    if ! [[ "${value}" =~ ^[0-9]{1,5}$ ]] || [ "$((10#${value}))" -lt "${min}" ] || [ "$((10#${value}))" -gt "${max}" ]; then
+        __invalid "${name}" "must be a whole number from ${min} to ${max}"
+    fi
+    return 0
+}
+
+validate_inputs() {
+    local re_email='^[A-Za-z0-9._%+-]+@[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?\.[A-Za-z]{2,}$'
+    local re_user='^[A-Za-z][A-Za-z0-9._-]{0,31}$'
+    local re_pass='^[A-Za-z0-9@%+=:,._/~^-]{8,128}$'
+    local re_label='^[A-Za-z0-9 ._@+()-]{1,64}$'
+    local hint_pass='8-128 characters from A-Z a-z 0-9 and @ % + = : , . _ / ~ ^ -'
+    local hint_email='must look like name@example.com'
+    local hint_user='1-32 characters: a letter first, then letters, digits, dot, underscore or dash'
+    local v
+
+    VALIDATION_ERRORS=0
+
+    for v in ADMIN_EMAIL FROM_EMAIL FAX_TO_EMAIL_ADDRESS FAX_FROM_EMAIL; do
+        __check_regex "${v}" "${re_email}" "${hint_email}"
+    done
+    for v in ADMIN_USERNAME FREEPBX_ADMIN_USERNAME FREEPBX_ADMIN_USER AVANTFAX_ADMIN_USERNAME; do
+        __check_regex "${v}" "${re_user}" "${hint_user}"
+    done
+    for v in ADMIN_PASSWORD AVANTFAX_ADMIN_PASSWORD MYSQL_ROOT_PASSWORD; do
+        __check_regex "${v}" "${re_pass}" "must be ${hint_pass}"
+    done
+    for v in FROM_NAME FAX_FROM_NAME; do
+        __check_regex "${v}" "${re_label}" "1-64 characters: letters, digits, space and . _ @ + ( ) -"
+    done
+    __check_regex EMAIL_TO_FAX_ALIAS '^[A-Za-z0-9._+-]{1,64}$' "1-64 characters: letters, digits and . _ + -"
+    __check_regex FAX_AREA_CODE '^[0-9]{1,5}$' "must be 1-5 digits"
+    __check_regex FAX_COUNTRY_CODE '^[0-9]{1,5}$' "must be 1-5 digits"
+    __check_regex FAX_NUMBER '^[0-9+() .-]{1,20}$' "must be a phone number (digits, + ( ) space . -)"
+    __check_regex FAX_LOCAL_IDENTIFIER '^[A-Za-z0-9 ._+-]{1,40}$' "1-40 characters: letters, digits, space and . _ + -"
+    __check_regex GITHUB_REPO '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$' "must look like owner/repo"
+    __check_regex SCRIPTS_REF '^[A-Za-z0-9._/-]{1,100}$' "must be a branch or tag name"
+    __check_regex GITHUB_TOKEN '^[A-Za-z0-9_-]{8,255}$' "contains characters a token never has"
+
+    if [ -n "${TIMEZONE:-}" ]; then
+        if ! [[ "${TIMEZONE}" =~ ^[A-Za-z0-9_+/-]{1,64}$ ]] || [[ "${TIMEZONE}" == *..* ]] || [[ "${TIMEZONE}" == /* ]]; then
+            __invalid TIMEZONE "must be a zone name such as America/New_York (see: timedatectl list-timezones)"
+        elif [ -d /usr/share/zoneinfo ] && [ ! -f "/usr/share/zoneinfo/${TIMEZONE}" ]; then
+            __invalid TIMEZONE "unknown zone (see: timedatectl list-timezones)"
+        fi
+    fi
+
+    __check_int_range PROXY_HTTP_PORT 1 65535
+    __check_int_range WEBMIN_PORT 1 65535
+    # Ports the PBX itself listens on (SSH, SMTP, DNS, TFTP, rpcbind, MariaDB, AGI, HylaFAX,
+    # AMI, SIP, Asterisk HTTP/HTTPS) can never also be the Apache proxy or Webmin port
+    local reserved_ports=" 22 25 53 69 111 3306 4445 4559 5038 5060 5061 8088 8089 "
+    local port_var
+    for port_var in PROXY_HTTP_PORT WEBMIN_PORT; do
+        if [[ "${!port_var:-}" =~ ^[0-9]{1,5}$ ]] && [[ "${reserved_ports}" == *" $((10#${!port_var})) "* ]]; then
+            __invalid "${port_var}" "port is already used by a PBX service; pick another (for example 8190)"
+        fi
+    done
+    if [[ "${PROXY_HTTP_PORT:-}" =~ ^[0-9]{1,5}$ ]] && [[ "${WEBMIN_PORT:-}" =~ ^[0-9]{1,5}$ ]] \
+        && [ "$((10#${PROXY_HTTP_PORT}))" -eq "$((10#${WEBMIN_PORT}))" ]; then
+        __invalid WEBMIN_PORT "must differ from PROXY_HTTP_PORT"
+    fi
+    __check_int_range NUMBER_OF_MODEMS 1 16
+
+    for v in BEHIND_PROXY SSL_ENABLED USE_POSTFIX BACKUP_ENABLED BACKUP_ENCRYPT FAIL2BAN_ENABLED DISABLE_IPV6 \
+             PBX_INSTALL_AVANTFAX PBX_INSTALL_MUSIC_ON_HOLD PBX_INSTALL_ASTERNIC PBX_INSTALL_WEBMIN PBX_INSTALL_OPENVPN \
+             PBX_INSTALL_WIREGUARD PBX_INSTALL_FOP2 PBX_INSTALL_SNGREP PBX_INSTALL_PHONE_PROV PBX_INSTALL_REMOTE_BACKUP; do
+        __check_bool "${v}"
+    done
+
+    if [ "${VALIDATION_ERRORS}" -gt 0 ]; then
+        printf 'ERROR: %d invalid setting(s) — nothing was installed or changed. See: %s --help\n' \
+            "${VALIDATION_ERRORS}" "${0##*/}" >&2
+        return 64
+    fi
+    return 0
+}
+
 run_installation() {
+    validate_inputs || exit $?
+    init_logs
     log "PBX installer v${SCRIPT_VERSION} started"
     info "Starting PBX installation — log: ${LOG_FILE}"
 
@@ -7894,9 +8425,11 @@ run_installation() {
     install_agi_scripts_extended
     install_demo_applications
 
-    # Phase 6: Fax system (required)
-    if [ "${INSTALL_AVANTFAX:-yes}" = "yes" ]; then
+    # Phase 6: Mail transport (voicemail-to-email, alerts) and the fax system
+    if [ "${USE_POSTFIX:-yes}" = "yes" ]; then
         install_postfix
+    fi
+    if [ "${PBX_INSTALL_AVANTFAX:-yes}" = "yes" ]; then
         install_hylafax
         install_iaxmodem
         install_avantfax
@@ -7910,21 +8443,22 @@ run_installation() {
 
     # Phase 7: Security
     configure_logrotate
+    [ "${FAIL2BAN_ENABLED:-yes}" = "yes" ] && install_fail2ban || true
 
     # Phase 8: Optional tools
-    [ "${INSTALL_WEBMIN:-yes}" = "yes" ] && install_webmin || true
-    [ "${INSTALL_SNGREP:-no}"  = "yes" ] && install_sngrep  || true
-    [ "${INSTALL_OPENVPN:-no}" = "yes" ] && install_openvpn || true
-    [ "${INSTALL_WIREGUARD:-no}" = "yes" ] && install_wireguard || true
-    [ "${INSTALL_FOP2:-no}"    = "yes" ] && install_fop2    || true
+    [ "${PBX_INSTALL_WEBMIN:-yes}" = "yes" ] && install_webmin || true
+    [ "${PBX_INSTALL_SNGREP:-no}"  = "yes" ] && install_sngrep  || true
+    [ "${PBX_INSTALL_OPENVPN:-no}" = "yes" ] && install_openvpn || true
+    [ "${PBX_INSTALL_WIREGUARD:-no}" = "yes" ] && install_wireguard || true
+    [ "${PBX_INSTALL_FOP2:-no}"    = "yes" ] && install_fop2    || true
     install_tftp   # Always install TFTP for phone provisioning support
-    [ "${INSTALL_PHONE_PROV:-no}" = "yes" ] && install_phone_provisioning || true
+    [ "${PBX_INSTALL_PHONE_PROV:-no}" = "yes" ] && install_phone_provisioning || true
 
     # Phase 9: Backup
     [ "${BACKUP_ENABLED:-yes}" = "yes" ] && setup_backup_system     || true
     [ "${BACKUP_ENABLED:-yes}" = "yes" ] && setup_freepbx_autoupdate || true
     [ "${BACKUP_ENABLED:-yes}" = "yes" ] && setup_backup_encryption  || true
-    [ "${INSTALL_REMOTE_BACKUP:-no}" = "yes" ] && install_rclone || true
+    [ "${PBX_INSTALL_REMOTE_BACKUP:-no}" = "yes" ] && install_rclone || true
 
     # Phase 10: System tuning and extra services
     setup_ntp
@@ -7937,7 +8471,7 @@ run_installation() {
     build_main_portal
     build_status_page
     install_telephone_reminder
-    [ "${INSTALL_ASTERNIC:-yes}" = "yes" ] && install_asternic || true
+    [ "${PBX_INSTALL_ASTERNIC:-yes}" = "yes" ] && install_asternic || true
 
     # Phase 12: Health monitoring
     setup_health_monitoring || true
@@ -7976,7 +8510,7 @@ print(v) if v else sys.exit(1)
     done
     echo ""
     header "Service Health"
-    for svc in asterisk mariadb apache2 httpd postfix webmin; do
+    for svc in asterisk mariadb apache2 httpd postfix fail2ban webmin; do
         if command_exists systemctl 2>/dev/null; then
             systemctl is-active --quiet "${svc}" 2>/dev/null && \
                 printf "  %s %-16s running\n" "${SYM_OK}" "${svc}" || \
@@ -7991,7 +8525,7 @@ fix_installation() {
     setup_output
     header "PBX Repair Mode"
     info "Restarting failed services..."
-    for svc in mariadb asterisk apache2 httpd postfix; do
+    for svc in mariadb asterisk apache2 httpd postfix fail2ban; do
         if command_exists systemctl; then
             if systemctl is-enabled --quiet "${svc}" 2>/dev/null && \
                ! systemctl is-active --quiet "${svc}" 2>/dev/null; then
@@ -8002,6 +8536,7 @@ fix_installation() {
             fi
         fi
     done
+    repair_voicemail_conf
     if command_exists fwconsole; then
         info "Running fwconsole chown + reload..."
         fwconsole chown >/dev/null 2>&1 || true
@@ -8021,10 +8556,11 @@ PBX Installer v3.0 — Production Asterisk + FreePBX installer
 Supports: AlmaLinux/Rocky/RHEL/Oracle 8-9, Fedora 35+, Ubuntu 18+, Debian 10+, CentOS 6/7
 
 USAGE:
-  ./install.sh [install|status|fix|update-scripts|--help]
+  ./install.sh [install|validate|status|fix|update-scripts|--help]
 
 COMMANDS:
   install          Run full installation (default)
+  validate         Check environment settings only (also accepts --validate); installs nothing (exit 64 if invalid)
   status           Show installed components, versions, service health
   fix              Repair: restart failed services, fwconsole reload, fix permissions
   update-scripts   Re-sync all pbx-* scripts from GitHub (no install steps)
@@ -8039,13 +8575,15 @@ ENVIRONMENT VARIABLES:
   FROM_EMAIL             From address for all system mail (default: no-reply@<fqdn>)
   FROM_NAME              From display name for all system mail (default: PBX System)
   BEHIND_PROXY           yes/no — reverse proxy support (default: yes)
-  INSTALL_AVANTFAX       yes/no — install fax system (default: yes)
+  PBX_INSTALL_AVANTFAX   yes/no — install fax system (default: yes)
   BACKUP_ENABLED         yes/no — setup backup cron (default: yes)
-  INSTALL_WEBMIN         yes/no — install Webmin (default: yes)
-  INSTALL_OPENVPN        yes/no — install OpenVPN client tools only (default: yes)
-  INSTALL_WIREGUARD      yes/no — install WireGuard client tools only (default: yes)
-  INSTALL_FOP2           yes/no — FOP2 operator panel (default: yes)
-  INSTALL_SNGREP         yes/no — SIP traffic monitor (default: yes)
+  PBX_INSTALL_WEBMIN     yes/no — install Webmin (default: yes)
+  PBX_INSTALL_OPENVPN    yes/no — install OpenVPN client tools only (default: yes)
+  PBX_INSTALL_WIREGUARD  yes/no — install WireGuard client tools only (default: yes)
+  PBX_INSTALL_FOP2       yes/no — FOP2 operator panel (default: yes)
+  PBX_INSTALL_SNGREP     yes/no — SIP traffic monitor (default: yes)
+  INSTALL_*        Legacy aliases remain accepted for PBX_INSTALL_* component switches
+  FAIL2BAN_ENABLED       yes/no — install fail2ban brute-force ban jails for sshd/Apache/Asterisk (default: yes)
   MYSQL_ROOT_PASSWORD    Pre-set MySQL root password (auto-generated if empty, then stored in /etc/pbx/mysql_root_password)
   ADMIN_USERNAME         Unified admin username for FreePBX and shared web tools (default: administrator)
   ADMIN_PASSWORD         Unified admin UI password — FreePBX, Reminder, CallCenter (auto-generated if empty)
@@ -8071,7 +8609,7 @@ EXAMPLES:
   BEHIND_PROXY=yes ./install.sh
 
   # Disable optional components explicitly
-  INSTALL_WEBMIN=no BACKUP_ENABLED=no INSTALL_FOP2=no ./install.sh
+  PBX_INSTALL_WEBMIN=no BACKUP_ENABLED=no PBX_INSTALL_FOP2=no ./install.sh
 
   # Private fork of scripts
   GITHUB_REPO=myorg/pbx GITHUB_TOKEN=ghp_xxx ./install.sh
@@ -8089,13 +8627,20 @@ case "${1:-install}" in
     install)
         run_installation
         ;;
+    validate|--validate)
+        validate_inputs || exit $?
+        echo "All settings are valid."
+        ;;
     status|--status)
+        init_logs
         show_install_status
         ;;
     fix|--fix|repair)
+        init_logs
         fix_installation
         ;;
     update-scripts|--update-scripts)
+        init_logs
         detect_system
         setup_output
         sync_management_scripts

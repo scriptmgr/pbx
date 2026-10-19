@@ -53,6 +53,11 @@ SERVICES="${HEALTH_SERVICES:-asterisk mariadb}"
 
 FAILED=""
 for svc in ${SERVICES}; do
+    if [ "${svc}" = "asterisk" ] && \
+       systemctl is-active --quiet freepbx 2>/dev/null && \
+       timeout 5 asterisk -rx "core show version" >/dev/null 2>&1; then
+        continue
+    fi
     systemctl is-active --quiet "${svc}" 2>/dev/null || FAILED="${FAILED} ${svc}"
 done
 
@@ -65,9 +70,14 @@ echo "${MSG}" | mail -s "[PBX ALERT] Services Down" \
 logger -t pbx-health "${MSG}"
 
 for svc in ${FAILED}; do
-    systemctl restart "${svc}" 2>/dev/null && \
-        echo "Auto-restarted: ${svc}" | \
-        mail -s "[PBX] Auto-restarted ${svc} on ${FQDN}" \
+    restart_svc="${svc}"
+    if [ "${svc}" = "asterisk" ] && \
+       { systemctl is-active --quiet freepbx 2>/dev/null || systemctl is-enabled --quiet freepbx 2>/dev/null; }; then
+        restart_svc=freepbx
+    fi
+    systemctl restart "${restart_svc}" 2>/dev/null && \
+        echo "Auto-restarted: ${restart_svc}" | \
+        mail -s "[PBX] Auto-restarted ${restart_svc} on ${FQDN}" \
             -a "From: ${FROM_NAME} <${FROM_EMAIL}>" "${ADMIN_EMAIL}" 2>/dev/null || true
 done
 # ex: ts=2 sw=2 et filetype=sh

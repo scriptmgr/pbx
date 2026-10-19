@@ -39,7 +39,9 @@ A production-ready, fully automated installer for a complete enterprise PBX syst
 - **VPN Client Tools** — Optional OpenVPN/WireGuard client tooling with `pbx-vpn` guidance for connecting to an existing VPN server
 - **Rate Limiting** — Protection against SIP attacks
 - **Security Audit** — Built-in vulnerability scanner (`pbx-security`)
+- **Brute-force Protection** — Optional fail2ban jails for SSH/SIP/HTTP (does not touch your firewall rules)
 - **Health Endpoint** — `/health/` JSON endpoint for external monitoring
+- **Service Health Monitor** — recognizes FreePBX-managed Asterisk when `freepbx.service` is active and the Asterisk CLI responds; restarts it through FreePBX when needed
 
 ### Smart Backup System
 - **Tiered Retention** — Config (30d), Database (14d), Daily (7d), Weekly (4w), Monthly (6m)
@@ -160,6 +162,15 @@ ADMIN_PASSWORD='MySecurePass123' \
 ./install.sh
 ```
 
+Check the supplied environment settings without installing anything:
+
+```bash
+ADMIN_EMAIL='admin@pbx.example.com' ./install.sh validate
+```
+
+Component switches use the `PBX_INSTALL_*` names below. Existing deployments can
+continue using the older `INSTALL_*` aliases.
+
 ### Environment Variables
 
 | Variable | Description | Default |
@@ -178,13 +189,14 @@ ADMIN_PASSWORD='MySecurePass123' \
 | `FAX_FROM_NAME` | From name for fax emails | `PBX Fax System` |
 | `TIMEZONE` | System timezone | Auto-detected |
 | `BEHIND_PROXY` | Running behind reverse proxy (`yes`/`no`) | `yes` |
-| `INSTALL_AVANTFAX` | Install fax system (`yes`/`no`) | `yes` |
+| `PBX_INSTALL_AVANTFAX` | Install fax system (`yes`/`no`) | `yes` |
 | `BACKUP_ENABLED` | Set up backup cron (`yes`/`no`) | `yes` |
-| `INSTALL_WEBMIN` | Install Webmin (`yes`/`no`) | `yes` |
-| `INSTALL_FOP2` | FOP2 operator panel (HTML5) (`yes`/`no`) | `yes` |
-| `INSTALL_OPENVPN` | OpenVPN client tools only (`yes`/`no`) | `yes` |
-| `INSTALL_WIREGUARD` | WireGuard client tools only (`yes`/`no`) | `yes` |
-| `INSTALL_SNGREP` | SIP traffic monitor (`yes`/`no`) | `yes` |
+| `PBX_INSTALL_WEBMIN` | Install Webmin (`yes`/`no`) | `yes` |
+| `PBX_INSTALL_FOP2` | FOP2 operator panel (HTML5) (`yes`/`no`) | `yes` |
+| `FAIL2BAN_ENABLED` | Install fail2ban brute-force jails (`yes`/`no`) | `yes` |
+| `PBX_INSTALL_OPENVPN` | OpenVPN client tools only (`yes`/`no`) | `yes` |
+| `PBX_INSTALL_WIREGUARD` | WireGuard client tools only (`yes`/`no`) | `yes` |
+| `PBX_INSTALL_SNGREP` | SIP traffic monitor (`yes`/`no`) | `yes` |
 | `GITHUB_REPO` | GitHub repo for management scripts | `scriptmgr/pbx` |
 | `SCRIPTS_REF` | Branch/tag for scripts | `main` |
 | `GITHUB_TOKEN` | Token for private forks | optional |
@@ -192,7 +204,7 @@ ADMIN_PASSWORD='MySecurePass123' \
 
 All generated passwords are stored in `/etc/pbx/creds.conf` (mode 600).
 
-When `INSTALL_OPENVPN=yes` or `INSTALL_WIREGUARD=yes`, the installer only installs VPN **client** tooling. It does **not** configure or run an OpenVPN or WireGuard server, and it does not generate client example configs. Use `pbx-vpn` for connection guidance after install, and supply your own client details from an existing VPN server.
+When `PBX_INSTALL_OPENVPN=yes` or `PBX_INSTALL_WIREGUARD=yes`, the installer only installs VPN **client** tooling. It does **not** configure or run an OpenVPN or WireGuard server, and it does not generate client example configs. Use `pbx-vpn` for connection guidance after install, and supply your own client details from an existing VPN server.
 
 ```bash
 pbx-vpn --status      # Show installed VPN client tools and active client status
@@ -353,7 +365,7 @@ exclusively by the sysadmin. Open the ports your deployment needs in
 | 4569 | udp | IAX2 (optional) |
 | 8088 | tcp | Asterisk HTTP (AMI behind TLS) |
 | 8089 | tcp | Asterisk WSS — WebRTC |
-| 9001 | tcp | Webmin (only when `INSTALL_WEBMIN=yes`) |
+| 9001 | tcp | Webmin (only when `PBX_INSTALL_WEBMIN=yes`) |
 | 69 | udp | TFTP phone provisioning |
 | 10000-20000 | udp | RTP media |
 

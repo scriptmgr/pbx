@@ -11,6 +11,15 @@
 PASS=0; FAIL=0; WARN=0; SKIP=0
 FAILURES=""
 
+# Components the admin turned off at install time (same switches as install.sh) are not tested.
+# Run the suite with the same environment that was given to install.sh.
+want() {
+    local switch="PBX_INSTALL_$1" legacy="INSTALL_$1" v
+    v="${!switch:-${!legacy:-yes}}"
+    case "${v,,}" in no|n|false|off|0) return 1 ;; esac
+    return 0
+}
+
 ok()   { echo "  PASS: $*"; PASS=$((PASS+1)); }
 fail() { echo "  FAIL: $*"; FAIL=$((FAIL+1)); FAILURES="${FAILURES}\n  - $*"; }
 warn() { echo "  WARN: $*"; WARN=$((WARN+1)); }
@@ -71,19 +80,19 @@ svc_active() {
 
 check_svc() {
     local label="$1"; shift
-    local found=0 st
+    local found=0 st load_state
     for s in "$@"; do
-        if systemctl list-units --type=service 2>/dev/null | grep -qE -- "^\s+${s}\.service"; then
-            st=$(systemctl is-active "$s" 2>/dev/null)
-            found=1
-            case "$st" in
-                active)     ok "SERVICE $label ($s): running"; return 0 ;;
-                activating) warn "SERVICE $label ($s): activating"; return 0 ;;
-                *)          fail "SERVICE $label ($s): $st"; return 1 ;;
-            esac
-        fi
+        load_state=$(systemctl show --property=LoadState --value "$s" 2>/dev/null || true)
+        [ "$load_state" = loaded ] || continue
+        found=1
+        st=$(systemctl show --property=ActiveState --value "$s" 2>/dev/null || true)
+        case "$st" in
+            active)     ok "SERVICE $label ($s): running"; return 0 ;;
+            activating) warn "SERVICE $label ($s): activating"; return 0 ;;
+        esac
     done
-    [ "$found" -eq 0 ] && fail "SERVICE $label: not installed"
+    [ "$found" -eq 0 ] && { fail "SERVICE $label: not installed"; return 1; }
+    fail "SERVICE $label: not active"
 }
 
 curl_get() {
@@ -124,9 +133,22 @@ check_svc "MariaDB"     mariadb mysql
 check_svc "Web server"  httpd apache2
 check_svc "PHP-FPM"     php-fpm php7.4-fpm php74-php-fpm
 check_svc "Postfix"     postfix
-check_svc "HylaFAX"     hylafax "hylafax+"
-check_svc "Webmin"      webmin
+want AVANTFAX && check_svc "HylaFAX"     hylafax "hylafax+"
+want WEBMIN   && check_svc "Webmin"      webmin
 check_svc "Cron"        crond cron cronie
+if command -v pbx-health-check >/dev/null 2>&1 && systemctl is-active --quiet freepbx 2>/dev/null; then
+    FREEPBX_ACTIVE_SINCE=$(systemctl show --property=ActiveEnterTimestamp --value freepbx 2>/dev/null)
+    HEALTH_RC=0
+    timeout 30 pbx-health-check >/dev/null 2>&1 || HEALTH_RC=$?
+    FREEPBX_ACTIVE_AFTER=$(systemctl show --property=ActiveEnterTimestamp --value freepbx 2>/dev/null)
+    AST_HEALTH_AFTER=$(timeout 5 asterisk -rx "core show version" 2>/dev/null || true)
+    if [ "$HEALTH_RC" -eq 0 ] && [ "$FREEPBX_ACTIVE_SINCE" = "$FREEPBX_ACTIVE_AFTER" ] \
+       && grep -q -- "Asterisk" <<< "$AST_HEALTH_AFTER"; then
+        ok "pbx-health-check: preserves healthy FreePBX-managed Asterisk"
+    else
+        fail "pbx-health-check: restarted or failed to verify healthy FreePBX-managed Asterisk"
+    fi
+fi
 
 # =============================================================================
 sep "3. ASTERISK CORE"
@@ -248,8 +270,13 @@ fwconsole ma list 2>/dev/null | grep -qiE -- "dynroute|inboundroutes" \
 
 # fwconsole reload clean
 RLOUT=$(fwconsole reload --skip-registry-checks 2>&1 | tail -3)
-grep -qiE -- "Reload Complete|message.*Reload" <<< "$RLOUT" \
-    && ok "fwconsole reload: clean" || warn "fwconsole reload: $RLOUT"
+if grep -qiE -- "Reload Complete|message.*Reload" <<< "$RLOUT"; then
+    ok "fwconsole reload: clean"
+elif grep -qiE -- "exception|error|null value|can not continue" <<< "$RLOUT"; then
+    fail "fwconsole reload failed: $RLOUT"
+else
+    warn "fwconsole reload: $RLOUT"
+fi
 
 # =============================================================================
 sep "6. DATABASE INTEGRITY"
@@ -316,9 +343,9 @@ check_url "Portal root"             "${WEB_BASE_URL}/"                      "200
 check_url "FreePBX /admin/"         "${WEB_BASE_URL}/admin/"                "200,302"   "FreePBX|pbx|login|password"
 check_url "/health JSON"            "${WEB_BASE_URL}/health"                "200"       "status|ok|healthy|version"
 check_url "/status/ page"           "${WEB_BASE_URL}/status/"               "200"       "asterisk|pbx|service|version|status"
-check_url "/avantfax/"              "${WEB_BASE_URL}/avantfax/"             "200,302"   "AvantFax|fax|Hyla|login"
+want AVANTFAX && check_url "/avantfax/"              "${WEB_BASE_URL}/avantfax/"             "200,302"   "AvantFax|fax|Hyla|login"
 check_url "/callcenter/"            "${WEB_BASE_URL}/callcenter/"           "200,302,401,403"
-check_url "Webmin HTTPS"            "https://127.0.0.1:${WEBMIN_PORT}/"    "200,302,401" "Webmin|webmin|login"
+want WEBMIN && check_url "Webmin HTTPS"            "https://127.0.0.1:${WEBMIN_PORT}/"    "200,302,401" "Webmin|webmin|login"
 
 # Health endpoint detailed
 HEALTH=$(_curl_code "${WEB_BASE_URL}/health")
@@ -353,41 +380,45 @@ fi
 # =============================================================================
 sep "8. FAX SYSTEM"
 # =============================================================================
+if want AVANTFAX; then
 
-pgrep -x hfaxd >/dev/null 2>&1 && ok "hfaxd process running" || fail "hfaxd not running"
-ss -tlnp 2>/dev/null | grep -q -- ":4559" && ok "hfaxd port 4559 listening" || fail "hfaxd port 4559 not listening"
+    pgrep -x hfaxd >/dev/null 2>&1 && ok "hfaxd process running" || fail "hfaxd not running"
+    ss -tlnp 2>/dev/null | grep -q -- ":4559" && ok "hfaxd port 4559 listening" || fail "hfaxd port 4559 not listening"
 
-FAXSTAT_OUT=$(timeout 5 faxstat -h 127.0.0.1 2>&1)
-FAXSTAT_EXIT=$?
-[ "$FAXSTAT_EXIT" -eq 0 ] \
-    && ok "faxstat: connected to hfaxd" \
-    || warn "faxstat: cannot connect to hfaxd (exit=$FAXSTAT_EXIT)"
+    FAXSTAT_OUT=$(timeout 5 faxstat -h 127.0.0.1 2>&1)
+    FAXSTAT_EXIT=$?
+    [ "$FAXSTAT_EXIT" -eq 0 ] \
+        && ok "faxstat: connected to hfaxd" \
+        || warn "faxstat: cannot connect to hfaxd (exit=$FAXSTAT_EXIT)"
 
-IAXPIDS=$(pgrep -x iaxmodem 2>/dev/null | wc -l)
-[ "${IAXPIDS:-0}" -ge 4 ] && ok "iaxmodem: $IAXPIDS instances running" || fail "iaxmodem: $IAXPIDS instances (need 4)"
+    IAXPIDS=$(pgrep -x iaxmodem 2>/dev/null | wc -l)
+    [ "${IAXPIDS:-0}" -ge 4 ] && ok "iaxmodem: $IAXPIDS instances running" || fail "iaxmodem: $IAXPIDS instances (need 4)"
 
-TTYCOUNT=$(ls /dev/ttyIAX* 2>/dev/null | wc -l)
-[ "${TTYCOUNT:-0}" -ge 4 ] && ok "IAX tty devices: $TTYCOUNT (/dev/ttyIAX1-4)" || fail "IAX tty devices: $TTYCOUNT (need 4)"
+    TTYCOUNT=$(ls /dev/ttyIAX* 2>/dev/null | wc -l)
+    [ "${TTYCOUNT:-0}" -ge 4 ] && ok "IAX tty devices: $TTYCOUNT (/dev/ttyIAX1-4)" || fail "IAX tty devices: $TTYCOUNT (need 4)"
 
-[ -d /var/spool/hylafax/etc ]   && ok "HylaFAX spool/etc present"  || fail "HylaFAX spool missing"
-[ -d /var/spool/hylafax/recvq ] && ok "HylaFAX recvq present"      || warn "HylaFAX recvq missing"
-[ -d /var/spool/hylafax/sendq ] && ok "HylaFAX sendq present"      || warn "HylaFAX sendq missing"
+    [ -d /var/spool/hylafax/etc ]   && ok "HylaFAX spool/etc present"  || fail "HylaFAX spool missing"
+    [ -d /var/spool/hylafax/recvq ] && ok "HylaFAX recvq present"      || warn "HylaFAX recvq missing"
+    [ -d /var/spool/hylafax/sendq ] && ok "HylaFAX sendq present"      || warn "HylaFAX sendq missing"
 
-MCONF=$(ls /var/spool/hylafax/etc/config.ttyIAX* 2>/dev/null | wc -l)
-[ "${MCONF:-0}" -ge 4 ] && ok "HylaFAX modem configs: $MCONF" || warn "HylaFAX modem configs: $MCONF (need 4)"
+    MCONF=$(ls /var/spool/hylafax/etc/config.ttyIAX* 2>/dev/null | wc -l)
+    [ "${MCONF:-0}" -ge 4 ] && ok "HylaFAX modem configs: $MCONF" || warn "HylaFAX modem configs: $MCONF (need 4)"
 
-AF_DIR="${WEB_ROOT}/avantfax"
-[ -d "$AF_DIR" ]                          && ok "AvantFax dir: $AF_DIR"        || fail "AvantFax dir missing"
-[ -f "${AF_DIR}/index.php" ]              && ok "AvantFax index.php present"   || fail "AvantFax index.php missing"
-[ -f "${AF_DIR}/includes/config.php" ]    && ok "AvantFax config.php present"  || fail "AvantFax config.php missing"
-[ -f "${AF_DIR}/includes/FaxModem.php" ]  && ok "AvantFax FaxModem.php present" || warn "AvantFax FaxModem.php missing"
+    AF_DIR="${WEB_ROOT}/avantfax"
+    [ -d "$AF_DIR" ]                          && ok "AvantFax dir: $AF_DIR"        || fail "AvantFax dir missing"
+    [ -f "${AF_DIR}/index.php" ]              && ok "AvantFax index.php present"   || fail "AvantFax index.php missing"
+    [ -f "${AF_DIR}/includes/config.php" ]    && ok "AvantFax config.php present"  || fail "AvantFax config.php missing"
+    [ -f "${AF_DIR}/includes/FaxModem.php" ]  && ok "AvantFax FaxModem.php present" || warn "AvantFax FaxModem.php missing"
 
-AF_DB=$(mysql -u root ${MYSQL_PASS:+-p"${MYSQL_PASS}"} -e "SHOW DATABASES LIKE 'avantfax';" 2>/dev/null | grep -c -- "avantfax") || AF_DB=0
-[ "${AF_DB:-0}" -ge 1 ] && ok "AvantFax database exists" || warn "AvantFax database missing"
+    AF_DB=$(mysql -u root ${MYSQL_PASS:+-p"${MYSQL_PASS}"} -e "SHOW DATABASES LIKE 'avantfax';" 2>/dev/null | grep -c -- "avantfax") || AF_DB=0
+    [ "${AF_DB:-0}" -ge 1 ] && ok "AvantFax database exists" || warn "AvantFax database missing"
 
-grep -qE -- "EMAIL_TO_FAX_ALIAS|FAX_EMAIL_ALIAS" "$ENV_FILE" 2>/dev/null \
-    && ok "Fax email alias configured" \
-    || warn "Email-to-fax alias not in .env"
+    grep -qE -- "EMAIL_TO_FAX_ALIAS|FAX_EMAIL_ALIAS" "$ENV_FILE" 2>/dev/null \
+        && ok "Fax email alias configured" \
+        || warn "Email-to-fax alias not in .env"
+else
+    skip "Fax system disabled (PBX_INSTALL_AVANTFAX=no)"
+fi
 
 # =============================================================================
 sep "9. SECURITY"
@@ -414,7 +445,7 @@ ALL_SCRIPTS="pbx-status pbx-services pbx-ssl pbx-network pbx-logs
              pbx-security pbx-passwords pbx-cdr pbx-trunks pbx-asterisk pbx-calls
              pbx-repair pbx-restart pbx-cleanup pbx-docs pbx-moh pbx-recordings
              pbx-config pbx-diag pbx-update pbx-backup pbx-ssh pbx-webmin
-             pbx-provision pbxstatus"
+             pbx-provision pbx-health-check pbxstatus"
 
 MISSING_SCRIPTS=0
 for s in $ALL_SCRIPTS; do
@@ -503,6 +534,22 @@ command -v pbxstatus >/dev/null 2>&1 && \
     OUT=$(NO_COLOR=1 pbxstatus 2>/dev/null) && \
     [ -n "$OUT" ] && ok "pbxstatus alias: works" || warn "pbxstatus: no output"
 
+# pbxstatus must still render when the Asterisk CLI fails (pipefail regression)
+FAKE_BIN=$(mktemp -d -t pbx-fakebin-XXXXXX)
+printf '#!/bin/sh\nexit 1\n' > "$FAKE_BIN/asterisk"
+chmod +x "$FAKE_BIN/asterisk"
+OUT=$(PATH="$FAKE_BIN:$PATH" NO_COLOR=1 pbxstatus 2>/dev/null); RC=$?
+rm -rf "$FAKE_BIN"
+[ "$RC" -eq 0 ] && grep -q -- "PBX STATUS" <<< "$OUT" \
+    && ok "pbxstatus: renders with Asterisk CLI unavailable" \
+    || fail "pbxstatus: exited rc=$RC without output when Asterisk CLI failed"
+
+# freepbx.service must agree with Asterisk (drives /health)
+if [ -f /etc/systemd/system/freepbx.service ]; then
+    systemctl is-active --quiet freepbx 2>/dev/null \
+        && ok "freepbx.service: active" || fail "freepbx.service: $(systemctl is-active freepbx 2>/dev/null)"
+fi
+
 # pbx-webmin
 OUT=$(NO_COLOR=1 pbx-webmin 2>/dev/null | head -10)
 grep -qiE -- "webmin|port|status|URL" <<< "$OUT" \
@@ -540,12 +587,12 @@ OUT=$(NO_COLOR=1 pbx-cleanup --dry-run 2>/dev/null || NO_COLOR=1 pbx-cleanup 2>/
 grep -qiE -- "clean|backup|retain|dry" <<< "$OUT" \
     && ok "pbx-cleanup: runs without error" || warn "pbx-cleanup: no output"
 
-# Remote backup via rclone (INSTALL_REMOTE_BACKUP=yes installs it; absent is
+# Remote backup via rclone (PBX_INSTALL_REMOTE_BACKUP=yes installs it; absent is
 # expected/acceptable on a default install — see install_rclone() in install.sh)
 if command -v rclone >/dev/null 2>&1; then
     ok "rclone: installed ($(rclone version 2>/dev/null | head -1))"
 else
-    warn "rclone: not installed (expected unless INSTALL_REMOTE_BACKUP=yes)"
+    warn "rclone: not installed (expected unless PBX_INSTALL_REMOTE_BACKUP=yes)"
 fi
 
 # =============================================================================
@@ -568,8 +615,9 @@ ok "Mail queue: $MAILQ"
 sep "13. FILE SYSTEM & PERMISSIONS"
 # =============================================================================
 
-for dir in /etc/asterisk /var/lib/asterisk /var/log/asterisk /var/spool/asterisk \
-           /etc/pbx "${WEB_ROOT}" /mnt/backups/pbx /var/spool/hylafax; do
+REQUIRED_DIRS="/etc/asterisk /var/lib/asterisk /var/log/asterisk /var/spool/asterisk /etc/pbx ${WEB_ROOT} /mnt/backups/pbx"
+want AVANTFAX && REQUIRED_DIRS="${REQUIRED_DIRS} /var/spool/hylafax"
+for dir in ${REQUIRED_DIRS}; do
     [ -d "$dir" ] && ok "Dir exists: $dir" || fail "Dir MISSING: $dir"
 done
 

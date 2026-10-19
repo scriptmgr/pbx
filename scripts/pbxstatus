@@ -139,11 +139,13 @@ collect_data() {
         || echo "n/a")
     PHP_VER=$(php -r "echo PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION;" 2>/dev/null || echo "n/a")
 
+    # Under pipefail a failed or timed-out asterisk CLI call fails the whole pipeline;
+    # the fallback sits outside $() so set -e cannot end the dashboard silently
     CALLS=$(timeout 3 asterisk -rx "core show channels count" 2>/dev/null \
-        | awk '/active call/{print $1; found=1; exit} END{if(!found) print 0}')
+        | awk '/active call/{print $1; found=1; exit} END{if(!found) print 0}') || CALLS=0
     CALLS="${CALLS:-0}"
     PEERS=$(timeout 3 asterisk -rx "pjsip show endpoints" 2>/dev/null \
-        | awk '/^[A-Za-z0-9][^ ]+ +(Not in use|In use|Unavail|Avail)/{c++} END{print c+0}')
+        | awk '/^[A-Za-z0-9][^ ]+ +(Not in use|In use|Unavail|Avail)/{c++} END{print c+0}') || PEERS=0
     PEERS="${PEERS:-0}"
 
     AST_S=$(service_state asterisk)

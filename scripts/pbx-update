@@ -49,7 +49,7 @@ hdr()  { printf "\n${BOLD}%s${NC}\n" "$*"; }
 
 GITHUB_REPO="${GITHUB_REPO:-scriptmgr/pbx}"
 SCRIPTS_REF="${SCRIPTS_REF:-main}"
-INSTALL_DIR="/usr/local/bin"
+PBX_INSTALL_DIR="/usr/local/bin"
 API_URL="https://api.github.com/repos/${GITHUB_REPO}/contents/scripts?ref=${SCRIPTS_REF}"
 
 usage() {
@@ -76,7 +76,7 @@ printf '%s\n' "$FILE_LIST" | grep -- '"download_url"' | sed 's/.*"download_url":
 while IFS= read -r url; do
     [ -z "$url" ] && continue
     SCRIPT_NAME=$(basename "$url")
-    INSTALLED="${INSTALL_DIR}/${SCRIPT_NAME}"
+    INSTALLED="${PBX_INSTALL_DIR}/${SCRIPT_NAME}"
     NEW_CONTENT=$(curl -fsSL "$url" 2>/dev/null) || { warn "Could not download ${SCRIPT_NAME}"; continue; }
     if [ "$FORCE" -eq 1 ] || [ ! -f "$INSTALLED" ] || \
        [ "$(printf '%s' "$NEW_CONTENT" | md5sum)" != "$(md5sum "$INSTALLED" 2>/dev/null | cut -d' ' -f1)" ]; then

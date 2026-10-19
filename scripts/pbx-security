@@ -9,7 +9,7 @@
 # @@Copyright        :  Copyright: (c) 2026 Jason Hempstead, Casjays Developments
 # @@Created          :  Tuesday, May 19, 2026 11:56 EDT
 # @@File             :  pbx-security
-# @@Description      :  Run a PBX security audit covering auth failures, open ports, default passwords, and TLS status.
+# @@Description      :  Run a PBX security audit covering fail2ban, auth failures, open ports, default passwords, and TLS status.
 # @@Changelog        :  Add compliant script header; fix convention violations
 # @@TODO             :
 # @@Other            :
@@ -60,6 +60,7 @@ usage() {
     printf "  - Recent failed authentication attempts\n"
     printf "  - Listening ports\n"
     printf "  - Asterisk security log presence\n"
+    printf "  - Fail2ban brute-force ban service status\n"
     printf "  - Default password and TLS certificate sanity\n\n"
     printf "Options:\n"
     printf "  --help (alias: -h)     Show help\n"
@@ -100,7 +101,7 @@ hdr "Default Password Check"
 if command -v mysql >/dev/null 2>&1; then
     MOPTS=""; [ -n "${MYSQL_ROOT_PASSWORD:-}" ] && MOPTS="-p${MYSQL_ROOT_PASSWORD}"
     # shellcheck disable=SC2086
-    AH=$(mysql $MOPTS asterisk 2>/dev/null \
+    AH=$(mysql $MOPTS asterisk \
         -sNe "SELECT password_hash FROM userman_users WHERE username='${ADMIN_USERNAME}' LIMIT 1" 2>/dev/null || echo "")
     if [ -n "$AH" ]; then
         echo "$AH" | grep -qE -- '^\$apr1\$|\$1\$' \
@@ -109,6 +110,18 @@ if command -v mysql >/dev/null 2>&1; then
     else
         info "Could not query admin password hash"
     fi
+fi
+
+hdr "Fail2ban"
+if command -v fail2ban-client >/dev/null 2>&1; then
+    if systemctl is-active --quiet fail2ban 2>/dev/null; then
+        chk_pass "fail2ban service is active"
+        fail2ban-client status 2>/dev/null | head -20 || info "Could not read fail2ban status"
+    else
+        chk_warn "fail2ban installed but not running"
+    fi
+else
+    chk_warn "fail2ban not installed (brute-force bans disabled)"
 fi
 
 hdr "Security Summary"

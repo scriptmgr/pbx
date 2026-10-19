@@ -75,7 +75,7 @@ if [ "$CHECK" -eq 1 ]; then
     done
     fwconsole ma list 2>/dev/null | grep -iE -- "broken|failed" && warn "Broken modules found" || ok "No broken FreePBX modules"
     if command -v asterisk >/dev/null 2>&1; then
-        AMOD=$(asterisk -rx "module show" 2>/dev/null | tail -1)
+        AMOD=$(asterisk -rx "module show" 2>/dev/null | tail -1) || AMOD="unavailable"
         ok "Asterisk modules: $AMOD"
     fi
     ok "Status check complete"

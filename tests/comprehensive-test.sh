@@ -67,19 +67,19 @@ svc_active() {
 
 check_svc() {
     local label="$1"; shift
-    local found=0 st
+    local found=0 st load_state
     for s in "$@"; do
-        if systemctl list-units --type=service 2>/dev/null | grep -qE "^\s+${s}\.service"; then
-            st=$(systemctl is-active "$s" 2>/dev/null)
-            found=1
-            case "$st" in
-                active)     ok "SERVICE $label ($s): running"; return ;;
-                activating) warn "SERVICE $label ($s): activating"; return ;;
-                *)          fail "SERVICE $label ($s): $st"; return ;;
-            esac
-        fi
+        load_state=$(systemctl show --property=LoadState --value "$s" 2>/dev/null || true)
+        [ "$load_state" = loaded ] || continue
+        found=1
+        st=$(systemctl show --property=ActiveState --value "$s" 2>/dev/null || true)
+        case "$st" in
+            active)     ok "SERVICE $label ($s): running"; return ;;
+            activating) warn "SERVICE $label ($s): activating"; return ;;
+        esac
     done
-    [ "$found" -eq 0 ] && fail "SERVICE $label: not installed"
+    [ "$found" -eq 0 ] && { fail "SERVICE $label: not installed"; return; }
+    fail "SERVICE $label: not active"
 }
 
 curl_get() {

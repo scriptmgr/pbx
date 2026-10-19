@@ -62,7 +62,7 @@ These apply to every piece of code, script, UI, config, and documentation in thi
 2. **No AI/ML features** — This PBX targets homelab to enterprise; AI/ML adds too much overhead/resource usage. Do not add any.
 3. **No silent failures** — All scripts must handle errors explicitly; never let `set -euo pipefail` kill scripts silently.
 4. **Pretty output only** — Console output must be clean and formatted. Log verbose output (e.g., yum/apt) to files, not stdout.
-5. **Never touch the host firewall** — Firewall policy (`firewalld`, `ufw`, `iptables`, `nftables`, `fail2ban`, `knockd`) is owned exclusively by the sysadmin. PBX must not install, configure, enable, flush, or persist firewall rules. Document the ports PBX needs and let the sysadmin open them. Stripping FreePBX's own `firewall` module is required here — it writes iptables rules itself. The sole exception is QoS DSCP marking (`iptables -t mangle`), which sets a packet mark and never filters, accepts, or drops.
+5. **Never touch the host firewall** — Firewall policy (`firewalld`, `ufw`, `iptables`, `nftables`, `knockd`) is owned exclusively by the sysadmin. PBX must not install, configure, enable, flush, or persist firewall rules. Brute-force *ban policy* (fail2ban) is a PBX concern and is exempt — it writes jail configs and consumes bans, but does not set firewall policy. Document the ports PBX needs and let the sysadmin open them. Stripping FreePBX's own `firewall` module is required here — it writes iptables rules itself. The sole exception is QoS DSCP marking (`iptables -t mangle`), which sets a packet mark and never filters, accepts, or drops.
 6. **No hardcoded paths that differ per distro** — Use the `PKG_*` variable map system.
 7. **Test before claiming done** — Never say something is production-ready without running the test suite.
 8. **Never reboot, power off, or shut down the host system** — those actions are allowed only inside test containers or VMs.
@@ -105,7 +105,7 @@ needed, but keep lines readable.
 
 - **Primary test containers:** `pbx-alma9` (AlmaLinux 9), `pbx-deb12` (Debian 12)
 - **Full test suite:** `incus file push tests/full-script-test.sh pbx-alma9/root/full-script-test.sh && incus exec pbx-alma9 -- bash /root/full-script-test.sh`
-- **Expected baseline:** 182P / 4W / 0F (WARNs: chrony not synced [OK in container], no recent CDR entries [no call placed by the automated test], no SSH jail [sshd not running in container], rclone not installed [expected unless `INSTALL_REMOTE_BACKUP=yes`]) — SSH PermitRootLogin is reported as INFO, not a WARN: some deployments require root SSH access, so it's a deployment choice, not a defect.
+- **Expected baseline:** 182P / 4W / 0F (WARNs: chrony not synced [OK in container], no recent CDR entries [no call placed by the automated test], no SSH jail [sshd not running in container], rclone not installed [expected unless `PBX_INSTALL_REMOTE_BACKUP=yes`]) — SSH PermitRootLogin is reported as INFO, not a WARN: some deployments require root SSH access, so it's a deployment choice, not a defect.
 - **Syntax check all scripts before pushing:** `bash -n scriptname`
 - **Always test on both alma9 AND deb12** — never just one distro.
 - **Push scripts to containers:** `incus file push scripts/pbx-X pbx-alma9/usr/local/bin/pbx-X`
@@ -154,7 +154,7 @@ incus exec pbx-alma9 -- chmod +x /usr/local/bin/pbx-status
 | AGI scripts | `/var/lib/asterisk/agi-bin/` |
 | TFTP root | `/var/lib/tftpboot/` |
 | Health endpoint | `/var/www/html/health/index.php` |
-| Status JSON | `/var/cache/pbx/status.json` |
+| Status JSON | `/var/lib/pbx/status.json` |
 
 ---
 
@@ -249,8 +249,8 @@ incus exec pbx-alma9 -- chmod +x /usr/local/bin/pbx-status
 | `ADMIN_EMAIL` | Administrator email for alerts | (required) |
 | `TIMEZONE` | System timezone | `America/New_York` |
 | `BEHIND_PROXY` | Enable reverse proxy mode (`yes`/`no`) | `yes` |
-| `INSTALL_FOP2` | Install FOP2 operator panel (HTML5) (`yes`/`no`) | `yes` |
-| `INSTALL_WIREGUARD` | Install WireGuard client tools only (`yes`/`no`) | `yes` |
+| `PBX_INSTALL_FOP2` | Install FOP2 operator panel (HTML5) (`yes`/`no`) | `yes` |
+| `PBX_INSTALL_WIREGUARD` | Install WireGuard client tools only (`yes`/`no`) | `yes` |
 | `BACKUP_ENCRYPT` | Enable GPG backup encryption | `no` |
 | `FAX_EMAIL` | Email address for inbound fax delivery | (admin email) |
 | `FAX_FROM_NAME` | From name for fax emails | `PBX Fax` |
@@ -322,7 +322,7 @@ All in `/usr/local/bin/`, all support `--help`.
 - **Returns:** JSON, public-safe (no private IPs, no passwords)
 - **HTTP 200** when all core services are up; **HTTP 503** when degraded
 - **Key fields:** `status`, `hostname`, `asterisk`, `freepbx`, `database`, `fax`, `system`, `features`, `data_age_seconds`
-- **Updated by:** `/etc/cron.d/pbx-status-update` every 5 minutes
+- **Updated by:** `/etc/cron.d/pbx-status` every minute
 
 ---
 

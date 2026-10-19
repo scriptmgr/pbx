@@ -10,6 +10,8 @@ and fall back to a sane default.
 import json
 import subprocess
 import datetime
+import grp
+import os
 from pathlib import Path
 
 OUT = Path('/var/lib/pbx/status.json')
@@ -41,6 +43,12 @@ for name in [
     state = service_state(name)
     if state != 'inactive':
         services[name] = state
+
+# FreePBX owns Asterisk through freepbx.service on systemd installations.
+if services.get('asterisk') != 'running' and services.get('freepbx') == 'running':
+    asterisk_version = sh("timeout 5 asterisk -rx 'core show version' 2>/dev/null")
+    if asterisk_version.startswith('Asterisk '):
+        services['asterisk'] = 'running'
 
 overall = 'ok'
 for core in ['asterisk', 'freepbx', 'mariadb', 'httpd']:
@@ -92,3 +100,5 @@ status = {
     },
 }
 OUT.write_text(json.dumps(status, indent=2) + '\n')
+os.chown(OUT, 0, grp.getgrnam('asterisk').gr_gid)
+OUT.chmod(0o640)
