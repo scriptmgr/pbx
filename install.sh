@@ -6394,14 +6394,25 @@ install_fail2ban() {
     mkdir -p /etc/fail2ban/jail.d
     mkdir -p /etc/fail2ban/action.d
 
-    # Keep ban email alerts, but suppress the sendmail action's jail lifecycle
-    # messages. This also applies when a pre-existing jail.local selects action_mw(l).
+    # Suppress jail lifecycle messages from the shared sendmail action.
     backup_config /etc/fail2ban/action.d/sendmail-common.local
     cat > /etc/fail2ban/action.d/sendmail-common.local << 'F2BMAIL'
 [Definition]
 actionstart =
 actionstop =
 F2BMAIL
+
+    # Existing jail.local policies may select action_m, action_mw, or action_mwl.
+    # Override each standard sendmail ban action so those policies still ban
+    # addresses without sending one message per banned IP.
+    local _mail_action
+    for _mail_action in sendmail sendmail-whois sendmail-whois-lines; do
+        backup_config "/etc/fail2ban/action.d/${_mail_action}.local"
+        cat > "/etc/fail2ban/action.d/${_mail_action}.local" << 'F2BMAIL'
+[Definition]
+actionban =
+F2BMAIL
+    done
 
     # Deduplicate 'backend' in [DEFAULT] of jail.conf — re-runs or package upgrades
     # can leave duplicate entries that prevent fail2ban from starting.
@@ -6467,15 +6478,9 @@ F2BMAIL
         fi
     fi
 
-    # Global defaults — safe settings that won't lock anyone out.
-    # Email actions have jail lifecycle notifications disabled above.
+    # Use the ban-only action regardless of ADMIN_EMAIL. The sendmail override
+    # above also suppresses per-ban messages from an existing jail.local policy.
     local _f2b_action='%(action_)s'
-    local _f2b_email_block=""
-    if [ -n "${ADMIN_EMAIL:-}" ]; then
-        _f2b_action='%(action_mwl)s'
-        _f2b_email_block="destemail = ${ADMIN_EMAIL}
-sender   = ${FROM_EMAIL:-fail2ban@localhost}"
-    fi
 
     # jail.local is not shipped by the fail2ban package itself — its presence
     # means a pre-existing global policy (e.g. a casjay-base bootstrap) already
@@ -6496,7 +6501,6 @@ bantime  = 3600
 findtime = 600
 maxretry = 10
 ignoreip = 127.0.0.1/8 ::1 ${SSH_CLIENT_IP:-}
-${_f2b_email_block}
 ${_f2b_action_line}
 F2BGEOF
 

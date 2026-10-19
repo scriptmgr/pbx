@@ -1,5 +1,10 @@
 # TODO
 
+- 2026-10-19 Fail2ban now defaults to ban-only actions and overrides the
+  standard sendmail ban actions, so an existing `action_m`, `action_mw`, or
+  `action_mwl` policy cannot send one email per banned IP. The isolated
+  Fail2ban configuration parser check passed.
+
 - 2026-10-19 Debian 12 libvirt clean install with no reverse proxy and an
   existing Let's Encrypt certificate: auto-detection selected direct Apache
   mode, both ports 80/443 listened, and Apache served the copied certificate

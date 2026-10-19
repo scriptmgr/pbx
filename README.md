@@ -39,7 +39,7 @@ A production-ready, fully automated installer for a complete enterprise PBX syst
 - **VPN Client Tools** — Optional OpenVPN/WireGuard client tooling with `pbx-vpn` guidance for connecting to an existing VPN server
 - **Rate Limiting** — Protection against SIP attacks
 - **Security Audit** — Built-in vulnerability scanner (`pbx-security`)
-- **Brute-force Protection** — Optional fail2ban jails for SSH/SIP/HTTP; configured email alerts report bans without sending jail start/stop messages
+- **Brute-force Protection** — Optional fail2ban jails for SSH/SIP/HTTP; bans remain active without per-ban email alerts
 - **Health Endpoint** — `/health/` JSON endpoint for external monitoring
 - **Service Health Monitor** — recognizes FreePBX-managed Asterisk when `freepbx.service` is active and the Asterisk CLI responds; restarts it through FreePBX when needed
 
