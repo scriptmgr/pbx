@@ -2834,8 +2834,44 @@ CREATE DATABASE IF NOT EXISTS asterisk CHARACTER SET utf8mb4 COLLATE utf8mb4_gen
 CREATE DATABASE IF NOT EXISTS asteriskcdrdb CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;
 GRANT ALL PRIVILEGES ON asterisk.*     TO 'freepbx'@'localhost' IDENTIFIED BY '${FREEPBX_DB_PASSWORD}';
 GRANT ALL PRIVILEGES ON asteriskcdrdb.* TO 'freepbx'@'localhost' IDENTIFIED BY '${FREEPBX_DB_PASSWORD}';
+GRANT ALL PRIVILEGES ON asterisk.*     TO 'freepbx'@'127.0.0.1' IDENTIFIED BY '${FREEPBX_DB_PASSWORD}';
+GRANT ALL PRIVILEGES ON asteriskcdrdb.* TO 'freepbx'@'127.0.0.1' IDENTIFIED BY '${FREEPBX_DB_PASSWORD}';
 FLUSH PRIVILEGES;
 DBEOF
+}
+
+# UCP's MariaDB client resolves localhost to IPv6, while PBX MariaDB listens on IPv4.
+configure_freepbx_db_host() {
+    local freepbx_config="/etc/freepbx.conf"
+    [ -f "${freepbx_config}" ] || {
+        error "Cannot configure UCP database access: ${freepbx_config} is missing"
+        return 1
+    }
+
+    PBX_FREEPBX_CONFIG_PATH="${freepbx_config}" php << 'DBHOSTPHP' || {
+<?php
+$path = getenv('PBX_FREEPBX_CONFIG_PATH');
+$contents = file_get_contents($path);
+if ($contents === false) {
+    exit(1);
+}
+$updated = preg_replace(
+    '/^\$amp_conf\[\'AMPDBHOST\'\]\s*=\s*\'[^\']*\';/m',
+    '$amp_conf[\'AMPDBHOST\'] = \'127.0.0.1\';',
+    $contents,
+    1,
+    $count
+);
+if ($updated === null || $count !== 1) {
+    exit(1);
+}
+if ($updated !== $contents && file_put_contents($path, $updated) === false) {
+    exit(1);
+}
+DBHOSTPHP
+        error "Cannot set the FreePBX database host to IPv4 loopback"
+        return 1
+    }
 }
 
 # =============================================================================
@@ -4386,9 +4422,40 @@ install_asterisk() {
 # SECTION 18: FREEPBX INSTALLATION
 # =============================================================================
 
+ensure_ucp_node_landing_page() {
+    local ucp_node_dir="${WEB_ROOT}/admin/modules/ucp/node"
+    local ucp_node_public="${ucp_node_dir}/lib/public"
+    [ -f "${ucp_node_dir}/index.js" ] || {
+        error "UCP Node server entry point is missing"
+        return 1
+    }
+
+    install -d -o asterisk -g asterisk -m 0755 "${ucp_node_public}" \
+        || { error "Cannot create UCP Node public directory"; return 1; }
+    if [ ! -f "${ucp_node_public}/index.html" ]; then
+        cat > "${ucp_node_public}/index.html" << 'UCPNODEEOF'
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FreePBX UCP Node Server</title>
+</head>
+<body>
+  <p>FreePBX UCP Node server is running.</p>
+</body>
+</html>
+UCPNODEEOF
+        chown asterisk:asterisk "${ucp_node_public}/index.html" \
+            || { error "Cannot set UCP Node page ownership"; return 1; }
+        chmod 0644 "${ucp_node_public}/index.html" \
+            || { error "Cannot set UCP Node page permissions"; return 1; }
+    fi
+}
+
 ensure_freepbx_modules() {
     local mod installed_modules module_count missing_required=""
-    local required_modules="core framework pm2 voicemail timeconditions callforward donotdisturb"
+    local required_modules="core framework pm2 voicemail timeconditions callforward donotdisturb ucp"
     [ "${PBX_INSTALL_AVANTFAX:-yes}" = "yes" ] && required_modules="${required_modules} fax"
 
     info "Reconciling FreePBX modules..."
@@ -4396,6 +4463,7 @@ ensure_freepbx_modules() {
         error "Cannot reconcile FreePBX modules: fwconsole is missing"
         return 1
     }
+    configure_freepbx_db_host || return 1
 
     seed_freepbx_module_defaults || warn "Failed to seed FreePBX module defaults"
     fwconsole ma enablerepo standard    > /dev/null 2>&1 || true
@@ -4425,6 +4493,14 @@ ensure_freepbx_modules() {
     done
 
     installed_modules=$(fwconsole ma list 2>/dev/null || true)
+    if ! printf '%s\n' "${installed_modules}" \
+        | grep -qE '^\| ucp[[:space:]]*\|[^|]*\|[[:space:]]*Enabled[[:space:]]*\|'; then
+        fwconsole ma enable ucp > /dev/null 2>&1 \
+            || fwconsole ma enable ucp > /dev/null 2>&1 \
+            || warn "Module [ucp] could not be enabled"
+    fi
+
+    installed_modules=$(fwconsole ma list 2>/dev/null || true)
     printf '%s\n' "${installed_modules}" | grep -qE '^\\| synologyabb[[:space:]]' \
         && fwconsole ma remove synologyabb > /dev/null 2>&1 || true
     printf '%s\n' "${installed_modules}" | grep -qE '^\\| firewall[[:space:]]' \
@@ -4432,7 +4508,12 @@ ensure_freepbx_modules() {
 
     installed_modules=$(fwconsole ma list 2>/dev/null || true)
     for mod in ${required_modules}; do
-        if ! printf '%s\n' "${installed_modules}" | grep -qE "^\\| ${mod}[[:space:]]"; then
+        if [ "${mod}" = "ucp" ]; then
+            if ! printf '%s\n' "${installed_modules}" \
+                | grep -qE '^\| ucp[[:space:]]*\|[^|]*\|[[:space:]]*Enabled[[:space:]]*\|'; then
+                missing_required="${missing_required} ucp (disabled or missing)"
+            fi
+        elif ! printf '%s\n' "${installed_modules}" | grep -qE "^\\| ${mod}[[:space:]]"; then
             missing_required="${missing_required} ${mod}"
         fi
     done
@@ -5490,6 +5571,15 @@ UPDATE UserAccount
 SET password='${af_admin_md5}', email='${ADMIN_EMAIL}', superuser=1, is_admin=1, wasreset=0, acc_enabled=1, deleted=0, any_modem=1
 WHERE username='admin';
 AFADMINSQL
+    if ! mysql -u root -p"${MYSQL_ROOT_PASSWORD}" avantfax << 'AFDATEFIXSQL'
+UPDATE UserAccount
+SET last_mod=NULL
+WHERE CAST(last_mod AS CHAR) LIKE '0000-%';
+AFDATEFIXSQL
+    then
+        err "Failed to normalize invalid AvantFax account timestamps"
+        return 1
+    fi
     info "AvantFax admin user '${AVANTFAX_ADMIN_USERNAME}' configured"
 
     # Patch config.php with correct DB credentials — works whether copied from .default or already present
@@ -5565,7 +5655,8 @@ configure_freepbx_fax_destination() {
     done
 
     step "📠 Registering the FreePBX Fax (HylaFax) destination..."
-    php /dev/stdin <<'PHP' || { error "Could not register the FreePBX Fax (HylaFax) destination"; return 1; }
+    local fax_destination_result
+    fax_destination_result=$(php /dev/stdin <<'PHP'
 <?php
 $bootstrap_settings = ['skip_astman' => true];
 require '/etc/freepbx.conf';
@@ -5597,9 +5688,13 @@ $customappsreg->setConfig($currentid, [
 $customappsreg->setConfig('currentid', $currentid + 1);
 echo "Registered FreePBX Fax (HylaFax) destination\n";
 PHP
+    ) || { error "Could not register the FreePBX Fax (HylaFax) destination"; return 1; }
+    info "${fax_destination_result}"
 
-    fwconsole reload >> "${LOG_FILE}" 2>&1 \
-        || { error "FreePBX reload failed after registering the fax destination"; return 1; }
+    if [[ "${fax_destination_result}" == "Registered FreePBX Fax (HylaFax) destination" ]]; then
+        fwconsole reload >> "${LOG_FILE}" 2>&1 \
+            || { error "FreePBX reload failed after registering the fax destination"; return 1; }
+    fi
     success "Fax destination is available in FreePBX routes; enable detection on selected inbound routes"
 }
 
@@ -8174,6 +8269,7 @@ finalize_installation() {
         printf '%s\n' "${_final_modules}" | grep -qE "^${_rm_mod}[[:space:]]" \
             && fwconsole ma remove "${_rm_mod}" > /dev/null 2>&1 || true
     done
+    ensure_ucp_node_landing_page || return 1
 
     # Ensure pbx_config.so (dialplan) is loaded after FreePBX generates configs
     asterisk -rx "module load pbx_config.so" >/dev/null 2>&1 || true

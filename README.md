@@ -19,7 +19,7 @@ A production-ready, fully automated installer for a complete enterprise PBX syst
 - **FreePBX 16** — Web-based PBX management interface
 - **70+ Modules** — All standard modules included and auto-installed
 - **PJSIP** — UDP, TCP, and TLS transports (chan_sip disabled)
-- **WebRTC** — Browser-based calling via FreePBX UCP (WSS port 8089)
+- **WebRTC** — Browser-based calling via FreePBX UCP (WSS port 8089). The installer enables UCP, configures its local database connection, and creates the missing Node landing page.
 - **Anonymous SIP** — Support for anonymous inbound calls
 - **IVR + Time Conditions** — Full call flow control
 - **Conference Bridge** — Multi-party calling
@@ -29,7 +29,7 @@ A production-ready, fully automated installer for a complete enterprise PBX syst
 ### Enterprise Fax System
 - **4 Virtual Fax Modems** — IAXmodem instances (ttyIAX1–4)
 - **HylaFax+** — Compiled from source for maximum compatibility
-- **AvantFax** — Web-based fax management (v3.4.1)
+- **AvantFax** — Web-based fax management (v3.4.1). Setup normalizes legacy zero-date user records for database compatibility.
 - **FreePBX Fax Destination** — Routes detected faxes to HylaFAX through the configured IAXmodem pool. For each inbound route that should accept faxes, enable fax detection and choose **Custom Destinations → Fax (HylaFax)** as its destination.
 - **Fax-to-Email** — Automatic delivery to designated address
 - **Email-to-Fax** — Send faxes by email

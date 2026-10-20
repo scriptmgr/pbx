@@ -126,8 +126,12 @@ check_svc "Asterisk"    asterisk freepbx
 check_svc "MariaDB"     mariadb mysql
 check_svc "Web server"  httpd apache2
 check_svc "PHP-FPM"     php-fpm php7.4-fpm php74-php-fpm
-FPM_UNIT=$(systemctl list-units --type=service --state=active --no-legend 2>/dev/null \
-    | awk '$1 ~ /^php.*fpm\.service$/ {print $1; exit}')
+FPM_UNIT=$(grep -- "^PHP_FPM_SERVICE=" "$ENV_FILE" 2>/dev/null \
+    | head -1 | cut -d= -f2- | tr -d '"')
+if [ -z "${FPM_UNIT:-}" ]; then
+    FPM_UNIT=$(systemctl list-units --type=service --state=active --no-legend 2>/dev/null \
+        | awk '$1 ~ /^php.*fpm\.service$/ {print $1; exit}')
+fi
 if [ -n "${FPM_UNIT:-}" ]; then
     FPM_WRITE_PATHS=$(systemctl show "${FPM_UNIT}" -p ReadWritePaths --value 2>/dev/null)
     echo "${FPM_WRITE_PATHS}" | grep -qF "/etc/asterisk" \
@@ -264,10 +268,14 @@ MOD_COUNT=$(fwconsole ma list 2>/dev/null | grep -c -- "Enabled") || MOD_COUNT=0
 
 for mod in core voicemail cdr backup ringgroups ivr dashboard framework sipsettings userman \
            timeconditions featurecodeadmin announcement recordings conferences \
-           findmefollow callforward donotdisturb; do
+           findmefollow callforward donotdisturb ucp; do
     fwconsole ma list 2>/dev/null | grep -qE -- "^\| ${mod}[[:space:]]" \
         && ok "Module [${mod}]" || fail "Module [${mod}] MISSING"
 done
+
+fwconsole ma list 2>/dev/null \
+    | grep -qE -- '^\| ucp[[:space:]]*\|[^|]*\|[[:space:]]*Enabled[[:space:]]*\|' \
+    && ok "UCP module is enabled" || fail "UCP module is disabled or missing"
 
 fwconsole ma list 2>/dev/null | grep -qiE -- "dynroute|inboundroutes" \
     && ok "Routing module present" || warn "Routing module not found"
@@ -336,7 +344,7 @@ odbcinst -q -d 2>/dev/null | grep -qiE -- "MariaDB|MySQL" \
 sep "7. WEB SERVICES"
 # =============================================================================
 
-_curl_code() { curl -skL --max-time 10 -o /tmp/pbx-curl-tmp -w "%{http_code}" "$1" 2>/dev/null || echo "000"; }
+_curl_code() { curl -skL --max-time 10 -o /tmp/pbx-curl-tmp -w "%{http_code}" "$1" 2>/dev/null || true; }
 _curl_body() { cat /tmp/pbx-curl-tmp 2>/dev/null; }
 
 check_url() {
@@ -364,6 +372,14 @@ fi
 check_url "FreePBX /admin/"         "${WEB_BASE_URL}/admin/"                "200,302"   "FreePBX|pbx|login|password"
 check_url "/health JSON"            "${WEB_BASE_URL}/health"                "200"       "status|ok|healthy|version"
 check_url "/status/ page"           "${WEB_BASE_URL}/status/"               "200"       "asterisk|pbx|service|version|status"
+check_url "UCP login page"           "${WEB_BASE_URL}/ucp/"                  "200"       "login"
+check_url "UCP Node endpoint"        "http://127.0.0.1:8001/"                "200"       "FreePBX UCP Node server is running"
+UCP_BODY=$(_curl_code "${WEB_BASE_URL}/ucp/" >/dev/null; _curl_body)
+if grep -qiF -- "UCP is currently disabled" <<< "$UCP_BODY"; then
+    fail "UCP: endpoint reports that the panel is disabled"
+else
+    ok "UCP: panel is not disabled"
+fi
 want AVANTFAX && check_url "/avantfax/"              "${WEB_BASE_URL}/avantfax/"             "200,302"   "AvantFax|fax|Hyla|login"
 check_url "/callcenter/"            "${WEB_BASE_URL}/callcenter/"           "200,302,401,403"
 want WEBMIN && check_url "Webmin HTTPS"            "https://127.0.0.1:${WEBMIN_PORT}/"    "200,302,401" "Webmin|webmin|login"
@@ -433,6 +449,15 @@ if want AVANTFAX; then
 
     AF_DB=$(mysql -u root ${MYSQL_PASS:+-p"${MYSQL_PASS}"} -e "SHOW DATABASES LIKE 'avantfax';" 2>/dev/null | grep -c -- "avantfax") || AF_DB=0
     [ "${AF_DB:-0}" -ge 1 ] && ok "AvantFax database exists" || warn "AvantFax database missing"
+    if [ "${AF_DB:-0}" -ge 1 ]; then
+        AF_INVALID_LAST_MOD=$(mysql -u root ${MYSQL_PASS:+-p"${MYSQL_PASS}"} avantfax -sNe \
+            "SELECT COUNT(*) FROM UserAccount WHERE CAST(last_mod AS CHAR) LIKE '0000-%';" 2>/dev/null)
+        if [[ "${AF_INVALID_LAST_MOD:-}" =~ ^[0-9]+$ ]] && [ "$AF_INVALID_LAST_MOD" -eq 0 ]; then
+            ok "AvantFax accounts: no invalid zero-date last_mod values"
+        else
+            fail "AvantFax accounts: ${AF_INVALID_LAST_MOD:-query failed} invalid zero-date last_mod values"
+        fi
+    fi
 
     grep -qE -- "EMAIL_TO_FAX_ALIAS|FAX_EMAIL_ALIAS" "$ENV_FILE" 2>/dev/null \
         && ok "Fax email alias configured" \
