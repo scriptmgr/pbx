@@ -4453,6 +4453,43 @@ UCPNODEEOF
     fi
 }
 
+ensure_ucp_node_service() {
+    local http_status attempt
+    if ! asterisk -rx "core waitfullybooted" >/dev/null 2>&1; then
+        ensure_freepbx_service_active || {
+            error "FreePBX Asterisk service is not ready for UCP startup"
+            return 1
+        }
+    fi
+    if ! asterisk -rx "core waitfullybooted" >/dev/null 2>&1; then
+        error "Asterisk is not ready for UCP startup"
+        return 1
+    fi
+
+    http_status=$(curl -ksS --connect-timeout 2 --max-time 5 -o /dev/null -w '%{http_code}' \
+        http://127.0.0.1:8001/ 2>/dev/null || true)
+    if [ "${http_status}" != "200" ]; then
+        info "Restarting the FreePBX UCP Node service..."
+        timeout 30 fwconsole pm2 --restart=ucp >> "${LOG_FILE}" 2>&1 \
+            || { error "Could not restart the FreePBX UCP Node service"; return 1; }
+    fi
+
+    attempt=0
+    while [ "${attempt}" -lt 10 ]; do
+        http_status=$(curl -ksS --connect-timeout 2 --max-time 5 -o /dev/null -w '%{http_code}' \
+            http://127.0.0.1:8001/ 2>/dev/null || true)
+        if [ "${http_status}" = "200" ]; then
+            success "UCP Node service is responding"
+            return 0
+        fi
+        sleep 1
+        attempt=$((attempt + 1))
+    done
+
+    error "UCP Node service did not return HTTP 200 after restart"
+    return 1
+}
+
 ensure_freepbx_modules() {
     local mod installed_modules module_count missing_required=""
     local required_modules="core framework pm2 voicemail timeconditions callforward donotdisturb ucp"
@@ -4939,8 +4976,6 @@ MISCDEOF
 DELETE duplicate FROM miscapps AS duplicate
 JOIN miscapps AS original
   ON duplicate.ext <=> original.ext
-  AND duplicate.description <=> original.description
-  AND duplicate.dest <=> original.dest
   AND duplicate.miscapps_id > original.miscapps_id;
 
 INSERT INTO miscapps (ext, description, dest)
@@ -4957,9 +4992,7 @@ FROM (
 ) AS seed
 WHERE NOT EXISTS (
   SELECT 1 FROM miscapps AS existing
-  WHERE existing.ext = seed.ext
-    AND existing.description = seed.description
-    AND existing.dest = seed.dest
+  WHERE existing.ext <=> seed.ext
 );
 MISCAEOF
 
@@ -8368,6 +8401,8 @@ SVCEOF
     #   SIGNATURE_CHECK: shown when SIGNATURECHECK is temporarily 0 during install
     local _notif_sql="DELETE FROM notifications WHERE id IN ('FW_TAMPERED','VULNERABILITIES','SIGNATURE_CHECK');"
     mysql -uroot -p"${MYSQL_ROOT_PASSWORD}" asterisk -e "${_notif_sql}" 2>/dev/null || true
+
+    ensure_ucp_node_service || return 1
 
     # Mark installation complete
     echo "INSTALL_COMPLETE=$(date +%s)" >> "${INSTALL_INVENTORY}"

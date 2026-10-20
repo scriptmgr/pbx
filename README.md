@@ -19,7 +19,7 @@ A production-ready, fully automated installer for a complete enterprise PBX syst
 - **FreePBX 16** — Web-based PBX management interface
 - **70+ Modules** — All standard modules included and auto-installed
 - **PJSIP** — UDP, TCP, and TLS transports (chan_sip disabled)
-- **WebRTC** — Browser-based calling via FreePBX UCP (WSS port 8089). The installer enables UCP, configures its local database connection, and creates the missing Node landing page.
+- **WebRTC** — Browser-based calling via FreePBX UCP (WSS port 8089). The installer enables UCP, configures its local database connection, creates the Node landing page, and verifies the Node service responds.
 - **Anonymous SIP** — Support for anonymous inbound calls
 - **IVR + Time Conditions** — Full call flow control
 - **Conference Bridge** — Multi-party calling

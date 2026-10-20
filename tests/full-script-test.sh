@@ -329,11 +329,11 @@ else
     fail "Misc Destinations: ${MISCDEST_DUPLICATES:-query failed} exact duplicate groups"
 fi
 
-MISCAPP_DUPLICATES=$(db_q "SELECT COUNT(*) FROM (SELECT ext,description,dest FROM miscapps GROUP BY ext,description,dest HAVING COUNT(*)>1) AS duplicates;")
+MISCAPP_DUPLICATES=$(db_q "SELECT COUNT(*) FROM (SELECT ext FROM miscapps GROUP BY ext HAVING COUNT(*)>1) AS duplicates;")
 if [[ "${MISCAPP_DUPLICATES:-}" =~ ^[0-9]+$ ]] && [ "$MISCAPP_DUPLICATES" -eq 0 ]; then
-    ok "Misc Applications: no exact duplicate rows"
+    ok "Misc Applications: extension numbers are unique"
 else
-    fail "Misc Applications: ${MISCAPP_DUPLICATES:-query failed} exact duplicate groups"
+    fail "Misc Applications: ${MISCAPP_DUPLICATES:-query failed} duplicate extension groups"
 fi
 
 # ODBC
